@@ -1,0 +1,117 @@
+sources:
+  97.1: GitHub Actions primitives
+  97.2: The four-job merge gate
+  97.3: Signal checks and dependency hygiene
+
+questions:
+  - source: 97.1
+    question: |
+      You're authoring a deploy job that reads `${{ secrets.VERCEL_TOKEN }}` to ship production. For the two actions it pulls in — `actions/checkout` and a third-party `deploy-cli` action — which pinning is the senior default?
+    choices:
+      - text: |
+          Pin both by major tag (`@v6`, `@v3`) — major tags are stable references that GitHub won't repoint.
+        correct: false
+      - text: |
+          Pin both by full commit SHA, because this job is in scope of a secret and a moved tag would run attacker code with that token.
+        correct: true
+      - text: |
+          Pin `checkout` by SHA but the `deploy-cli` by `@main`, so it always ships the newest deploy logic.
+        correct: false
+    why: |
+      The deciding factor is not whether an action is first-party — it's whether the job can reach a secret. The `tj-actions` (CVE-2025-30066) attack rewrote every version tag, so a major-tag pin was hit just as hard as `@main`. Any action in a job that holds a secret or elevated permissions gets a 40-character SHA, the only reference an attacker can't move. Tag-pinning is fine only for trusted utility actions in jobs with nothing to steal.
+
+  - source: 97.1
+    question: |
+      You copy a working `ci.yml` from a 2024 project. It pins `actions/setup-node@v6` with `cache: pnpm`, but a colleague's near-identical file omits the `cache:` line. On the v6 runner, what's the practical difference?
+    choices:
+      - text: |
+          None — `setup-node` auto-caches pnpm whether or not `cache:` is set; the line is documentation.
+        correct: false
+      - text: |
+          The file without `cache: pnpm` silently gets zero caching and pays the cold-install cost on every run, with no error to warn you.
+        correct: true
+      - text: |
+          The file without `cache:` fails at the install step because `setup-node` can't locate the pnpm store.
+        correct: false
+    why: |
+      As of `setup-node@v6`, automatic dependency caching auto-enables for npm only; pnpm and yarn must opt in with `cache:`. Omitting it doesn't error — it quietly regresses to no caching, the kind of silent behavior change a workflow copied from an older (v5, which auto-cached) example introduces the moment it runs on v6.
+
+  - source: 97.2
+    question: |
+      The `pnpm build` job passes on every developer's laptop but fails in CI with a missing-environment-variable error. What's the senior's *first* response, before adding anything to the workflow?
+    choices:
+      - text: |
+          Add `SKIP_ENV_VALIDATION=true` to the build step so the env validator stops failing.
+        correct: false
+      - text: |
+          Check whether a database-backed page is being pre-rendered at build time — and make it render dynamically instead, so the build never needs the variable.
+        correct: true
+      - text: |
+          Add every secret the app uses to the job's `env:` block so the build always has what it might need.
+        correct: false
+    why: |
+      An env-at-build-time error is often a *signal* that something DB-backed is being statically rendered when it shouldn't be. The architectural fix comes first: prefer dynamic rendering for anything that touches the database, and `next build` never needs `DATABASE_URL` at all. Only when a build legitimately needs a value do you expose it via `env:`, scoped to the minimum — and `SKIP_ENV_VALIDATION` is a narrow build-only escape hatch, never the default reach.
+
+  - source: 97.2
+    question: |
+      A test in the merge gate is flaky — it passes and fails on identical code. Which response is the senior reflex?
+    choices:
+      - text: |
+          Wrap the job in an auto-retry so it reruns until green and stops blocking merges.
+        correct: false
+      - text: |
+          Fix the test, because a retry hides a real intermittent bug while the gate keeps smiling.
+        correct: true
+      - text: |
+          Move the test out of the gate and into a weekly scheduled run.
+        correct: false
+    why: |
+      Retry-on-failure doesn't fix a flake; it hides it, and a hidden flake is an intermittent bug waiting to ship. A gate that reruns until it's happy isn't a gate. The only durable answer is to fix the test. (Demoting to signal is the right call for a check that's slow or genuinely can't be made deterministic — not for a flake you can fix.)
+
+  - source: 97.3
+    question: |
+      A moderate CVE lands in a transitive, build-only dependency with no exploitable path to production. Your CI runs `pnpm audit`. Where does this check belong, and why?
+    choices:
+      - text: |
+          Gate — any known CVE is a production risk and should block the merge until resolved.
+        correct: false
+      - text: |
+          Signal — it's worth triaging, but blocking a hotfix on a non-exploitable advisory trains the bypass habit that corrodes the real gates.
+        correct: true
+      - text: |
+          Gate, but only for `high` and `critical`; `--audit-level=high` makes audit a blocking check by definition.
+        correct: false
+    why: |
+      Severity and the right to block a merge are two different axes. The test is "does a failure mean production is broken, or will be on merge?" — here, no. A false-positive gate is far costlier than a false-positive signal: it pushes developers to override, and that bypass instinct leaks onto the gates that were telling the truth. `--audit-level=high` only tunes which findings turn the job red; it doesn't put the job in the required-checks list.
+
+  - source: 97.3
+    question: |
+      Your team wants to raise pnpm's supply-chain floor — refuse to install package versions published in the last 72 hours. Which change actually takes effect on pnpm 11?
+    choices:
+      - text: |
+          Add `minimumReleaseAge=4320` to `.npmrc`.
+        correct: false
+      - text: |
+          Set `minimumReleaseAge: 4320` in `pnpm-workspace.yaml`.
+        correct: true
+      - text: |
+          Nothing is needed — pnpm 11 already enforces a 72-hour delay by default.
+        correct: false
+    why: |
+      In current pnpm, `.npmrc` is auth and registry config only; supply-chain settings moved to `pnpm-workspace.yaml`, and putting them in `.npmrc` fails silently with no warning. pnpm 11 does default `minimumReleaseAge` on — but to `1440` (24 hours), not 72; raising it to `4320` is a deliberate edit in the right file.
+
+  - source: 97.3
+    question: |
+      You configure Dependabot to auto-merge its PRs once the four-job gate passes. The senior boundary is to scope auto-merge to **patch updates only**. What makes that safe even though a patch could hide a behavior change?
+    choices:
+      - text: |
+          Patch releases are guaranteed by semver to contain zero behavior changes, so they can never break anything.
+        correct: false
+      - text: |
+          The four-job gate runs on Dependabot's PRs too, so the test suite is the safety net under the unattended merge.
+        correct: true
+      - text: |
+          Auto-merge waits a 72-hour stability window before merging, catching any bad release.
+        correct: false
+    why: |
+      The safety net is the gate itself: Dependabot's PRs run the same four-job check as human PRs, so your tests catch a sneaky behavior change in a patch. That's why the chapter closes on itself — the gate you built is exactly what makes it safe to let low-risk updates merge themselves. Semver *promises* compatibility for patch/minor but can't guarantee it, and the stability-window option belongs to Renovate, not Dependabot's auto-merge.

@@ -1,0 +1,406 @@
+---
+title: Signal checks and dependency hygiene
+tagline: Beyond the merge gate, the non-blocking GitHub Actions checks and pnpm supply-chain defaults that keep a 2026 SaaS dependency tree current and safe.
+chapter-id: 97
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: Signal checks & dep hygiene
+---
+
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The gate is done. Four jobs — `typecheck`, `lint`, `test`, `build` — run on every pull request, and the branch-protection ruleset matches their names string-for-string, so a red check holds the merge shut. That's the merge gate, and it's deliberately small.
+
+But a CI pipeline can run a dozen more things. You can scan your dependencies for known vulnerabilities, check the links in your README, lint the workflow files themselves, and let a bot open pull requests every time a dependency falls behind. The question this lesson answers is the one a junior never asks and an experienced engineer asks reflexively: of all those checks, which ones get to block a merge, and which ones just inform you?
+
+Getting that line wrong is one of the quietest ways to rot a codebase. By the end of this lesson you'll be able to decide where any new check belongs, wire the four supplementary checks the way a 2026 SaaS repo actually does, and close the dependency-hygiene loop so your dependency tree stays current *and* the act of updating it stays safe — which, in a post-Shai-Hulud world, is no longer a thing you can take for granted. You'll touch three files: two more jobs in `ci.yml`, a scheduled `links.yml`, a `dependabot.yml`, and a few lines in `pnpm-workspace.yaml`.
+
+## Gate or signal: which checks get to block a merge
+
+Start with the idea that organizes everything else in this lesson. A CI pipeline has two tiers, and they do two different jobs.
+
+The **gate** is blocking. Every check in it sits in the required-status-check list, and every one is a predicate for a single question: *does this merge break production?* Type errors break production. A failing test means a behavior you rely on is gone. A build that won't compile can't ship. Four checks, fast, blocking — and that's the whole gate.
+
+**Signal** is everything else. A signal check runs and reports — it might comment on the pull request, or open an issue, or just turn a job red in the Actions tab — but it never blocks the merge. Its job isn't to answer "is this merge safe?" It's to answer a broader, slower question: *is the codebase healthy?*
+
+The previous lesson, "The four-job merge gate," ended on the line this whole lesson hangs off: four checks gate the merge; everything else informs without blocking. Here's the reasoning behind keeping it that way.
+
+A false-positive *gate* is far more expensive than a false-positive *signal*, and the asymmetry is the whole point. When a signal cries wolf, you ignore that one report and move on. When a gate cries wolf — when it goes red on something that isn't actually broken — it stands between a developer and a merge they know is fine. So they reach for the override. They click "merge anyway," or they ask an admin for a branch-protection exception, or they just learn that red checks are sometimes safe to push past. And that habit doesn't stay contained. Once the team has learned to bypass a red check, that instinct leaks onto the *real* gates — the ones that were telling the truth.
+
+Think of it as a one-way ratchet. Promoting a signal into the gate later, once it's proven itself a reliable production predicate, is cheap — you add its name to a list. Walking back a bypass culture is expensive, because you're not editing a config file, you're retraining a team's reflexes. So the default leans hard toward signal. A check earns its place in the gate; it isn't granted it.
+
+That gives you a test you can apply to any candidate check:
+
+> Does a failure here mean production is broken, or will be on merge? **Yes** → gate. **No** → signal.
+
+Walk it on two real cases. A `tsc` error: the type contract the entire codebase is written against is violated, and the broken code is about to merge. Gate, unambiguously. Now a moderate <Term definition="Common Vulnerabilities and Exposures — a public catalog of known security flaws, each with an ID; the unit the advisory database speaks in.">CVE</Term> in a transitive build-time dependency with no exploitable path: it's real, it's worth triaging, and it is exactly the wrong thing to block a Friday-afternoon hotfix on. Signal. The severity of a vulnerability and its right to block a merge are two different axes, and conflating them is the mistake.
+
+This lesson wires four signal checks, and we'll look at each one the same way — what it catches, when it earns its weight, and how it's wired:
+
+- `pnpm audit` — known vulnerabilities in your dependency tree.
+- A docs link-checker — rot in your README and docs.
+- `actionlint` — typos in the workflow files themselves.
+- Dependabot — keeping the dependency tree alive.
+
+Before any of that, an experienced engineer runs the decision in their head. The walker below makes that decision explicit. Work through it for a check you're considering — it asks the questions in the order that matters, production impact first, feasibility second.
+
+<StateMachineWalker kind="decision" title="Gate or signal?">
+  <Question id="prod-impact" prompt="Does a failure here mean the merged code is broken in production?"
+    description="Run this question first — feasibility comes second.">
+    <Branch label="Yes — provably" to="feasibility" />
+    <Branch label="No, only sometimes, or it needs triage first" to="leaf-signal" />
+  </Question>
+
+  <Question id="feasibility" prompt="Can the check be fast and deterministic enough to run on every pull request?">
+    <Branch label="Yes — fast and stable" to="leaf-gate" />
+    <Branch label="No — slow or flaky" to="leaf-signal-for-now" rationale="It would qualify, but it isn't ready to block today." />
+  </Question>
+
+  <Leaf id="leaf-gate" verdict="Required status check">
+    It joins typecheck / lint / test / build in the branch-protection list. Promote a check here only once it's both a proven production predicate *and* fast and deterministic. This list stays small on purpose.
+  </Leaf>
+
+  <Leaf id="leaf-signal" verdict="Runs, but never blocks">
+    It belongs to the signal tier — `pnpm audit`, the link-check, `actionlint`, Dependabot's pull requests. Let it run and report: turn a job red, comment on the PR, or open an issue. It informs; it doesn't hold the merge.
+  </Leaf>
+
+  <Leaf id="leaf-signal-for-now" verdict="Signal until it earns the gate">
+    The honest home for a check that's a real production predicate but too slow or too flaky to block today — an end-to-end suite, a long performance run. Keep it as signal, fix the flake instead of papering over it with retries, speed it up, and *then* promote it.
+  </Leaf>
+</StateMachineWalker>
+
+The order is the lesson. Production impact is the first gate because it's the expensive thing to get wrong; feasibility is the second because a check that's right in principle but slow or flaky in practice will train the bypass habit just as surely as a check that's wrong. Anything you reach for the override on is a signal, whether you've admitted it yet or not.
+
+One term to pin down, since the whole gate-vs-signal line rests on it. A <Term definition="A pass/fail result a system reports against a specific commit; the branch-protection ruleset's required list matches these by name.">status check</Term> is the unit GitHub thinks in. Each job in your workflow reports one against the commit it ran on; the ruleset's required list is just a set of those names. "In the gate" and "in the required-status-check list" are the same sentence.
+
+## `pnpm audit`: known vulnerabilities as signal
+
+The first signal check is `pnpm audit`. It takes your installed dependency tree, checks it against the registry's advisory database, and reports any known vulnerabilities by severity — low, moderate, high, critical — along with the dependency paths that pull each one in.
+
+In CI it's a job in `ci.yml`, sitting right next to your four gate jobs — and *deliberately absent from the required-status-check list*. This is the first concrete face of the gate-vs-signal split: same file, same runner, same setup steps, but the ruleset doesn't name it, so it can go red without holding a merge. The command is `pnpm audit --audit-level=high`, which exits non-zero only on high and critical findings, so the moderate-and-below noise doesn't dominate the report.
+
+The command is the easy part. The judgment lives in three tuning decisions.
+
+**The severity threshold.** `--audit-level=high` is the starting floor, and the reflex behind it is to tune the floor so the signal stays *read*. An audit that goes red on every low-severity advisory buried three levels deep in your transitive dependencies becomes an audit nobody looks at — and "the team ignores the report" is the exact failure mode that defeats the entire reason for having one. A signal that's always red carries no information.
+
+**Production scope versus everything.** `pnpm audit --prod` scopes the report to production dependencies, dropping dev-only tooling — test frameworks, build tools, linters — from the count. The trade is worth naming out loud: a critical CVE in a dev dependency is real, but it rarely has a path to your running production app, because that code never ships to users. `--prod` is the right lens when the question you're actually asking is "what's exposed to the people using the product?"
+
+**Advisories you've triaged but can't fix.** Sometimes an advisory fires on a package where you've already looked and concluded it's not a real risk — there's no exploitable path, or the upstream maintainer is slow to ship the patch. Leave it flagged and it slowly drowns the rest of the report. The escalation here is a tool like IBM's `audit-ci`, which lets you allowlist a specific advisory by ID with an expiry date, so the noise goes quiet without going permanently blind. Reach for it only when plain `pnpm audit` has built up a long tail of unfixed-but-harmless findings; until then, plain `pnpm audit` is the default.
+
+Here's the job. The setup steps will look familiar — they're the identical spine every job in this workflow uses, the one the four-job gate already established.
+
+<div data-mark-color="blue">
+
+```yaml title=".github/workflows/ci.yml" {10}
+  audit: # signal job — intentionally absent from the required-checks ruleset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level=high
+```
+
+</div>
+
+The setup steps are the same checkout-then-pnpm-then-node-then-install sequence the gate jobs run, for the same reasons — the pnpm action goes before `setup-node` so the cache integration can find pnpm, and `--frozen-lockfile` keeps CI honest against the committed lockfile. The earlier "GitHub Actions primitives" lesson covered why; there's no new mechanism here. The only genuinely new lines are the audit command and the comment that pulls the job out of the gate.
+
+One thing worth naming while we're here: the advisories `pnpm audit` reports almost always land on a <Term definition="A package you didn't install directly — a dependency of one of your dependencies; the bulk of a real tree.">transitive dependency</Term>, not on something in your own `package.json`. You install a dozen packages directly; they pull in hundreds more, and those are where most of the surface — and most of the risk — actually lives.
+
+## Keeping the supply chain honest: release age, provenance, and pinning
+
+`pnpm audit` has a blind spot, and it's a fundamental one. It catches *known* vulnerabilities — flaws that have already been discovered, written up, and added to the advisory database. It can tell you nothing about the window *before* a compromise is known. And in 2026, that window is exactly where the attacks live.
+
+In September 2025, a self-propagating worm the security community named Shai-Hulud tore through npm. It stole maintainer credentials, used them to publish poisoned versions of the packages those maintainers owned, and — the part that made it a worm — used each compromised package to harvest the next set of credentials and keep spreading. It hit more than 500 packages, including widely-used ones like `@ctrl/tinycolor`. Then in May 2026 the Mini Shai-Hulud waves followed, ripping through the AntV charting ecosystem and packages like `echarts-for-react`, and this time the payload dumped stolen CI/CD secrets straight into thousands of public repositories.
+
+<VideoCallout videoId="gwTQLZSIlsU" videoTitle="A single PR just hijacked the NPM registry (Fireship)">
+  Fireship breaks down the May 2026 TanStack wave in 6 minutes — how a `pull_request_target` workflow leaked a publish token *through* signed provenance, and why pnpm 11's defaults would have stopped it.
+</VideoCallout>
+
+Sit with the mental shift that demands. The threat you're defending against here isn't "a dependency with a known bug" — that's `pnpm audit`'s job, and it does it well. The threat is *a legitimate, popular package whose latest version was published forty minutes ago by an account that was compromised an hour ago.* The package is real. The maintainer is real. The version is poisoned. Your audit knows nothing, because nobody has discovered it yet. This is a <Term definition="Compromising software by poisoning something upstream of you — a dependency, a build tool, a published package — instead of attacking you directly.">supply-chain attack</Term>, and the entire defense is about surviving the unknown-bad window. No single control closes it. You stack them.
+
+**Layer 1 — release age.** This is the cheapest, highest-leverage defense you have, and it's almost embarrassingly simple. `minimumReleaseAge` tells pnpm to refuse to resolve any package version until it's at least N minutes old. Most malicious versions are spotted and pulled within hours of publication, so a delay filters the smash-and-grab waves automatically — you never install the bad version, because by the time you'd reach for it, it's already been <Term definition="Un-published or deprecated from the registry so it stops resolving.">yanked</Term>. You simply waited out its short, ugly lifespan.
+
+Now the part the documentation might trip you on. This setting lives in **`pnpm-workspace.yaml`**, not in `.npmrc`. In current pnpm, `.npmrc` is for authentication and registry configuration only; the supply-chain settings moved out of it. And pnpm 11 ships `minimumReleaseAge` **on by default, set to `1440`** — a 24-hour delay you already have without writing a line. So the experienced-engineer move here is not "add this from scratch." It's *verify it's on, and consider raising it* — `4320`, a 72-hour delay, for a team that can tolerate the lag. Name the trade so you set the dial deliberately: push it too far, two weeks say, and you can no longer take a genuinely urgent same-day security patch. Release age is a value you tune, not a maximum you max out.
+
+**Layer 2 — provenance and signatures, with the caveat that makes it a layer and not the answer.** `pnpm audit signatures` verifies your installed packages against the registry's signatures. <Term definition="Cryptographic attestation of where and how a package was built — the source repository and the CI pipeline behind a published artifact.">Provenance</Term> goes further: it attests *where and how* a package was built, following the <Term definition={"Supply-chain Levels for Software Artifacts — the framework npm provenance attestations follow; pronounced \"salsa\"."}>SLSA</Term> framework. Stronger signal. But here is the detail that dates this lesson precisely to after May 2026: that wave produced the first malicious npm packages carrying *valid* SLSA provenance. Read that again. Provenance proves "this artifact was built by this pipeline from this source." When the pipeline itself is the thing that got compromised, that proof is *true* and *useless at the same time*. So provenance and signatures raise the bar — they don't close the door. Treat them as one input, not a verdict. The healthy posture is scepticism, which is precisely why you also delay (Layer 1) and pin (Layer 3).
+
+**Layer 3 — block exotic sub-dependencies, and pin your actions.** `blockExoticSubdeps: true` — also on by default in pnpm 11, also in `pnpm-workspace.yaml` — refuses any sub-dependency that resolves from outside your configured registries, closing a quiet injection path where a transitive dependency points somewhere it shouldn't. And there's a parallel instinct you already met one layer up the stack: in the primitives lesson you pinned GitHub Actions by commit SHA when they touch secrets, after the `tj-actions/changed-files` compromise. That's the same move applied to the CI layer instead of the npm layer — don't trust a moving tag for code that runs with your credentials. The open question that left hanging was *how do you keep those pins current instead of frozen and rotting?* The answer is the next section's Dependabot, watching your `uses:` references and bumping them for you.
+
+Before the synthesis, make the file-location correction unmissable, because it's the single most likely place to go wrong — and the failure is silent. The two tabs below show the same two settings in the wrong file and the right one.
+
+<CodeVariants>
+  <CodeVariant label="Wrong file (.npmrc)">
+    ```ini title=".npmrc" del={1-2}
+    minimumReleaseAge=4320
+    blockExoticSubdeps=true
+    ```
+    **Silently ineffective.** In current pnpm, `.npmrc` is auth and registry config only; pnpm never reads supply-chain settings from it, so the protection you think you switched on never engages — and nothing warns you it didn't.
+  </CodeVariant>
+
+  <CodeVariant label="Right file (pnpm-workspace.yaml)">
+    ```yaml title="pnpm-workspace.yaml" ins={1-2}
+    minimumReleaseAge: 4320 # 72h — raised above the 1440 (24h) default
+    blockExoticSubdeps: true
+    ```
+    **Where pnpm actually reads them.** pnpm 11 already defaults these on (`1440` and `true`); this file documents the floor and raises the delay to 72 hours for a team that can tolerate the lag.
+  </CodeVariant>
+</CodeVariants>
+
+Step back and the shape of the whole section is the lesson: no single control is sufficient. Provenance can be forged. A pin can rot. `pnpm audit` only ever sees the already-known. The defense isn't any one of those — it's the stack. Delay the unknown with release age, distrust any single signal including provenance, constrain how dependencies are allowed to resolve, and pin the CI surface and keep those pins fresh. Layering is the win.
+
+:::note
+These supply-chain defaults are part of the broader pre-launch security baseline the project hardened back in the Errors and Security unit. This lesson is the CI-and-dependency-update slice of it.
+:::
+
+## `actionlint`: linting the workflows that run everything
+
+There's a category of bug that's easy to forget exists: a bug in the workflow files themselves. Your `ci.yml` is code. It can be wrong. And unlike your application code, its mistakes don't surface when you commit them — they surface at *run time*, when the workflow fires.
+
+Picture the ways it goes wrong. You typo a `uses:` reference. You reference a `${{ }}` expression that doesn't exist. You write an event trigger GitHub doesn't recognize. You leave a quoting bug in a `run:` shell block. Every one of those sails clean past commit and only detonates when GitHub tries to run the workflow. And here's the part that makes it genuinely dangerous: this is a bug in the thing that runs your gate. Bump `pnpm/action-setup@v4` to a `@v5` that doesn't exist and it doesn't fail a job — it fails the *setup*, before any job can run, so the entire gate silently can't execute. It's the gate's gate, and nothing was checking it.
+
+`actionlint` checks it. It's a static checker built specifically for GitHub Actions — not a generic YAML linter that only knows indentation, but a tool that understands the Actions schema deeply. It type-checks your `${{ }}` expressions, validates action inputs and runner labels against what actually exists, and runs <Term definition="A static analyzer for shell scripts; actionlint runs it over your run: blocks to catch quoting and command bugs.">shellcheck</Term> over your `run:` blocks. The whole class of run-time-only workflow bugs collapses into a lint that finishes in seconds.
+
+You wire it as another job in `ci.yml`. Conceptually it only needs to run when a pull request actually touches a workflow file — linting workflows on a PR that didn't change any is wasted minutes — and you'd express that with a `paths:` filter scoped to `.github/workflows/**`. The same checker also runs on the developer's machine, often as a pre-commit hook, so the typo never even reaches CI; the hooks themselves are a topic from earlier in the course, so we'll leave them as a one-line mention. For the action reference, use the maintained wrapper around `rhysd/actionlint` so Dependabot's `github-actions` stream keeps it current instead of you doing a manual download-and-bump dance. Consistent with the pinning posture from the primitives lesson: a lint utility holding no secrets is fine pinned by tag rather than SHA.
+
+<div data-mark-color="blue">
+
+```yaml title=".github/workflows/ci.yml" {5}
+  actionlint: # signal job — not in the required-checks ruleset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: reviewdog/action-actionlint@v1
+```
+
+</div>
+
+Notice this job is shorter than the audit job: `actionlint` doesn't need pnpm or Node, so there's no setup spine at all — just check out the repo and run the linter. The novelty is the single `uses:` step and the realization that the workflows deserve a linter as much as your application code does.
+
+## Catching docs rot on a schedule
+
+The links in your `README.md`, your `AGENTS.md`, and your `docs/**` go stale. Domains move, repositories get renamed, pages 404. Any one dead link is trivially low-stakes. In aggregate they're corrosive — a README where every third link is broken reads as an abandoned project, and that impression does real damage to a thing that's very much alive.
+
+So you want a link-checker. But here's the teachable judgment: a link-checker is the wrong thing to run on every pull request. A docs PR would re-check the entire tree and flag links it never touched. A hotfix shouldn't have to wait for your README's external links to resolve before it can merge. Per-PR is simply the wrong *cadence* for this kind of check.
+
+The right shape is a **scheduled sweep**. Once a week — Monday morning, say — a workflow checks every Markdown file in the repo and, when something's broken, opens a GitHub issue. It runs on its own clock, batches all the breakage into one place, and never sits in anyone's pull request. This is the second face of gate-vs-signal, and a sharper one than the audit job: this check doesn't merely *not block* the merge — it doesn't even *run on the PR*. It runs on a schedule, asynchronously, and reports through an issue.
+
+That introduces the `on: schedule` trigger, which carries one sharp gotcha that catches everyone exactly once. A scheduled workflow always runs **as it exists on the default branch**. So if you change a scheduled workflow on a feature branch and sit there waiting for the <Term definition="The * * * * * time-schedule syntax Unix inherited; GitHub uses it for on: schedule.">cron</Term> to prove your change works, you'll wait forever — the cron is running the `main` version, not yours. The fix is a reflex worth building now: add a `workflow_dispatch` trigger to the same workflow. That gives you a manual "Run workflow" button so you can trigger a one-off run on demand and actually test the thing. When someone says "my scheduled workflow change isn't running," this is nearly always why.
+
+Because this check answers to a different trigger than the PR gate, it earns its own file — `links.yml` — rather than folding into `ci.yml`. That's a rule worth stating plainly, and we'll come back to it at the end: **split workflows when their triggers differ; fold them when one trigger covers all.** The link-checker runs a Markdown link-checking tool over `**/*.md` and, on failure, opens an issue through a maintained create-issue action. It earns its weight once the docs surface is more than a handful of files; for a single-README repo, skip it.
+
+<div data-mark-color="blue">
+
+```yaml title=".github/workflows/links.yml" {2-5}
+name: links
+on:
+  schedule:
+    - cron: '0 9 * * 1' # Mondays, 09:00 UTC
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  issues: write
+jobs:
+  link-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: lycheeverse/lychee-action@v2
+      - if: failure()
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: Broken links found in docs
+          content-filepath: ./lychee/out.md
+```
+
+</div>
+
+The cron plus `workflow_dispatch` pairing is the one genuinely new YAML idea in this section. The cron schedules the routine sweep; the dispatch trigger is your escape hatch for testing it without merging to `main` first. Note too the `permissions:` block grants `issues: write` — opening an issue is a write the default read-only floor doesn't allow, so this workflow raises the floor for exactly that one scope — the least-privilege `permissions:` pattern from the primitives lesson.
+
+## Closing the dependency loop with Dependabot
+
+Now the synthesis. The last signal check isn't really a check at all — it's the engine that keeps your dependency tree alive, and it's where every thread in this lesson ties together.
+
+Frame the problem as a loop, not a chore. Dependencies drift out of date the instant you stop watching them. Security patches get published that you never take. A major version you keep deferring gets one notch harder to adopt every month you wait. And the naive fix — a heroic quarterly `pnpm update` where someone bumps everything at once and prays — is exactly the kind of big, scary, all-at-once change this course keeps teaching you to avoid. The fix isn't an event. It's a loop that keeps turning: updates arrive on a cadence, grouped sensibly, each one running the full gate, the low-risk ones merging themselves, the risky ones landing in front of a human. Dependabot is GitHub's native engine for that loop.
+
+There are three update streams worth turning on, each for its own reason.
+
+`npm` is the obvious one — your JavaScript dependency tree, the packages in `package.json`.
+
+`github-actions` is the answer to the question the primitives lesson left open. You pinned your actions by SHA for safety; how do you keep those pins current instead of frozen and rotting? This stream. Dependabot watches the `uses:` references in your workflow files and opens pull requests to bump them as new versions ship. The pin gives you safety; this stream gives you freshness; together they're the complete posture. That debt is now paid.
+
+`docker` is the third — but only if your repository actually has a Dockerfile. Name it and move on.
+
+Now the decision that makes Dependabot the difference between useful and unbearable: **grouping.** The old default opened one pull request per dependency. On a real SaaS tree that's fifty PRs a week, and a team drowning in fifty dependency PRs a week does the only rational thing — it stops looking at them. Which is the *exact same failure mode* as a noisy audit: an ignored signal is worse than no signal, because it costs attention and returns nothing. The modern config fixes it with a `groups:` block per ecosystem that collapses all the **minor and patch** updates into **a single pull request per ecosystem on a weekly cadence**, while **major** version bumps stay as their own separate PRs.
+
+That split isn't arbitrary — it tracks <Term definition="Semantic Versioning — the major.minor.patch contract where patch means fixes, minor means backward-compatible features, and major means breaking changes.">semver</Term>'s risk gradient exactly. Under semver, patch and minor releases promise backward compatibility, so batching a dozen of them into one PR that runs the full gate is low-risk by construction. A major release *announces* breaking changes — a changed API, a dropped feature — so it deserves its own PR and its own human read. Group the safe ones; isolate the dangerous ones.
+
+The config is the one block in this lesson worth walking line by line.
+
+<AnnotatedCode lang="yaml" maxLines={18} code={`
+version: 2
+updates:
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    groups:
+      npm-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - '*'
+        update-types:
+          - 'minor'
+          - 'patch'
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - '*'
+        update-types:
+          - 'minor'
+          - 'patch'
+`}>
+  <AnnotatedStep meta="{1-2}" color="blue">
+    `version: 2` is the current schema, and `updates:` is a list: Dependabot reads one entry per ecosystem you want it to watch.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-6}" color="blue">
+    The `npm` ecosystem entry — your JavaScript dependency tree. `directory: '/'` points at the repo root where `package.json` lives, and the schedule sets a weekly cadence.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7-14}" color="green">
+    The focal move: the `groups:` block. `update-types: ['minor', 'patch']` with `patterns: ['*']` collapses every backward-compatible bump into one weekly PR — low-risk by construction, since semver promises compatibility. Majors fall *out* of the group and get their own PRs, because a breaking change deserves an individual human read.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{15-26}" color="orange">
+    The `github-actions` entry repeats the same shape — and this is the stream that pays off the debt from the primitives lesson: it watches your `uses:` references and keeps the SHA-pinned actions current instead of letting them freeze and rot.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The `groups:` block is the whole game. Without it you have the fifty-PRs-a-week firehose; with it you have one reviewable pull request per ecosystem per week for the safe changes, and individually-reviewable PRs for the breaking ones. And it's the same `groups:` shape on the `github-actions` entry — the same weekly, grouped cadence keeping your action pins current.
+
+Which leaves one more move to close the loop: **auto-merge, scoped to the lowest risk.** <Term definition="Merging a pull request automatically once its required checks pass, instead of a human clicking the button.">Auto-merge</Term> — whose mechanics, the `gh` command and the branch-protection merge queue, you set up back in the Git chapter, so we won't re-explain them — pairs naturally with Dependabot. A patch-update PR opens, runs the full four-job gate, and merges itself the moment everything's green. No human in the loop, no PR pile-up.
+
+The boundary is the senior part: **auto-merge patch updates only; require a human for minor and major.** The watch-out and its answer come as one move. The watch-out: a patch release *says* it's just a bug fix, but a sneaky behavior change can hide in one. The answer: *the gate runs on Dependabot's pull requests too.* Your test suite is the safety net under the automation. And this is the exact moment the whole chapter closes on itself — the four-job gate you built earlier is *precisely what makes it safe to let dependency updates merge themselves unattended.* The thing that protects your human PRs is the same thing that lets the bot's PRs go through without a human. Hygiene (keep the tree current) and the gate (keep every merge safe) turn out to be two halves of one loop.
+
+One alternative to name before moving on. Renovate is the more configurable engine — multi-platform, with regex managers that can pin versions in arbitrary files (not just package manifests), shared config presets across an organization, and finer auto-merge rules including stability windows. Reach for it when Dependabot's ceiling is a real constraint: auto-merging only after a maturity window, updating version strings in files Dependabot doesn't understand, or sharing one config across many repositories. The course default is Dependabot, because for a single SaaS repo it's simpler and it's built in. Renovate is the upgrade when you outgrow that.
+
+## Putting the supplementary surface together
+
+You've now wired four signal checks across a few files. Step back and the layout follows a single rule.
+
+There are three steady-state files. The signal jobs that share the pull-request trigger — `audit` and `actionlint` — fold into `ci.yml` as non-required jobs, right alongside the gate. The link-check rides its own `links.yml`, because its trigger is a schedule, not a PR. And `dependabot.yml` is configuration, not a workflow at all — it tells Dependabot how to behave; it doesn't define jobs. The rule that decides which file a check lives in:
+
+> Split workflows when their triggers differ; fold them when one trigger covers all.
+
+`pnpm-workspace.yaml` sits outside that rule entirely — it's not CI, it's dependency-*resolution* policy, the release-age and exotic-subdep floors from earlier. A fourth concern, in its own file, for the same reason: different job, different home.
+
+If you keep one mental model from this lesson, keep this one. A CI pipeline has two tiers. The **gate** is small, fast, and blocking, because every member is a true production predicate and the cost of a false positive is a bypass habit you can't easily undo. **Signal** is broad, advisory, and on its own cadence, because its job is health, not safety. And dependency hygiene is the loop that keeps your tree current — Dependabot, grouped — *and* safe — release-age delay, scepticism toward any single provenance signal, pinned-and-refreshed actions — where the gate you already built is exactly what makes that loop safe to run unattended.
+
+The discipline that protects all of it is a single refusal: never quietly drag a noisy signal into the required list. That's the move that trains the bypass habit, and the bypass habit is what corrodes the gates that were telling the truth. Promote a signal to the gate only once it's earned it — a proven production predicate, fast and deterministic. Earned, not granted.
+
+Sort each of these checks into the tier it belongs in. The four gate checks and the four signals from this lesson are all here — this is the call you'll make for real on every check a SaaS repo adds.
+
+<Buckets twoCol instructions="Sort each check into the tier it belongs in on a 2026 SaaS repo.">
+  <Bucket name="gate" label="Gate (blocks merge)" description="A true production predicate, fast and deterministic" />
+  <Bucket name="signal" label="Signal (runs, never blocks)" description="Informs the team; never holds a merge" />
+
+  <Item bucket="gate">`pnpm typecheck`</Item>
+  <Item bucket="gate">`pnpm lint`</Item>
+  <Item bucket="gate">`pnpm test`</Item>
+  <Item bucket="gate">`pnpm build`</Item>
+  <Item bucket="signal">`pnpm audit --audit-level=high`</Item>
+  <Item bucket="signal">`actionlint`</Item>
+  <Item bucket="signal">The weekly link-check</Item>
+  <Item bucket="signal">A Dependabot version-update PR</Item>
+</Buckets>
+
+The `dependabot.yml` config carries a couple of load-bearing values it's worth being able to reproduce from memory. Fill in the blanks below.
+
+<Dropdowns
+  instructions="Reconstruct the load-bearing values in this Dependabot config."
+  answers={[
+    { answer: "'npm'", options: ["'npm'", "'pnpm'", "'node'"] },
+    { answer: "'weekly'", options: ["'weekly'", "'daily'", "'monthly'"] },
+    { answer: "['minor', 'patch']", options: ["['minor', 'patch']", "['major']", "['*']"] },
+  ]}
+>
+```yaml
+# .github/dependabot.yml
+version: 2
+updates:
+  - package-ecosystem: ___
+    directory: '/'
+    schedule:
+      interval: ___
+    groups:
+      npm-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - '*'
+        update-types: ___
+```
+</Dropdowns>
+
+## External resources
+
+The supply-chain and Dependabot configuration here moves fast — versions, defaults, and key names shift between releases. These are the canonical references to check against when you wire this into a real repo.
+
+<CardGrid>
+  <ExternalResource
+    title="Mitigating supply chain attacks"
+    href="https://pnpm.io/supply-chain-security"
+    icon="simple-icons:pnpm"
+    iconColor="#F69220"
+    description="pnpm's own guide to minimumReleaseAge, blockExoticSubdeps, and the pnpm-workspace.yaml defaults."
+  />
+  <ExternalResource
+    title="Optimizing Dependabot version-update PRs"
+    href="https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/optimizing-pr-creation-version-updates"
+    icon="simple-icons:dependabot"
+    iconColor="#025E8C"
+    description="Worked examples of the groups + update-types config that collapses the PR flood."
+  />
+  <ExternalResource
+    title="Dependabot options reference"
+    href="https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference"
+    icon="simple-icons:github"
+    iconColor="#181717"
+    description="The canonical dependabot.yml key reference — package-ecosystem, schedule, groups."
+  />
+  <ExternalResource
+    title="rhysd/actionlint"
+    href="https://github.com/rhysd/actionlint"
+    icon="simple-icons:githubactions"
+    iconColor="#2088FF"
+    description="The static checker behind the workflow-lint job, with its GitHub Actions usage."
+  />
+</CardGrid>

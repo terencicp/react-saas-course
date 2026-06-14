@@ -1,0 +1,376 @@
+---
+title: The four-job merge gate
+tagline: Build the complete GitHub Actions CI workflow, four parallel jobs that type-check, lint, test, and build every pull request before it can merge.
+chapter-id: 97
+course-progress: 0.00005
+sidebar:
+  order: 2
+  label: Four-job merge gate
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import DropdownChoice from '../../../components/exercises/dropdowns/DropdownChoice.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import FourBlindSpots from '../../../components/lessons/097/2/FourBlindSpots.astro';
+import NameAsAWire from '../../../components/lessons/097/2/NameAsAWire.astro';
+import SpeedBudgetBars from '../../../components/lessons/097/2/SpeedBudgetBars.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+In the previous lesson you built the spine of `ci.yml`: the frozen header — name, the trigger pair, read-only permissions, the concurrency cancel — and exactly one job underneath it that runs `pnpm typecheck`. You learned the anatomy of a single job so that this lesson would feel like assembly rather than magic. Time to cash that in.
+
+Here's the problem you're left with. The ruleset you wrote in the previous chapter refuses to merge a pull request until four checks pass — `typecheck`, `lint`, `test`, and `build`. But only one of those four exists. The other three are still phantoms: the ruleset asks GitHub for a check called `lint`, GitHub finds nothing reporting under that name, and the protection that was supposed to cover linting, tests, and the build quietly covers nothing. Your gate is three-quarters hollow.
+
+This lesson makes all four real. By the end you'll have written the complete `ci.yml` and — more importantly — you'll be able to defend *why exactly these four* to a teammate who thinks two would do. That's the difference that matters: between a `main` branch you can deploy on faith, and one where a green pull request can still take down production.
+
+## Why these four checks, and no others
+
+Before you write a line of YAML, you need to believe in the set. Four checks is not a round number someone picked; it's the smallest set where each one catches a class of mistake that **none of the others can**. Drop any single check and you open a blind spot the gate was built to cover. Let me show you the four blind spots, cheapest to most expensive.
+
+**Type-check** (`pnpm typecheck`, which runs `tsc --noEmit`) catches everything the type system can *prove* wrong: a field you renamed but still read somewhere, a function called with the wrong shape of argument, a value that might be `null` going somewhere that can't handle `null`. This is the floor the rest of the codebase stands on. Here's the specific thing it catches that `pnpm dev` does not: the dev server's type-checking is lazy — it only checks the files you actually open and edit. A type error in a module nobody touched this week, or a broken import buried two layers down, sails straight through dev without a peep. `tsc --noEmit` checks the *whole* project in one pass, so it finds the error in the file you forgot existed.
+
+**Lint** (`pnpm lint`, which runs <Term definition="The fast Rust-based formatter and linter the project uses, replacing the older ESLint + Prettier pair.">Biome</Term>) catches a band of problems the type system simply doesn't model: an import you stopped using, a `console.log` you left in, `==` where you meant `===`, and — the dangerous one — a promise you forgot to `await`, so an error inside it vanishes with no trace. Biome is formatter and linter folded into one tool, replacing the old ESLint-plus-Prettier pairing and running roughly ten times faster. You configured it units ago; here it's a black box. The job's only purpose in the gate is to catch the correctness band that types can't see.
+
+**Test** (`pnpm test`, which runs <Term definition="The project's test runner. How it's configured and how tests are written were covered in the testing unit; in CI it's just the command that proves behavior didn't break.">Vitest</Term>) catches behavioral regressions — code that type-checks clean, lints clean, and still does the wrong thing. A refund that's calculated wrong. A filter that drops the last row. Types and lint can't see meaning; only a test that asserts "this input produces that output" can. This is the safety net that makes refactoring safe, because it tells you the moment behavior shifts under your edit.
+
+**Build** (`pnpm build`, which runs `next build`) catches the integration problems the first three miss — the failures that only surface when the bundler resolves the entire module graph at once. A bad import that type-checks in isolation but can't actually be resolved. An environment variable the build needs that isn't set. A server-only module pulled into a Client Component, crossing a boundary that's only enforced at build time. And the build does double duty: it produces the artifact the deploy job will ship in the next chapter, so building in CI also proves the thing you're about to deploy can be built at all.
+
+<FourBlindSpots />
+
+Now the line that defines the edge of the gate. Everything *else* a CI pipeline can run — a `pnpm audit` for vulnerable dependencies, a link-checker on your docs, a linter for the workflow files themselves, Dependabot opening upgrade pull requests — is *supplementary*. All of it is useful. None of it catches a class of regression that should block a merge, so it's **signal, not gate**. That distinction is the whole reason the gate stops at four, and it's what the next lesson is built around. For now, hold the line: four checks gate the merge; everything else informs you without blocking you.
+
+Before moving on, prove to yourself that you can tell the four apart. The following exercise gives you a defect and asks which job is the one that catches it. Each defect slips past three of the four and is caught by exactly one.
+
+<Buckets twoCol instructions="Each defect slips past every check but one. Which job catches it?">
+  <Bucket name="typecheck" label="typecheck" description="tsc --noEmit" />
+  <Bucket name="lint" label="lint" description="biome" />
+  <Bucket name="test" label="test" description="vitest run" />
+  <Bucket name="build" label="build" description="next build" />
+
+  <Item bucket="typecheck">A function is called with an argument of the wrong shape.</Item>
+  <Item bucket="typecheck">A property was renamed in one file but still read in another.</Item>
+  <Item bucket="lint">A promise is never awaited, so an error vanishes silently.</Item>
+  <Item bucket="lint">An imported helper is never used anywhere.</Item>
+  <Item bucket="test">A discount is applied twice, so the total is wrong — yet every type is correct.</Item>
+  <Item bucket="build">A server-only module is imported into a Client Component.</Item>
+  <Item bucket="build">A page reads an environment variable that exists locally but isn't set in the build.</Item>
+</Buckets>
+
+## Four parallel jobs versus one fat job
+
+You're convinced of the four checks. The next decision is structural: how do you arrange four jobs in one file? There are two shapes, and the default is not the obvious one.
+
+The default is **four separate jobs in the `jobs:` map, with no `needs:` between them — so they all run in parallel.** Each job is the exact shape you learned in the previous lesson: check out the repo, set up pnpm, set up Node with the cache, `pnpm install --frozen-lockfile`, then the single command that *is* the job. Yes, every job installs dependencies again on its own clean runner. With the pnpm store cached that install costs about thirty seconds, and here's the payoff that makes it worth paying four times: because the jobs run at once, the total <Term definition="Real elapsed time from start to finish, as opposed to total compute time summed across parallel jobs.">wall-clock time</Term> is bounded by the *slowest* job — usually `build` — not by the *sum* of all four. For a typical 2026 SaaS app on a warm cache, that's roughly three to five minutes for the whole gate.
+
+The alternative is **one fat job that runs all four commands in sequence.** It installs once, so it genuinely saves the duplicated install cost — three installs you don't pay for. That sounds like a clear win, and if CI minutes were the only thing that mattered, it would be. But it costs you two things. First, the wall-clock is now the *sum* of all four commands instead of the max, because they run one after another. Second, and this is the decisive one, it costs you **failure granularity**.
+
+Think about what each shape tells you when something is wrong. With four parallel jobs, a failing `typecheck` shows up *next to* the lint, test, and build results — you see every failure in the run, all at once, in one glance at the pull request. You fix everything and push once. With the fat job, the first failing command aborts the run: `typecheck` fails, and `test` and `build` never even start. So you fix the type error, push, wait three minutes, and *only then* discover the lint error that was there the whole time. Fix that, push, wait again, discover the failing test. You've turned one round of feedback into three.
+
+That's the senior reflex worth internalizing: **optimize for how fast the developer learns everything that's wrong, not for raw CI minutes.** Minutes are cheap; a developer's attention and momentum are not. So parallel is the default. You'd only reach for the fat job when CI minutes are genuinely constrained — a cheap plan with very few concurrent jobs — or when install cost dominates and caching can't help. Outside those cases, parallel wins, and it wins on feedback quality.
+
+The following two variants show the same four checks arranged both ways.
+
+<CodeVariants>
+  <CodeVariant label="Four parallel jobs">
+    <div data-mark-color="green">
+
+    ```yaml title=".github/workflows/ci.yml" "pnpm typecheck" "pnpm lint" "pnpm test" "pnpm build"
+    jobs:
+      typecheck:
+        runs-on: ubuntu-latest
+        steps:
+          # ...same setup steps...
+          - run: pnpm typecheck
+      lint:
+        runs-on: ubuntu-latest
+        steps:
+          # ...same setup steps...
+          - run: pnpm lint
+      test:
+        runs-on: ubuntu-latest
+        steps:
+          # ...same setup steps...
+          - run: pnpm test
+      build:
+        runs-on: ubuntu-latest
+        steps:
+          # ...same setup steps...
+          - run: pnpm build
+    ```
+
+    </div>
+    **Independent jobs, parallel by default — you see all four results at once.** Each job runs on its own clean runner, so the wall-clock is bounded by the slowest job, not the sum, and a red `typecheck` never hides a red `lint`. (The repeated setup steps are trimmed here to keep the focus on structure — the full file follows in the next section.)
+  </CodeVariant>
+
+  <CodeVariant label="One fat job">
+    <div data-mark-color="orange">
+
+    ```yaml title=".github/workflows/ci.yml" {11}
+    jobs:
+      ci:
+        runs-on: ubuntu-latest
+        steps:
+          - uses: actions/checkout@v6
+          - uses: pnpm/action-setup@v4
+          - uses: actions/setup-node@v6
+            with:
+              node-version: 24
+              cache: pnpm
+          - run: pnpm install --frozen-lockfile
+          - run: pnpm typecheck && pnpm lint && pnpm test && pnpm build
+    ```
+
+    </div>
+    **Installs once, but the wall-clock is the sum and the first failure hides the rest.** Cheaper on install minutes, but `&&` short-circuits: a failed `typecheck` aborts before `test` or `build` even run, so you learn one problem per push.
+  </CodeVariant>
+</CodeVariants>
+
+<MultipleChoice>
+  Your CI runs the four checks as four parallel jobs. A teammate proposes collapsing them into one job to "save time on installs." What's the strongest argument for keeping them parallel?
+
+  <McqChoice>Parallel jobs always finish faster than one combined job.</McqChoice>
+  <McqChoice correct>You see every failure in a single run, instead of fixing one problem and re-pushing to discover the next.</McqChoice>
+  <McqChoice>You can't cache the pnpm store inside a single job.</McqChoice>
+  <McqChoice>The ruleset requires the checks to be separate jobs.</McqChoice>
+
+  <McqWhy>The right answer is feedback quality: you see every failure in one run. The install saving the teammate names is real, so "saves time" isn't wrong on its face — but a fat job short-circuits on the first failing command, so `test` and `build` never run and you learn one problem per push. Caching the pnpm store works fine in a single job. And the ruleset matches check *names*, not job count: a fat job could publish one combined check, which is exactly the trap — it would gate on "all passed or something failed" with no breakdown.</McqWhy>
+</MultipleChoice>
+
+## Building the workflow: four jobs
+
+Now you write the whole thing. This is the load-bearing artifact of the lesson and of the chapter — the complete `ci.yml` that produces the four status checks your ruleset requires. Step through it part by part; the walkthrough leans hard on the fact that the four jobs are nearly identical.
+
+<AnnotatedCode lang="yaml" maxLines={18} code={`
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: \${{ github.workflow }}-\${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+`}>
+  <AnnotatedStep meta="{1-10}" color="blue">
+    This is byte-for-byte the spine from the previous lesson — `name: CI`, the trigger pair that runs on every pull request and re-runs on merge to `main`, the read-only `permissions` floor, and the concurrency cancel. We're not touching it; we're adding jobs underneath it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12-22}" color="green">
+    The `typecheck` job, already familiar. It's the shape the next three jobs repeat: checkout, pnpm, Node + cache, frozen install, then the one command. Five setup beats, one command.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{23-33} "pnpm lint"`} color="green">
+    `lint` is identical to `typecheck` except for the last line, `pnpm lint`. That's the whole point: same five beats, one distinguishing command.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{34-44} "pnpm test"`} color="green">
+    `test`, the same shape again. The only line that differs is `pnpm test`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{45-55} "pnpm build"`} color="green">
+    `build`, same shape, `pnpm build`. It's typically the slowest of the four, so it's the job that sets the wall-clock for the whole parallel run.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{12} {23} {34} {45}`} color="orange">
+    Here's the contract. These four job ids — `typecheck`, `lint`, `test`, `build` — are the exact strings the ruleset matches by name. That string equality is what the next section is about.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+You've surely noticed the obvious objection: every job repeats the same five setup steps, four times over. Yes — and that repetition is the price of isolation and parallelism, the same clean-runner argument from the previous lesson. Each job runs on its own fresh machine, so each must declare everything it needs from scratch. The tidy fix, a composite action that bundles the setup into one `uses:` line, is real but premature: it earns its weight across five or more repositories that must stay in sync, not in a single repo where the inline form is the thing you can actually read.
+
+The following exercise checks that you can write a job from memory rather than copy it. The blanks fall on the three decisions that actually bite.
+
+<Dropdowns
+  instructions="Fill the three load-bearing tokens to complete one job."
+  answers={[
+    { answer: 'pnpm/action-setup@v4', options: ['pnpm/action-setup@v4', 'actions/setup-node@v6', 'actions/cache@v4'] },
+    { answer: 'pnpm', options: ['npm', 'pnpm', 'yarn'] },
+    { answer: 'frozen-lockfile', options: ['frozen-lockfile', 'no-save', 'prod'] },
+  ]}
+>
+```yaml
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ___
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: ___
+      - run: pnpm install --___
+      - run: pnpm test
+```
+</Dropdowns>
+
+## The job names are the contract with the ruleset
+
+This section is short and sharp, and it ties the file you just wrote back to the ruleset and forward to deployment. You met the idea last lesson — a job's name becomes the check name. Now it's operational for all four, and it comes with the single nastiest failure mode in CI configuration.
+
+The mechanism is plain: each job id — `typecheck`, `lint`, `test`, `build` — surfaces on the pull request as a status check of *exactly that name*. The ruleset's "required status checks" lists those same four strings. The two are joined by **string equality and nothing else.** No type system covers this seam. No compiler. No test. It's two pieces of text in two different systems — a YAML workflow and a GitHub ruleset — that happen to match.
+
+Now watch what happens when they stop matching. A developer renames the `test` job to `tests` — plural, a completely reasonable-looking tidy-up in a pull request. The workflow still runs. The `tests` check goes green. The pull request looks perfectly healthy. But the ruleset still requires a check named `test`, and `test` no longer exists. Depending on how the ruleset is configured, GitHub either waits forever for a check that will never report — or, more commonly and far worse, treats the missing required check as not-applicable and lets the pull request merge **without the test suite ever having gated it.** Nothing errored. No red X. The gate didn't break; it silently stopped protecting that one case, and the only signal that it happened is the absence of a signal.
+
+So here is the reflex, as a rule: **any rename of a CI job is a two-file pull request — the workflow and the ruleset, changed together.** Treat a job id like a published API that something else depends on by name, because that's exactly what it is. This was flagged as a watch-out twice already; it lands in real code here, so this is where it gets its full weight.
+
+<NameAsAWire />
+
+<MultipleChoice>
+  You rename the `build` job to `build-app` in `ci.yml` and forget to update the ruleset, which still lists `build` as required. What happens to the gate?
+
+  <McqChoice>GitHub notices the rename and quietly points the ruleset's required check at `build-app`.</McqChoice>
+  <McqChoice>The pull request is blocked, because `build-app` isn't one of the checks the ruleset lists.</McqChoice>
+  <McqChoice correct>Nothing named `build` ever reports, so that requirement goes unmet by silence — and depending on config the pull request can become merge-eligible with the build no longer gating it.</McqChoice>
+  <McqChoice>The workflow refuses to run until the ruleset and the workflow agree on the name.</McqChoice>
+
+  <McqWhy>The correct answer is the third one: nothing named `build` reports, so the gate stops enforcing the build. The job itself runs fine and goes green under `build-app` — that green is the trap. The ruleset blocks only on *missing required* checks, never on *extra* ones, so the new `build-app` check showing up does nothing to help, and a missing required check commonly resolves as merge-eligible rather than a hard block. There is no link that syncs a rename back to the ruleset. The danger isn't an error; it's the silence.</McqWhy>
+</MultipleChoice>
+
+## When the build needs the environment
+
+There's one job that doesn't quite fit the clean "run one command" mold, and it's the one that trips people up most often in the real world: `build`. The symptom is maddeningly specific. `pnpm build` passes on your laptop every time, then fails in CI with an error about a missing environment variable. Same code, same lockfile, red in CI and green at home. Before reaching for any config, understand *why*.
+
+`next build` reads certain environment variables *at build time*, not at request time. Two kinds, mainly: `NEXT_PUBLIC_*` values, which get inlined into the client bundle as the build runs, and any value the app touches while it's <Term definition="Next.js generating a page's HTML at build time rather than per request.">pre-rendering</Term> a page — for instance a `DATABASE_URL` read while rendering a public page's HTML ahead of time. Your laptop has a `.env` file sitting right there, so the build finds everything it needs. The CI runner is a clean room with no `.env`. The build that worked locally fails because the room is empty.
+
+There are two senior responses, and the order matters.
+
+The first is architectural, and it's the one to reach for first: **prefer dynamic rendering for anything backed by the database.** A page that reads the database should render per request, not be pre-rendered at build time. If it renders dynamically, `next build` never touches the database, so it never needs `DATABASE_URL` at all — the problem evaporates. Reserve build-time data reads for pages that are genuinely static. The deeper lesson hiding here: an env-at-build-time error is often a *signal* that something is being statically rendered that shouldn't be. Fix the rendering, and you fix the build.
+
+The second is for when the build legitimately needs a value — and then you provide it, scoped to the minimum. You expose it as a job-level `env:` map sourced from secrets, granting only what *this* build actually needs and nothing more, the same least-privilege instinct you applied to permissions last lesson.
+
+<div data-mark-color="blue">
+
+```yaml title=".github/workflows/ci.yml" {2-4}
+      - run: pnpm build
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+```
+
+</div>
+
+One more tool to name, because you'll meet it: the project validates its environment with a Zod-based validator (the build-time env validation you set up in the Postgres-and-Drizzle unit). That validator will fail the build if a required variable is missing — which is the behavior you want, except when the build genuinely shouldn't be touching the database at all. For that narrow case there's an escape hatch, `SKIP_ENV_VALIDATION=true`, used *only* at build time when a build-time database read would otherwise block you — never at runtime, never in production.
+
+That's deliberately just enough to get the `build` job green. The full story — how environment values are scoped across development, preview, and production, and how OIDC replaces long-lived cloud secrets entirely — belongs to the deployment chapter that comes next. Here, all you need to know is that `build` is the one job that may carry an `env:` block, and why.
+
+## The five-minute speed budget
+
+The last property of the gate isn't about any single job — it's about the whole pipeline, and it's the senior reflex this lesson most wants you to keep. State it as a number: **the baseline should finish in under five minutes wall-clock on a warm cache.** A cold cache run lands around six to eight minutes; a warm one, three to five. Five minutes is the line.
+
+Why does a number deserve this much attention? Because of what happens to a *slow* gate. It gets bypassed — not maliciously, but by ordinary human friction. People start merging without waiting ("I'll fix it after"). They reach for the branch-protection exception that was meant for emergencies. They come to resent the gate as the thing standing between them and shipping. And a gate nobody waits for protects nothing at all — all that structural enforcement you built becomes theater. This is the same logic that justified caching last lesson, now raised to an explicit budget for the entire pipeline: **fast feedback is what keeps the gate respected,** and a respected gate is the only kind that works.
+
+So when the budget breaks, treat it as a diagnosis, not a reason to panic and upgrade the runner. If the build alone is creeping past three minutes, ask *why* before you throw hardware at it: maybe a route started fetching everything at build time (the env-at-build-time problem from the last section, wearing a different hat), or the test suite quietly outgrew a single job. Two levers are worth knowing, each with the threshold that earns it.
+
+The first is the **Next.js build cache.** `next build` keeps an incremental cache in `.next/cache`, separate from the pnpm store you're already caching. Cache that directory across runs and your builds reuse the unchanged work from last time, which can cut build time substantially.
+
+<div data-mark-color="blue">
+
+```yaml title=".github/workflows/ci.yml" {4}
+      - uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: next-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('**/*.{ts,tsx}') }}
+          restore-keys: |
+            next-${{ hashFiles('pnpm-lock.yaml') }}-
+```
+
+</div>
+
+Reach for that build cache when build time climbs past about two minutes; skip it when the build is already fast — an unused cache step is just noise. But there's a sharp watch-out, and it's the reason you key the cache so carefully: a *stale* build cache can produce a passing CI run that ships broken code — the single worst failure mode there is, a green check on a bad artifact. So key it on something that actually changes when your code changes, and accept the occasional cache miss as the cheap price of never trusting a wrong key.
+
+The second lever is **test sharding** — splitting a large test suite across several parallel jobs with `vitest run --shard=1/4` and a matrix. It earns its weight when the suite passes roughly five hundred tests or two minutes, which is past the surface area of a typical SaaS startup, so the baseline doesn't include it. Know it exists; reach for it when the suite is genuinely big.
+
+And one *anti*-reflex, because it's tempting and it's wrong. When a test in the gate is <Term definition="A test that passes or fails non-deterministically on identical code.">flaky</Term> — passing and failing on identical code — the wrong fix is to auto-retry it until it goes green. Retry-on-failure doesn't fix anything; it *hides* the flake, and a hidden flake is a real intermittent bug waiting to ship while the gate smiles. The only durable answer is to fix the test. A gate that reruns until it's happy isn't a gate.
+
+The following diagram shows why the parallel arrangement and the budget fit together: the gate's wall-clock is the *slowest* job, not the sum, and the build is the one that sets it.
+
+<SpeedBudgetBars />
+
+## External resources
+
+The official references behind everything you wired in this lesson — the first grounds the `jobs:` map and parallelism, the second the build and its caching, the third the test job.
+
+<CardGrid>
+  <ExternalResource
+    title="GitHub Actions — Using jobs in a workflow"
+    href="https://docs.github.com/actions/using-jobs/using-jobs-in-a-workflow"
+    icon="simple-icons:githubactions"
+    iconColor="#2088FF"
+    description="Official reference for the jobs map, job ids, needs, and job-level config like env."
+  />
+  <ExternalResource
+    title="Next.js — CI build caching"
+    href="https://nextjs.org/docs/app/guides/ci-build-caching"
+    icon="simple-icons:nextdotjs"
+    description="The official guide to caching .next/cache across runs — the exact actions/cache step this lesson uses."
+  />
+  <ExternalResource
+    title="Vitest — Command Line Interface"
+    href="https://vitest.dev/guide/cli"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="The CLI reference behind the test job, including vitest run and the --shard flag for splitting a big suite."
+  />
+</CardGrid>

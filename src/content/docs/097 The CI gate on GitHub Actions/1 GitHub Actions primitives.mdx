@@ -1,0 +1,339 @@
+---
+title: GitHub Actions primitives
+tagline: Learn the GitHub Actions workflow, job, and step model that turns your branch-protection ruleset into a real CI gate.
+chapter-id: 97
+course-progress: 0.00005
+sidebar:
+  order: 1
+  label: GHA primitives
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import GhaHierarchy from '../../../components/lessons/097/1/gha-hierarchy/GhaHierarchy.astro';
+import PermissionsFloor from '../../../components/lessons/097/1/permissions-floor/PermissionsFloor.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+In the previous chapter you wrote a branch-protection ruleset that refuses to merge a pull request until a set of status checks pass. You listed those checks by name: `typecheck`, `lint`, `test`, `build`. But naming a check doesn't make it exist. Right now nothing in the repository runs those commands and reports back under those names, so the gate enforces nothing — it's a guest list for a party with no door. The ruleset says "these four must be green," GitHub looks for four checks with those names, finds none, and (depending on how you configured it) either waves the merge through or waits forever for checks that will never arrive.
+
+This lesson closes that gap. The thing that produces a status check is a **GitHub Actions** workflow, and your job here is to learn the smallest slice of GitHub Actions you need to author one. By the end you'll be able to read any JavaScript project's CI workflow line by line, write a minimal one from scratch, and recognize the four reflexes that separate a toy workflow from a production-shaped one. We're going to stop at a single job that runs `pnpm typecheck` — deliberately. Learning the anatomy of one job first is what makes the four-job gate in the next lesson feel like assembly rather than magic.
+
+## Workflows, jobs, steps, and runners
+
+GitHub Actions has exactly four nouns. Get these four and their relationships straight and the rest is detail. We'll build them from the bottom up.
+
+A <Term definition="An automated process defined in YAML that GitHub runs in response to events in your repository.">**workflow**</Term> is a YAML file that lives in the `.github/workflows/` directory of your repo. The convention is one concern per file: `ci.yml` for the pull-request gate you're building now, `deploy.yml` for shipping to production (that's a couple of chapters away). These files are version-controlled and reviewed in pull requests like any other code — which matters, because a change to how your project is *tested* is exactly the kind of change that deserves review.
+
+A workflow contains one or more **jobs**. Here's the single most important fact about a job, and the one beginners trip over: each job runs on its own <Term definition="A fresh virtual machine GitHub provisions to run one job, then destroys.">**runner**</Term> — a clean Ubuntu virtual machine, requested with `runs-on: ubuntu-latest`, with *nothing* carried over from any other job. Fresh checkout, no installed dependencies, no leftover files. This is why you'll see every job start by cloning the repo and installing packages again, and it's why that looks wasteful at first glance. It isn't waste; it's isolation. If jobs shared a machine, one could lean on a file or an install another left behind, and the whole thing would break the day someone ran them in a different order. The clean VM forbids that — it forces every job to declare everything it needs.
+
+Jobs in a workflow run **in parallel by default**. Drop three jobs into a file with no further instruction and GitHub starts all three at once on three separate machines. When you genuinely need one job to wait for another — say a deploy that must not start until a build has succeeded — you add `needs:` to express that dependency. The reflex an experienced engineer carries here is simple: parallelize aggressively, and reach for `needs:` only when there's a true dependency between jobs. Most CI jobs are independent, so most CI jobs should run at the same time.
+
+A job is an ordered list of **steps**, run top to bottom on that one runner. Order matters within a job: you can't install dependencies before you've checked out the code. A step is one of two things, never both. Either it's a `run:` — a shell command, the same thing you'd type in a terminal — or it's a `uses:` — a packaged, reusable unit called an <Term definition="A packaged, reusable step you reference with uses:, published to the Marketplace or stored in your repo.">**action**</Term>. An action is referenced by a path: `actions/checkout` points at a published action on GitHub's Marketplace. Hold onto that detail — the fact that `uses:` pulls in someone else's code is exactly where a supply-chain risk enters, and we'll come back to it near the end of the lesson.
+
+Now the payoff, the sentence the whole chapter hangs on: **each job's identifier becomes a status check on the pull request, and that check's name is exactly what your ruleset matches against.** Name a job `typecheck` and GitHub reports a status check called `typecheck`. That string is the contract. Rename the job and the check vanishes; the ruleset goes looking for `typecheck`, can't find it, and your gate silently stops protecting that case. The branch-protection rule and the workflow are two halves of one mechanism, joined by a name.
+
+Let's put all four nouns on screen at once.
+
+<GhaHierarchy />
+
+Read that diagram as four claims at once. The two job boxes are side by side because they run at the same time. The steps inside each box are stacked top to bottom because they run in that order. Each box is its own machine — nothing leaks between them. And the pill on each box is the name that lands on the pull request as a status check.
+
+Quick check before we move on — the parallel-versus-sequential rule is the one worth drilling, because it's a rule you *apply*, not a fact you recite.
+
+<Buckets twoCol instructions="Decide whether each pair of jobs runs at the same time or one after the other.">
+  <Bucket name="parallel" label="Runs at the same time" description="No dependency declared" />
+  <Bucket name="sequence" label="Runs one after the other" description="A dependency is declared" />
+
+  <Item bucket="parallel">A `test` job and a `lint` job, neither mentioning the other</Item>
+  <Item bucket="parallel">Two jobs in the same workflow with no `needs:` key on either</Item>
+  <Item bucket="sequence">A `deploy` job that declares `needs: [build]`</Item>
+  <Item bucket="sequence">A job that lists another job in its `needs:` array</Item>
+</Buckets>
+
+## When a workflow runs: the trigger surface
+
+A workflow file does nothing until something *triggers* it. The `on:` key declares which events wake it up. GitHub fires events for almost everything that happens in a repo, but a SaaS project leans on just five triggers, and the CI gate uses only two of them. Here's the surface:
+
+- `on: push` — fires on any push to any branch.
+- `on: pull_request` — fires when a pull request is opened, updated with new commits, or reopened. The "updated" event is named `synchronize`, which is worth knowing because it shows up in logs and docs and isn't self-explanatory.
+- `on: schedule` — fires on a <Term definition="A time-based scheduler. A five-field string sets the cadence — minute, hour, day-of-month, month, day-of-week.">cron</Term> timetable. (The next chapter's weekly link-check uses this; we won't teach the five-field syntax here.)
+- `on: workflow_dispatch` — adds a manual "Run workflow" button in the repo's Actions tab. Handy for jobs you want to fire by hand.
+- `on: workflow_call` — makes a workflow callable from another workflow. Useful at organization scale; you can ignore it for a single repo.
+
+The CI gate uses a specific pair: `pull_request` plus `push` restricted to the `main` branch. The first half is obvious — every pull request must run the gate, that's the entire point. The second half is the part worth reasoning through. Why also run on the push to `main`, after the pull request already passed?
+
+Because a pull request was tested against the state of `main` *at the moment it was opened*, and `main` can move underneath it. Two pull requests can each be green in isolation and still break `main` once both land — one adds a call to a function the other just deleted, and no rebase warned anyone because neither change conflicts at the text level. Running the gate again on the merge to `main` verifies the *post-merge* state, the code that will actually ship. The pull-request run protects the branch; the push-to-`main` run protects `main` itself. This is the trigger pair you'll see in the worked file below.
+
+## Reading a minimal workflow line by line
+
+Here's a complete, runnable workflow. It's the spine of this lesson — about twenty lines, and by the end of this section you'll understand every one. It triggers on the pair we just discussed, locks down permissions, cancels superseded runs, and runs a single job that checks out the code, sets up pnpm and Node with caching, installs dependencies, and runs the type-checker. Step through it region by region.
+
+<AnnotatedCode lang="yaml" maxLines={18} code={`
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: \${{ github.workflow }}-\${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+`}>
+  <AnnotatedStep meta="{1-5}" color="blue">
+    `name:` is the workflow's display label in the Actions UI; the `on:` block is the trigger pair from the previous section — every pull request, plus every push to `main`. This is the "test the branch, then test `main` after the merge" pattern made literal.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6-7}" color="orange">
+    `permissions: contents: read` sets the workflow's token to read-only — the least-privilege floor. This is a security reflex; we'll see why the default grant is too broad in its own section below.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8-10}" color="orange">
+    The `concurrency:` block cancels any in-progress run of this workflow on the same branch when a newer run starts. Another reflex with its own section below.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11-13}" color="blue">
+    `jobs:` opens the map; `typecheck:` is the one job; `runs-on: ubuntu-latest` is its fresh runner. The key point: `typecheck` is the job id, and therefore the *exact* status-check name the ruleset from the previous chapter matches against.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{15}" color="blue">
+    `actions/checkout@v6` clones the repo onto the runner at the commit under test, so the following steps have code to work with. Without it the machine is empty.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{16-20}" color="green">
+    `pnpm/action-setup@v4` installs pnpm; `actions/setup-node@v6` installs Node 24 and, via `cache: pnpm`, wires the dependency cache. The order is load-bearing — the pnpm action must come *before* setup-node. Full caching treatment below.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{21}" color="blue">
+    `pnpm install --frozen-lockfile` installs dependencies strictly from the committed lockfile. Its own section explains the bug this prevents.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{22}" color="blue">
+    `pnpm typecheck` is the command that *is* this job — it maps to the project's `tsc --noEmit` script. This single command is what produces the green or red `typecheck` status check.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That's the whole file. Read it once more top to bottom and notice that there's no magic left in it: a name, a trigger, a permission floor, a concurrency rule, and one job that does five concrete things. In the next lesson this single `typecheck` job grows into the full four-job gate — `typecheck`, `lint`, `test`, and `build` running in parallel — but every one of those jobs is shaped exactly like this one. Learn this shape and you've learned all four.
+
+Two pieces of this file deserve a closer look on their own: the trio of setup actions every JavaScript project copies into every workflow, and the two `${{ ... }}` expressions in the concurrency block. We'll take the actions first, then circle back to expressions near the end.
+
+## The three actions every JavaScript CI uses
+
+Three actions appear in essentially every JavaScript workflow ever written, in this order: `actions/checkout`, `pnpm/action-setup`, and `actions/setup-node`. You will copy this block into every workflow you author, so it's worth understanding rather than pasting.
+
+`actions/checkout` clones your repository onto the runner at the exact commit being tested. Remember the runner starts empty — without checkout there's no code, and every following step has nothing to act on. It's the first step in virtually every job. Current major version: `@v6`.
+
+`pnpm/action-setup` installs pnpm itself. Notice there's no `version:` input in the worked file, and that's deliberate: with no version specified, the action reads the version from your `package.json`'s `packageManager` field — the same field your repo already uses to pin pnpm for everyone on the team. That's the default an experienced engineer reaches for. The pnpm version lives in exactly one place, the repo's `packageManager` field, and the workflow inherits it. Hardcoding a version number in the workflow gives you a second source of truth to keep in sync, and two sources of truth drift. Current major: `@v4`.
+
+`actions/setup-node` installs Node — pinned with `node-version: 24` to match the runtime your project runs on — and, with `cache: pnpm`, wires up the built-in dependency cache keyed on your `pnpm-lock.yaml`. Current major: `@v6`. There's a subtlety with that cache on v6 that we'll get to in the next section; for now just note that the `cache: pnpm` input is doing real work.
+
+Now the rule that's the single most common setup bug. **`pnpm/action-setup` must come before `actions/setup-node`.** The reason is concrete: setup-node's `cache: pnpm` integration shells out to the `pnpm` command to find the store directory it needs to cache, so `pnpm` has to already be on the runner's PATH when setup-node runs. Reverse the two and the cache step fails with an error about a missing `pnpm` binary. Source order is the contract.
+
+About the `@v4` / `@v6` pins: pinning these by major version is fine because they're first-party (`actions/*`) and trusted (`pnpm/*`) utility actions, and the job they run in holds no secrets. The calculus changes sharply for actions that *can* read secrets — we'll get to why, and to what pinning looks like then, in the security section. For now, drill the ordering, because it's the thing that bites.
+
+<Sequence instructions="Order the steps of a job's setup block so the dependency cache works.">
+  <Step>Check out the repository with `actions/checkout`</Step>
+  <Step>Install pnpm with `pnpm/action-setup`</Step>
+  <Step>Install Node and enable the cache with `actions/setup-node`</Step>
+  <Step>Install dependencies with `pnpm install --frozen-lockfile`</Step>
+</Sequence>
+
+## Caching the pnpm store the right way
+
+A workflow with no caching reinstalls every dependency from scratch on every run. On a 2026 SaaS app that's roughly an eighty-second cold install, every push, every pull request, multiplied across your whole team. And slow CI has a way of getting routed around — when the gate takes too long, people start merging without waiting for it, and a gate nobody waits for protects nothing. Fast feedback isn't a nicety here; it's what keeps the gate respected. So caching is the first thing you reach for.
+
+The `cache: pnpm` input on `setup-node` handles this for you. It caches pnpm's content-addressable store directory, keyed on the hash of your `pnpm-lock.yaml`. Before the install step it restores the cache; after, it saves any new packages back. Change a dependency and the lockfile hash changes, so you get a fresh cache automatically — no stale-cache footguns. The numbers, as rough ballparks: cold install around eighty seconds, warm cache around thirty. That gap is the whole reason the input exists.
+
+Here's the wrinkle that's easy to miss, and it's recent. As of `setup-node@v6`, automatic dependency caching only auto-enables for **npm**. For pnpm and yarn you have to opt in with the `cache:` input. So `cache: pnpm` is not boilerplate you could safely drop — omit it and you silently get *zero* caching and pay the cold-install cost on every single run, with no error to tell you. A workflow copied from an older example written against setup-node v5, which auto-cached, will quietly regress the moment it runs on v6. This is exactly the kind of silent behavior change that only an engineer who reads the release notes catches.
+
+:::caution
+On `setup-node@v6`, `cache: pnpm` is required, not optional. Without it you get no caching at all — and no warning.
+:::
+
+One more reflex: don't hand-roll caching. There's a general-purpose `actions/cache` action, and the temptation when you first learn it is to wire up a manual cache step for the pnpm store. Resist it. The built-in handles the common case correctly, and a hand-rolled cache with a slightly wrong key is an active source of bugs — a stale cache means green CI that ships broken code, the worst failure mode there is. Reach for manual `actions/cache` only when the built-in genuinely doesn't cover your case, which is rare. (One legitimate case you'll meet later: Next.js keeps its own build cache in `.next/cache`, which is a separate thing from the pnpm store and may warrant a manual cache once builds get slow. That belongs to the build job in the next lesson — just know it's a different concern.)
+
+## Frozen installs: `pnpm install --frozen-lockfile`
+
+This one line prevents one of the nastiest classes of bug there is, so it's worth understanding precisely. Lead with the bug.
+
+Without `--frozen-lockfile`, when your `package.json` and your `pnpm-lock.yaml` disagree — which happens whenever someone bumps a dependency in `package.json` but forgets to commit the regenerated lockfile — pnpm quietly resolves a *new* dependency tree and rewrites the lockfile to match. CI installs that fresh tree, runs against it, and passes. But the tree it tested is not the tree that's committed to `main`. You've just shipped a green build that proves nothing about the code that will actually run in production. This is the canonical "works in CI, breaks in prod" failure, and it's invisible until it isn't.
+
+`--frozen-lockfile` makes that impossible. It installs *strictly* from `pnpm-lock.yaml` and refuses to mutate it. If `package.json` and the lockfile disagree, the install **fails loudly** instead of silently inventing a new tree. That's exactly what you want from CI: its entire job is to test the code that will ship, and a frozen install is what guarantees the dependency tree under test equals the one that's committed.
+
+Now, pnpm is smart enough to enable frozen mode automatically when it detects it's running in CI (it checks for the `CI=true` environment variable). So why write the flag at all? Because the reflex worth building is to make intent visible in the file. Anyone reading the workflow sees immediately that this install is frozen, and the workflow behaves identically whether it runs in CI or someone runs it by hand on their laptop. This isn't a new policy, by the way — your project already commits `pnpm-lock.yaml` and the convention is that CI runs `--frozen-lockfile`. You're now wiring that existing rule into the machine that enforces it.
+
+<MultipleChoice>
+  A teammate bumps a dependency's version in `package.json` but forgets to commit the regenerated `pnpm-lock.yaml`. The CI install step runs **without** `--frozen-lockfile`. What happens?
+
+  <McqChoice>The install aborts with an error about the lockfile being out of date.</McqChoice>
+  <McqChoice correct>pnpm silently resolves a new dependency tree and CI passes against packages that don't match the committed lockfile.</McqChoice>
+  <McqChoice>The install skips the changed package and uses the version already in the lockfile.</McqChoice>
+  <McqChoice>Nothing installs; pnpm refuses to run when `package.json` and the lockfile disagree.</McqChoice>
+
+  <McqWhy>Without the flag, pnpm treats the lockfile as mutable: it resolves a fresh tree to satisfy the changed `package.json`, rewrites the lockfile in the runner, and proceeds. CI goes green — but it tested a dependency tree that was never committed. The loud abort (the first option) is exactly what `--frozen-lockfile` would have given you.</McqWhy>
+</MultipleChoice>
+
+## Least-privilege permissions
+
+Every workflow run is handed an auto-provisioned token called the <Term definition="A short-lived token GitHub mints for each workflow run, scoped to that repository. The workflow uses it to authenticate against the GitHub API.">`GITHUB_TOKEN`</Term>, scoped to your repository. Steps use it to talk to the GitHub API — to post a comment, push a tag, create a release. Historically its default grant was broad *write* access to the repo. Sit with what that means: any step in the workflow, including a step inside a third-party action you pulled in with `uses:`, could use that token to push code, cut a release, or open a pull request. A single compromised dependency in your CI inherits write access to your repository.
+
+The reflex is least privilege, expressed as a clear rule: **set the floor at the workflow level, raise it per job, never the reverse.** At the top of the file you write `permissions: contents: read` — read-only, the minimum a check needs to clone your code. A typecheck, lint, test, or build job needs nothing more than that. If one specific job needs to do more — say, post a comment on the pull request — *that job* gets `pull-requests: write`, and only that job. You never start broad and trim down; you start at the floor and grant up, one scope at a time, only where a job proves it needs it.
+
+This is the `permissions: contents: read` block you already saw in the worked file. Setting it explicitly does a second thing worth noting: it *overrides* whatever default your organization or repository settings happen to impose, so the workflow documents its own privilege level and isn't at the mercy of a setting someone changed elsewhere. The file tells the truth about what it can do.
+
+<PermissionsFloor />
+
+## Cancelling superseded runs with concurrency
+
+Picture a developer pushing twice to the same pull request within two minutes — a typo fix right after the first push, which happens constantly. Without any concurrency control, both pushes kick off a full CI run, and both run to completion. The first run is now burning a runner on code that's already obsolete, the queue backs up behind two runs where one would do, and your CI minutes drain into work nobody will ever read the result of. Multiply that across a busy team and a meaningful slice of your CI budget is spent testing commits that were superseded seconds after they landed.
+
+The `concurrency:` block fixes this, and you already have it in the worked file:
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+```
+
+The `group` is a string that buckets runs together; when a new run lands in a group that already has one in progress, `cancel-in-progress: true` kills the older one. The trick is choosing the group key so that runs *for the same branch* land in the same bucket. That's what `${{ github.workflow }}-${{ github.ref }}` does: `github.workflow` is this workflow's name and <Term definition="The ref that triggered the run — the branch ref for a push, or the pull request's ref for a pull_request event. Distinct per branch or PR.">`github.ref`</Term> is the branch or pull-request ref that triggered the run. Same branch, same group — so a new push to a branch cancels the in-flight run for *that* branch, while runs for other branches are untouched. Set this on every pull-request-triggered workflow; it's close to free and it pays for itself immediately.
+
+One thing to watch, and it's the reason this isn't a blanket "always cancel" rule. Once a workflow also runs production deploys, `cancel-in-progress: true` becomes dangerous — a fast follow-up push could cancel a deploy *mid-flight*, leaving production in a half-shipped state. The reflex when deploys enter the picture is to scope concurrency more tightly, so it cancels stale *test* runs but never interrupts a deploy. We'll handle that properly when we wire up deploys in the next chapter; for a pure CI workflow like this one, cancelling freely is exactly right.
+
+## Pinning actions, and the secrets they can reach
+
+This is the section where the security thread of the whole chapter comes due. It folds two topics together — secrets and action pinning — because they're really one risk surface: an action you trust with your secrets can betray you if its code changes underneath you. Secrets first, briefly, then the payoff.
+
+A **secret** is a value you don't want in your source code — a database URL, an API key. They live in your repo's settings, under Secrets and variables → Actions. (There are also environment-level secrets gated to specific deployment environments; the next chapter owns those.) You read one with `${{ secrets.NAME }}` and inject it into a step as an environment variable:
+
+```yaml
+- run: pnpm db:migrate
+  env:
+    DATABASE_URL: ${{ secrets.DATABASE_URL }}
+```
+
+Worth saying plainly: the `typecheck` job in the worked file needs *no* secrets — type-checking touches no external service. Don't cargo-cult secrets into jobs that don't need them; every secret you hand a job is attack surface you didn't have to grant. And one sharp caveat about logging: GitHub automatically masks known secret *values* in your logs, but it cannot mask a value it doesn't recognize. Echo a *derived* value — a JWT you signed with the secret, a connection string with the password embedded — and the secret leaks into the logs in plain sight. (For cloud credentials specifically — deploying to Vercel, assuming an AWS role — the modern move is to skip long-lived secrets entirely in favor of <Term definition="OpenID Connect. Lets a workflow exchange a short-lived, automatically-issued identity token for cloud credentials, so no long-lived secret is stored in the repo.">OIDC</Term>-issued short-lived tokens. The next chapter wires that up; just know it exists.)
+
+Now the payoff. When you write `uses: some/action@v1` or `uses: some/action@main`, that `@v1` or `@main` is a *moving* reference. A tag or a branch is just a pointer, and pointers can be repointed. If an attacker gains control of that action's repository and force-pushes the tag to point at malicious code, then every workflow in the world that references it by that tag runs the attacker's code on its next run — with whatever secrets and permissions that workflow has in scope. The reference didn't change in your file. The code it resolves to did.
+
+This is not hypothetical. In March 2025 the widely-used `tj-actions/changed-files` action was compromised — catalogued as CVE-2025-30066. An attacker force-pushed *every* version tag, v1 through v45.0.7, to point at a single malicious commit that dumped the CI runner's memory into the workflow logs. Any repository that referenced the action by a mutable tag — over twenty-three thousand of them — leaked whatever secrets were in scope into logs the attacker could read. The crucial detail: the attack rewrote *tags*. A repo that had pinned the action by a major tag like `@v45` was hit just as hard as one pinned to `@main`, because the tag itself was the thing that moved.
+
+So here's the rule, as a gradient rather than a single line:
+
+<CodeVariants>
+  <CodeVariant label="Mutable tag">
+
+    ```yaml del={1}
+    - uses: tj-actions/changed-files@main
+    ```
+
+    **Runs whatever the ref points at today.** A force-push to `main` (or to a version tag) silently swaps in new code on your next run — precisely how CVE-2025-30066 reached 23,000 repos.
+  </CodeVariant>
+
+  <CodeVariant label="Major tag">
+    <div data-mark-color="blue">
+
+    ```yaml {1}
+    - uses: actions/checkout@v6
+    ```
+
+    </div>
+    **Readable, and fine for trusted first-party utility actions that touch no secrets** — the convenience is worth it when the blast radius is zero, which is why the worked file pins `checkout` and `setup-node` this way.
+  </CodeVariant>
+
+  <CodeVariant label="Full commit SHA">
+
+    ```yaml ins={1}
+    - uses: tj-actions/changed-files@a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0
+    ```
+
+    **Immutable — required for any action that can read secrets or runs with elevated permissions**, because a SHA names one exact commit that can never be repointed, the only pin that would have stopped the `tj-actions` attack.
+  </CodeVariant>
+</CodeVariants>
+
+Read the gradient as one decision. Pin trusted first-party utility actions (`actions/*`, `pnpm/*`) by major tag for readability *when they touch no secrets* — that's why the worked file's `checkout@v6` and `setup-node@v6` are tag-pinned, the `typecheck` job holds nothing worth stealing. But pin *any* action that's in scope of a secret, or runs in a job with elevated `permissions`, by full 40-character commit SHA, because a SHA is the only reference an attacker can't move. Those same `checkout` and `setup-node` actions would get SHA-pinned the moment they appeared in a deploy job holding production credentials. (Keeping SHA pins current — they don't auto-update, that's the trade — is a job for Dependabot, which a later lesson in this chapter sets up.)
+
+## Expression syntax, briefly
+
+You've now seen `${{ ... }}` a few times — in the concurrency group, in a secret reference. It's not magic, and it's not worth memorizing, but it is worth naming so it stops looking like syntax noise.
+
+`${{ ... }}` is GitHub Actions expression interpolation: GitHub evaluates whatever's inside *before* the step runs, and substitutes the result. The handful of contexts you'll actually reach for:
+
+- `${{ github.* }}` — facts about the event and the repo: `github.workflow`, `github.ref`, `github.sha`, `github.event.pull_request.number`.
+- `${{ secrets.* }}` — the secrets you just met.
+- `${{ env.* }}` — environment variables you've defined in the workflow.
+- `${{ matrix.* }}` — values from a build matrix (which we'll name in a moment).
+
+You'll see these in `if:` conditions, in `env:` values, and in the `concurrency` group you already wrote. The full list of contexts is long, and the move is to look it up when you need a field rather than carry it in your head — there's an `ExternalResource` card for the reference at the end of this lesson.
+
+## Naming the cuts: matrix, reusable workflows, runner choice
+
+A few GitHub Actions features exist that an experienced engineer knows about but a single-repo SaaS deliberately skips. Naming them — and naming the threshold each one crosses before it earns its place — means you won't be surprised when you meet them in someone else's repo, and you'll know why yours doesn't use them yet.
+
+- **Matrix strategy** (`strategy: matrix:`) runs a job once per combination of variables — most commonly, the same test suite across several Node versions. That's a *library* concern: a published package must work on every Node version its users run. A SaaS product ships on one Node version on one OS, so it tests one configuration. Cut.
+- **Reusable workflows and composite actions** (`workflow_call`, and actions stored at `.github/actions/`) extract repeated setup into one shared reference. They earn their weight at roughly five or more repos that must keep their CI identical. For one repo, the inline form you've been reading is clearer. Cut.
+- **Runner image choice.** `ubuntu-latest` is a moving target — today it resolves to Ubuntu 24.04, but GitHub advances it over time, and a runner upgrade can occasionally break a build. You *can* pin to `ubuntu-24.04` to shield against that, but the experienced call is to pin only once a runner upgrade has actually burned the team, and accept the moving target until then. Don't pre-emptively pin against a problem you haven't had.
+- **Self-hosted runners** exist for specialized hardware or access to a private network. The course runs on GitHub-hosted runners; self-hosted is a platform-team concern. Cut.
+
+The point of this list isn't to teach these — it's to show you the surface you're deliberately *not* using, so the simplicity of your workflow reads as a choice rather than an omission.
+
+## External resources
+
+The official references for everything in this lesson. The first two are the ones you'll actually keep open while writing workflows; the third is the source for the security reflexes; the last is a full video course if you want a guided, hands-on tour of the same ground.
+
+<CardGrid>
+  <ExternalResource
+    title="Workflow syntax for GitHub Actions"
+    href="https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions"
+    icon="simple-icons:githubactions"
+    iconColor="#2088FF"
+    description="The full reference for on, jobs, steps, permissions, concurrency — every key you saw in the worked file."
+  />
+  <ExternalResource
+    title="Contexts and expressions"
+    href="https://docs.github.com/en/actions/reference/contexts-reference"
+    icon="simple-icons:githubactions"
+    iconColor="#2088FF"
+    description="Every github.*, secrets.*, env.*, and matrix.* field available inside ${{ ... }}."
+  />
+  <ExternalResource
+    title="Security hardening for GitHub Actions"
+    href="https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions"
+    icon="simple-icons:github"
+    description="GitHub's own guidance on SHA-pinning, least-privilege permissions, and the GITHUB_TOKEN."
+  />
+  <ExternalResource
+    title="GitHub Actions: From Beginner to Pro"
+    href="https://www.youtube.com/watch?v=Xwpi0ITkL3U"
+    icon="simple-icons:youtube"
+    iconColor="#FF0000"
+    description="DevOps Directive's free video course — the core-features section walks the workflow/job/step model and pnpm-style caching with live runs."
+  />
+</CardGrid>
