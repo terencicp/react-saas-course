@@ -26,17 +26,17 @@ import Item from '../../../components/exercises/buckets/Item.astro';
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-Your app already sends one notification. When an invitation goes out, the invite flow calls into your email wrapper and a message lands in someone's inbox. That was the transactional-email work, and it was clean because there was exactly one of them. Now the product grows. The team wants an in-app inbox so a user signed into the app sees the invite without leaving the tab. A role change should reach the affected member. A past-due payment should reach the org's owners. Next quarter, maybe push notifications.
+Your app already sends one notification. When an invitation goes out, the invite flow calls into your email wrapper and a message lands in someone's inbox. That was the transactional-email work, and it stayed clean because there was exactly one of them. Now the product grows. The team wants an in-app inbox so a user signed into the app sees the invite without leaving the tab. A role change should reach the affected member. A past-due payment should reach the org's owners. Next quarter, maybe push notifications.
 
-Watch what happens if you build each of those the way you built the first one. The Server Action that changes a role grows a `sendEmail(...)` call and an `INSERT` into a notifications table. The action that marks billing past-due grows its own pair. So does the next one, and the one after. Some of them remember to check whether the user actually wants email; some forget. Then push lands, and adding it means opening every single action that ever told a user anything and threading a third call through it. The channel knowledge — *how* a notification reaches a person — has smeared itself across dozens of files, and every one of them is now a place the next change can break.
+Consider what happens if you build each of those the way you built the first one. The Server Action that changes a role grows a `sendEmail(...)` call and an `INSERT` into a notifications table. The action that marks billing past-due grows its own pair, and so does the next one, and the one after. Some of them remember to check whether the user actually wants email; some forget. Then push lands, and adding it means opening every action that ever told a user anything and threading a third call through it. The channel knowledge, meaning *how* a notification reaches a person, is now spread across dozens of files, and every one of them is a place the next change can break.
 
-This lesson finds the seam. You'll leave with three things: the **dispatcher** and the single call shape every notification flows through, the `notifiable_events` registry that lists every notification your app can send, and the rule that decides whether an event belongs in a user's inbox or only in an operator's audit log. This is the same architectural move you've made twice before — the Server Action boundary became the one place writes happen, the webhook handler became the one place untrusted events are verified, and now the dispatcher becomes the one place channel decisions live. A named choke point turns a cross-cutting concern into a one-place edit. The next three lessons fill in the channels, the preferences, and the deduplication; the chapter after wires the seam into three real flows.
+This lesson introduces the seam that prevents all of that. You'll leave with three things: the **dispatcher** and the single call shape every notification flows through, the `notifiable_events` registry that lists every notification your app can send, and the rule that decides whether an event belongs in a user's inbox or only in an operator's audit log. This is the same architectural move you've made twice before. The Server Action boundary became the one place writes happen, the webhook handler became the one place untrusted events are verified, and now the dispatcher becomes the one place channel decisions live. A named choke point turns a cross-cutting concern into a one-place edit. The next three lessons fill in the channels, the preferences, and the deduplication, and the chapter after that wires the seam into three real flows.
 
 ## The seam: one event in, many channels out
 
-Here is the whole pattern in one sentence: **call sites fire one event; the dispatcher owns every channel decision.** Hold onto that — everything else in the lesson hangs off it.
+Here is the whole pattern in one sentence: call sites fire one event, and the dispatcher owns every channel decision. Everything else in the lesson builds on that.
 
-A call site is a place where something happens worth telling a user about: a Server Action that changed a role, a webhook handler that processed a payment. Its job is to describe *what happened* and *who should know*. It does not decide whether email is involved, or what the email says, or whether the user has muted this kind of message. It hands all of that to a single function:
+A call site is a place where something happens worth telling a user about, such as a Server Action that changed a role or a webhook handler that processed a payment. Its job is to describe *what happened* and *who should know*. It does not decide whether email is involved, or what the email says, or whether the user has muted this kind of message. It hands all of that to a single function:
 
 ```ts
 await dispatch({
@@ -47,21 +47,21 @@ await dispatch({
 });
 ```
 
-That call site never imports your email library. It never touches a notifications table. It states a fact and walks away. Behind the function, a <Term definition={"Sending one event to multiple independent destinations — here, email and the in-app inbox — from a single call."}>fan-out</Term> happens: the one event becomes an email to some recipients and an inbox row for others, depending on rules the call site doesn't need to know.
+That call site never imports your email library, and it never touches a notifications table. It states a fact and returns. Behind the function, a <Term definition={"Sending one event to multiple independent destinations — here, email and the in-app inbox — from a single call."}>fan-out</Term> happens: the one event becomes an email to some recipients and an inbox row for others, depending on rules the call site doesn't need to know.
 
-You've seen this shape twice already, and naming the lineage is the fastest way into it. When you learned Server Actions, the action boundary became the canonical write seam — every mutation goes through one wrapper, so authorization and validation live in one place instead of scattered across handlers. When you wired up Stripe billing, the webhook handler became the trust seam — every untrusted event gets verified and made idempotent at one door. This is the *notification* seam, and the payoff is identical: the cross-cutting concern (here, channel knowledge plus preferences plus dedup) lives in exactly one module, so adding a channel or changing a preference rule is a single-file edit instead of a sweep across the codebase.
+You've seen this shape twice already, and recognizing it is the fastest way in. When you learned Server Actions, the action boundary became the canonical write seam: every mutation goes through one wrapper, so authorization and validation live in one place instead of scattered across handlers. When you wired up Stripe billing, the webhook handler became the trust seam, where every untrusted event gets verified and made idempotent at one door. This is the *notification* seam, and the payoff is identical. The cross-cutting concern, which here is channel knowledge plus preferences plus dedup, lives in exactly one module, so adding a channel or changing a preference rule is a single-file edit instead of a sweep across the codebase.
 
-The following diagram makes the seam spatial. Read it left to right.
+The following diagram lays the seam out in space. Read it left to right.
 
 <SeamDiagram />
 
-Notice what the diagram refuses to do: the audit-log arrow does not pass through the dispatcher. That's a decision, and the back half of this lesson is about why. For now, take the diagram's main claim as a rule about the call site itself: **a call site that imports your email function or writes to the notifications table directly has leaked channel knowledge and broken the seam.** That's the one regression the rest of this chapter exists to prevent. If you ever find a `sendEmail` call outside the notifications module, the seam has a hole in it — a `grep` for direct sends is a real check you'd run.
+Notice one thing the diagram does on purpose: the audit-log arrow does not pass through the dispatcher. That's a deliberate decision, and the back half of this lesson explains why. For now, take the diagram's main claim as a rule about the call site itself. A call site that imports your email function, or writes to the notifications table directly, has leaked channel knowledge and broken the seam. That is the one regression the rest of this chapter exists to prevent. If you ever find a `sendEmail` call outside the notifications module, the seam has a gap, and a `grep` for direct sends is a real check you'd run to catch it.
 
 ## The notifiable_events registry: one file, every notification
 
-Ask a simple question about any app you didn't write: *what notifications can this thing send?* If every event were defined inline at its own call site, there'd be no way to answer except to read the entire codebase and collect every `sendEmail` by hand. That's not a system anyone can reason about. The fix is to make the set of notifications **enumerable** — to put it in one place you can open and read top to bottom.
+Ask a simple question about any app you didn't write: *what notifications can this thing send?* If every event were defined inline at its own call site, the only way to answer would be to read the entire codebase and collect every `sendEmail` by hand. That makes the system hard to reason about. The fix is to make the set of notifications **enumerable**, meaning you put it in one place you can open and read top to bottom.
 
-That place is the <Term definition={"A typed lookup table that is the authoritative list of every notification the app can send, keyed by event type."}>registry</Term>: a typed map keyed by event type, where each entry declares everything the dispatcher, the preferences UI, and the templates need to know. Keep it small to start — three to five events — and let it grow as the product does.
+That place is the <Term definition={"A typed lookup table that is the authoritative list of every notification the app can send, keyed by event type."}>registry</Term>: a typed map keyed by event type, where each entry declares everything the dispatcher, the preferences UI, and the templates need to know. Keep it small to start, around three to five events, and let it grow as the product does.
 
 ```ts title="src/lib/notifications/registry.ts" {31-32}
 export const notifiableEvents = {
@@ -91,11 +91,11 @@ export const notifiableEvents = {
 export type EventType = keyof typeof notifiableEvents;
 ```
 
-The keys are dotted string literals — `'org.member.role_changed'`, `'billing.past_due'` — and that's a deliberate scheme, not decoration. The shape is `domain.entity.action`: the domain the event lives in, the entity it's about, the thing that happened. It reads top-down and it scans: every `org.*` event is an organization concern, every `billing.*` event is money. When you add the fortieth event type, this naming is what keeps the file searchable instead of a flat wall of strings.
+The keys are dotted string literals such as `'org.member.role_changed'` and `'billing.past_due'`, and the scheme behind them is deliberate. The shape is `domain.entity.action`: the domain the event lives in, the entity it's about, then the thing that happened. It reads top-down and it scans, because every `org.*` event is an organization concern and every `billing.*` event is money. When you add the fortieth event type, this naming is what keeps the file searchable instead of an undifferentiated list of strings.
 
-Two pieces of TypeScript are doing quiet work here. The `as const` freezes the object into literal types, so `'org.invitation.sent'` is its own type and not just `string` — that's what lets `EventType` become the exact union of valid keys. The `satisfies` checks each entry against the `NotifiableEvent` shape without widening anything, so a typo in a field name is a compile error but the literal keys stay narrow. You met this exact pairing when you learned TypeScript; this is one of its highest-value uses.
+Two pieces of TypeScript are doing quiet work here. The `as const` freezes the object into literal types, so `'org.invitation.sent'` is its own type rather than just `string`, which is what lets `EventType` become the exact union of valid keys. The `satisfies` checks each entry against the `NotifiableEvent` shape without widening anything, so a typo in a field name is a compile error while the literal keys stay narrow. You met this exact pairing when you learned TypeScript, and this is one of its highest-value uses.
 
-Now look at a single entry up close. The following walkthrough steps through each field one at a time.
+Now look at a single entry up close. The following walkthrough takes each field one at a time.
 
 <AnnotatedCode lang="ts" maxLines={8} code={`
 'org.member.role_changed': {
@@ -107,31 +107,31 @@ Now look at a single entry up close. The following walkthrough steps through eac
 },
 `}>
   <AnnotatedStep meta="{2}" color="blue">
-    `channels` is the *default* set of channels for the event — here, both email and the inbox. "Default" matters: user preferences can subtract from this set, so a user who muted team email still gets the inbox row. The dispatcher reads this; the call site never names a channel.
+    `channels` is the *default* set of channels for the event, here both email and the inbox. The word "default" matters, because user preferences can subtract from this set, so a user who muted team email still gets the inbox row. The dispatcher reads this field, and the call site never names a channel.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{3}" color="orange">
-    `template` is a reference to what renders the message — the React Email component for email, plus an inbox formatter for the in-app row. The registry *references* templates; it never inlines them. The next lesson builds these.
+    `template` is a reference to what renders the message: the React Email component for email, plus an inbox formatter for the in-app row. The registry *references* templates; it never inlines them. The next lesson builds these.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{4}" color="orange">
-    `preferenceCategory` is the category the user toggles in their settings — `'team'`, `'billing'`, `'security'`. Many events share one category, so a user mutes a whole class at once rather than each event individually. The lesson on preferences owns this schema.
+    `preferenceCategory` is the category the user toggles in their settings, such as `'team'`, `'billing'`, or `'security'`. Many events share one category, so a user mutes a whole class at once rather than each event individually. The lesson on preferences owns this schema.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{5}" color="orange">
-    `dedup` is the window and key shape that collapse rapid duplicates — here, the same role change to the same member within 60 seconds counts as one notification. The lesson on dedup builds the mechanic and explains why the key includes more than just the `subjectId`; here it's just a declaration.
+    `dedup` is the window and key shape that collapse rapid duplicates, so here the same role change to the same member within 60 seconds counts as one notification. The lesson on dedup builds the mechanic and explains why the key includes more than just the `subjectId`; in the registry it's only a declaration.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{6}" color="blue">
-    `description` is the human-readable label the preferences UI shows next to the toggle — and the place a new event type has to justify why it exists. If you can't write an honest one-line description, the event probably isn't notifiable.
+    `description` is the human-readable label the preferences UI shows next to the toggle, and it's also where a new event type has to justify why it exists. If you can't write an honest one-line description, the event probably isn't notifiable.
   </AnnotatedStep>
 </AnnotatedCode>
 
-The takeaway is a rule about where change goes: a new event type is added in this one file. The dispatcher reads its `channels`. The preferences UI reads its `preferenceCategory` and `description`. The templates are referenced by it. One file, one source of truth — which is the same principle you already follow with your Drizzle schema, where the table definition is the single place the row types, the validators, and the column names all come from. The registry is that idea, applied to notifications.
+The takeaway is a rule about where change goes: a new event type is added in this one file. The dispatcher reads its `channels`, the preferences UI reads its `preferenceCategory` and `description`, and the templates are referenced from it. One file, one source of truth. This is the same principle you already follow with your Drizzle schema, where the table definition is the single place the row types, the validators, and the column names all come from. The registry applies that idea to notifications.
 
 ## The dispatcher's contract: input, side effects, output
 
-A function's contract is the promise it makes: what you must give it, what it changes in the world, and what it hands back. The dispatcher's body is the next chapter's job — here you're internalizing the contract, because the contract is the API you'll call from real code.
+A function's contract is the promise it makes: what you must give it, what it changes in the world, and what it hands back. Building the dispatcher's body is the next chapter's job. Here you learn the contract, because the contract is the API you'll call from real code.
 
 **Input.** A typed event. The following shape is what every caller constructs.
 
@@ -144,11 +144,11 @@ type NotificationEvent = {
 };
 ```
 
-Four fields, each earning its place. `type` is a key of the registry — the compiler rejects any event the registry doesn't know about, so you can't fire a notification that has no entry. `recipientUserIds` is *always* a list, even when there's a single recipient. That uniformity is a deliberate call: if the field were sometimes one id and sometimes many, the dispatcher would have to branch on cardinality everywhere it loops. One shape means no branching. `subjectId` is the entity the event is about — the invitation's id, the invoice's id, the member's id — and it's what dedup keys on and what the inbox row links back to. `payload` carries the data the templates need to render: the new role, the amount due, the actor's name.
+Four fields, each earning its place. `type` is a key of the registry, and the compiler rejects any event the registry doesn't know about, so you can't fire a notification that has no entry. `recipientUserIds` is *always* a list, even when there's a single recipient. That uniformity is deliberate: if the field were sometimes one id and sometimes many, the dispatcher would have to branch on cardinality everywhere it loops, so one shape means no branching. `subjectId` is the entity the event is about, such as the invitation's id, the invoice's id, or the member's id, and it's what dedup keys on and what the inbox row links back to. `payload` carries the data the templates need to render: the new role, the amount due, the actor's name.
 
-**Side effects.** What the dispatcher does to the world. For each recipient whose preferences allow the inbox, it writes an inbox row. For each recipient whose preferences allow email, it enqueues an email. And it records the dispatch so dedup can recognize a duplicate. Each of those is gated by a decision the dispatcher owns and the caller never sees — *how* each gate works is a later lesson, but the contract is "the dispatcher decides, then acts."
+**Side effects.** What the dispatcher does to the world. For each recipient whose preferences allow the inbox, it writes an inbox row. For each recipient whose preferences allow email, it enqueues an email. And it records the dispatch so dedup can recognize a duplicate later. Each of those is gated by a decision the dispatcher owns and the caller never sees. *How* each gate works is a later lesson, but the contract is that the dispatcher decides, then acts.
 
-**Output.** Here's the part that's easy to skip and shouldn't be: the dispatcher returns a report.
+**Output.** This part is easy to skip and worth holding onto: the dispatcher returns a report.
 
 ```ts
 type DispatchResult = {
@@ -158,19 +158,19 @@ type DispatchResult = {
 };
 ```
 
-It tells the caller how many notifications actually went out, how many were collapsed as duplicates, and how many were suppressed because a user had opted out. The point is that the dispatcher hands back observability instead of making the caller guess what happened. Notice this is a plain count summary, not a `Result` type — there's no expected-failure path to model here, just numbers worth logging. Use the shape that fits; not every return needs to be a discriminated union.
+It tells the caller how many notifications actually went out, how many were collapsed as duplicates, and how many were suppressed because a user had opted out. The point is that the dispatcher hands back observability instead of making the caller guess what happened. Notice this is a plain count summary, not a `Result` type, because there's no expected-failure path to model here, just numbers worth logging. Use the shape that fits; not every return needs to be a discriminated union.
 
-That naturally raises a question: what happens when a channel *does* fail? This is part of the contract, so it goes here. **The dispatcher never throws because one channel failed.** If the inbox write succeeds but the email send hits a transient error, the dispatcher logs the failure and keeps going — the inbox row stays, and one bad channel doesn't take down the others. Channels are independent by design. The next lesson builds the per-channel try/catch that enforces this, but the rule belongs to the mental model now: *fire one event, get best-effort fan-out plus a report.* A notification system that throws on the first channel hiccup would let a flaky email provider break role changes, and that trade is never worth it.
+That raises a question: what happens when a channel *does* fail? This is part of the contract too. The dispatcher never throws because one channel failed. If the inbox write succeeds but the email send hits a transient error, the dispatcher logs the failure and keeps going, so the inbox row stays and one failing channel doesn't take down the others. Channels are independent by design. The next lesson builds the per-channel try/catch that enforces this, but the rule belongs to your mental model now: you fire one event and get best-effort fan-out plus a report. If the dispatcher threw on the first channel error, a flaky email provider could break role changes, and that trade is never worth making.
 
-One more piece of the input deserves its own beat: `recipientUserIds` is an *already-resolved* list. The dispatcher does not take "the org's owners" or "everyone with the billing role" and figure out who that is. Resolving an audience to concrete user ids is the *caller's* job, because the caller is the one that knows the business rule. The action marking billing past-due already knows it wants owners, and it has the helper to get them — `getOrgMembersByRole(orgId, 'owner')`, from your organizations-and-roles work — sitting right there at the call site. Keeping that knowledge at the call site is what keeps the dispatcher audience-neutral: it stays a pure fan-out engine and never accretes org-shaped logic it has no business owning.
+One more piece of the input is worth a closer look: `recipientUserIds` is an *already-resolved* list. The dispatcher does not take "the org's owners" or "everyone with the billing role" and work out who that is. Resolving an audience to concrete user ids is the *caller's* job, because the caller is the one that knows the business rule. The action marking billing past-due already knows it wants owners, and the helper to get them, `getOrgMembersByRole(orgId, 'owner')` from your organizations-and-roles work, is right there at the call site. Keeping that knowledge at the call site is what keeps the dispatcher audience-neutral: it stays a pure fan-out engine instead of accumulating org-specific logic that doesn't belong to it.
 
 ## Where the dispatcher is called: after the write is durable
 
-There's a placement rule, and it's sharp enough to state in one line: **fire after the state change is durable.**
+The placement rule is short: fire after the state change is durable.
 
-The canonical home is inside the Server Action that performed the mutation — the same `authedAction` wrapper you've been using — *after* the database write has committed. Webhook handlers call the same dispatcher after their idempotent state transition. Background jobs can call it too. The dispatcher doesn't care who the caller is; it cares only that the thing it's announcing has actually, durably happened.
+The canonical home is inside the Server Action that performed the mutation, the same `authedAction` wrapper you've been using, *after* the database write has committed. Webhook handlers call the same dispatcher after their idempotent state transition, and background jobs can call it too. The dispatcher doesn't care who the caller is; it cares only that the thing it's announcing has actually, durably happened.
 
-Why "after commit" and not "during"? Because a notification for an action that rolled back is worse than a notification you never sent. Tell a user their role changed, then have the transaction fail and roll back, and now their inbox contradicts reality. You already follow exactly the rule that prevents this: external calls live *outside* `db.transaction`, never inside it — the rule you learned with Server Actions, to avoid holding a database connection open while you wait on a network round-trip. `dispatch` is precisely such an external call. So it slots into the position you already know.
+Why after commit and not during? Because a notification for an action that rolled back is worse than a notification you never sent. If you tell a user their role changed and then the transaction fails and rolls back, their inbox now contradicts reality. You already follow the rule that prevents this: external calls live *outside* `db.transaction`, never inside it. You learned that rule with Server Actions, to avoid holding a database connection open while you wait on a network round-trip. `dispatch` is exactly such an external call, so it slots into the position you already know.
 
 <div data-mark-color="green">
 
@@ -199,27 +199,27 @@ export const changeRole = authedAction(
 
 </div>
 
-Read the order. The wrapper has already done the first two gates — it authorized the `'admin'` role and parsed the input against `changeRoleSchema` before your body ran — so the body is just the work: mutate inside a transaction, revalidate the cache, then dispatch, then return the result. You've written that shape dozens of times — the only new thing is that `dispatch` takes the post-write slot, after the commit and the revalidate. That's the whole rule. It feels like a rule you already know because it *is* one, pointed at a new call.
+Read the order. The wrapper has already done the first two gates, authorizing the `'admin'` role and parsing the input against `changeRoleSchema` before your body ran, so the body is just the work: mutate inside a transaction, revalidate the cache, then dispatch, then return the result. You've written that shape dozens of times. The only new thing is that `dispatch` takes the post-write slot, after the commit and the revalidate. That's the whole rule, and it's the rule you already know applied to a new call.
 
-Now, two honest caveats an experienced engineer carries.
+Two caveats are worth carrying with this rule.
 
-The first is the gap. "After commit" means there's a sliver of time where the write has landed but the notification hasn't fired — if the process crashes in that sliver, the notification is lost. For most apps that's an acceptable risk. When it isn't, the upgrade is the <Term definition={"Write the notification intent into the same database transaction as the state change, then deliver it later from a worker — so the commit and the intent are atomic."}>transactional outbox</Term>: write a `pending_notifications` row *inside* the transaction, then drain it from a worker, so the committed action and its notification are atomic. Name it, know it exists, and reach for it when a post-commit gap becomes unacceptable. For this chapter, the after-commit call is enough.
+The first is the gap. "After commit" means there's a short window where the write has landed but the notification hasn't fired yet, and if the process crashes in that window, the notification is lost. For most apps that's an acceptable risk. When it isn't, the upgrade is the <Term definition={"Write the notification intent into the same database transaction as the state change, then deliver it later from a worker — so the commit and the intent are atomic."}>transactional outbox</Term>: write a `pending_notifications` row *inside* the transaction, then drain it from a worker, so the committed action and its notification are atomic. Know that it exists, and reach for it when a post-commit gap becomes unacceptable. For this chapter, the after-commit call is enough.
 
 <VideoCallout videoId="5YLpjPmsPCA" videoTitle="What is the Transactional Outbox Pattern? | Designing Event-Driven Microservices">
-  Confluent's 5-minute explainer of the transactional outbox — why a write-then-deliver outbox closes exactly the post-commit gap named above, plus the at-least-once and dedup caveats it brings.
+  Confluent's 5-minute explainer of the transactional outbox: why a write-then-deliver outbox closes exactly the post-commit gap named above, plus the at-least-once and dedup caveats it brings.
 </VideoCallout>
 
-The second is where the channel sends actually run. In this chapter, the dispatcher runs **in-line with the request** — the email send happens before the action returns. That's the right default for tens of events a minute. Three signals tell you it's time to move the sends behind a durable queue: send volume climbs, email latency starts showing up in how long user-visible actions take, or sends need retries that survive a process crash. At that threshold the channel sends move behind a Trigger.dev queue — the durable-job tool you used for background work — and the dispatcher's job shrinks to writing the event row and enqueueing one job per channel. You ship in-line first because it works and because it leaves you exactly one place to make that change later.
+The second is where the channel sends actually run. In this chapter, the dispatcher runs **in-line with the request**, so the email send happens before the action returns. That's the right default for tens of events a minute. Three signals tell you it's time to move the sends behind a durable queue: send volume climbs, email latency starts showing up in how long user-visible actions take, or sends need retries that survive a process crash. At that point the channel sends move behind a Trigger.dev queue, the durable-job tool you used for background work, and the dispatcher's job shrinks to writing the event row and enqueueing one job per channel. You ship in-line first because it works, and because it leaves you exactly one place to make that change later.
 
 ## Notifications or audit logs: who reads it?
 
-You've now seen the seam and the contract. The second pillar of this lesson is a line that decides, for any event, which of two tables it writes to. Students slip here more than anywhere else, so give it room.
+You've now seen the seam and the contract. The second pillar of this lesson is the line that decides, for any event, which of two tables it writes to. This is the spot people get wrong most often, so it's worth taking slowly.
 
-Frame the two tables by **audience**, not by their columns. The `notifications` table is the in-app inbox — it is **user-facing**. A user opens it, reads it, marks things read, and expects every row to be relevant to *them*. The `audit_logs` table — the append-only table you built alongside organizations and roles — is **operator-facing**. An org admin reviews it for compliance, security, and incident response. The end user never sees it. That difference in audience is the entire distinction, and it collapses into one question you can ask about any event: **who reads it?**
+Frame the two tables by **audience**, not by their columns. The `notifications` table is the in-app inbox, and it is **user-facing**. A user opens it, reads it, marks things read, and expects every row to be relevant to *them*. The `audit_logs` table, the append-only table you built alongside organizations and roles, is **operator-facing**. An org admin reviews it for compliance, security, and incident response, and the end user never sees it. That difference in audience is the entire distinction, and it reduces to one question you can ask about any event: who reads it?
 
-Some events answer "both." A role change writes a notification to the demoted member *and* an audit row on the org — the affected person is told, and the organization keeps the record. Some answer "only one." A failed login attempt writes only an audit log; you must never ping a user's inbox every time they fat-finger their own password. A "welcome aboard" message writes only a notification; it has no compliance value, so nothing belongs in the audit log. And here's why keeping the two tables separate actually matters: merge them "to save a query" and you've coupled two audiences into one table, which forces every inbox query to filter out the operator rows the user must never see. That filter is a permanent tax on every read, and forgetting it once leaks audit data into a user's face. Two audiences, two tables.
+Some events answer "both." A role change writes a notification to the demoted member *and* an audit row on the org: the affected person is told, and the organization keeps the record. Some answer "only one." A failed login attempt writes only an audit log, because a user does not want an inbox alert each time they mistype their own password. A "welcome aboard" message writes only a notification, because it has no compliance value, so nothing belongs in the audit log. Keeping the two tables separate matters for a concrete reason. If you merge them to save a query, you've coupled two audiences into one table, which forces every inbox query to filter out the operator rows the user must never see. That filter is a permanent tax on every read, and forgetting it once exposes audit data to a user. Two audiences, two tables.
 
-The following decision filter turns "who reads it?" from a fact you memorize into a procedure you run. Walk it for an event you're unsure about and it lands you on the right table.
+The following decision filter turns "who reads it?" into a short procedure you can run. Walk it for any event you're unsure about, and it lands you on the right table.
 
 <StateMachineWalker kind="decision" title="Which table does this event write to?">
   <Question id="end-user" prompt="Does the end user need to see this event?">
@@ -238,23 +238,23 @@ The following decision filter turns "who reads it?" from a fact you memorize int
   </Question>
 
   <Leaf id="notifications-only" verdict="notifications only">
-    A welcome-aboard message, a comment mention. The user genuinely wants to see it, but no operator ever needs a record that it happened — so it writes one inbox row and nothing else.
+    A welcome-aboard message or a comment mention. The user genuinely wants to see it, but no operator ever needs a record that it happened, so it writes one inbox row and nothing else.
   </Leaf>
 
   <Leaf id="audit-only" verdict="audit_logs only">
-    A failed-login attempt, an admin running a destructive query. An operator must have the immutable record for security and incident response, but the user must **never** get an inbox ping for it — pinging someone every time they fat-finger their own password is noise, not a notification.
+    A failed-login attempt, or an admin running a destructive query. An operator must have the immutable record for security and incident response, but the user must **never** get an inbox ping for it. Pinging someone every time they mistype their own password is noise, not a notification.
   </Leaf>
 
   <Leaf id="both" verdict="Both tables">
-    A role change, a billing-past-due event. The affected user is told (an inbox row), *and* the org keeps the immutable record (an audit row). Two audiences, two writes, one event.
+    A role change or a billing-past-due event. The affected user is told through an inbox row, *and* the org keeps the immutable record in an audit row. Two audiences, two writes, one event.
   </Leaf>
 
   <Leaf id="neither" verdict="Neither — not a notifiable event">
-    A cache invalidation, a finished background cleanup, a per-keystroke draft save. Nobody needs to be told. This is the default: an event earns a notification only when "who reads it?" answers with a real audience — most of what an app does is invisible plumbing that writes to neither table.
+    A cache invalidation, a finished background cleanup, a per-keystroke draft save. Nobody needs to be told. This is the default: an event earns a notification only when "who reads it?" answers with a real audience, and most of what an app does is invisible plumbing that writes to neither table.
   </Leaf>
 </StateMachineWalker>
 
-That last leaf is worth pausing on. The default for any new event is *no notification at all*. Most of what happens inside an app — a cache got invalidated, a cleanup job finished, a draft autosaved on every keystroke — is invisible plumbing the user never needs to know about. An event earns a notification by answering "who reads it?" with a real audience, not by existing.
+That last leaf is worth pausing on. The default for any new event is *no notification at all*. Most of what happens inside an app, such as a cache getting invalidated, a cleanup job finishing, or a draft autosaving on every keystroke, is invisible plumbing the user never needs to know about. An event earns a notification by answering "who reads it?" with a real audience, not simply by happening.
 
 Now apply the question to the events this app actually fires. Run "who reads it?" down the list and the table falls out:
 
@@ -266,9 +266,9 @@ Now apply the question to the events this app actually fires. Run "who reads it?
 | Login failed | audit row only |
 | Password changed | notification to the user (a security signal they should see) + audit row on the account |
 
-The rule maps cleanly once you ask the audience question first. A password change is the interesting one: the user genuinely wants to see "your password was changed" as a security signal, *and* the account needs the immutable record — so it writes both, for two different reasons.
+The rule maps cleanly once you ask the audience question first. A password change is the interesting case: the user genuinely wants to see "your password was changed" as a security signal, *and* the account needs the immutable record, so it writes both, for two different reasons.
 
-Try sorting these yourself. The following drill gives you a handful of real events; drop each into the table it belongs to, judging by who reads it.
+Try sorting these yourself. The following drill gives you a handful of real events. Drop each into the table it belongs to, judging by who reads it.
 
 <Buckets twoCol instructions="Sort each event by who reads it — the end user, an operator, or both.">
   <Bucket name="inbox" label="Inbox only" description="User-facing; no operator record" />
@@ -286,7 +286,7 @@ Try sorting these yourself. The following drill gives you a handful of real even
 
 ## The notifications table: a row is a snapshot
 
-The last piece is the shape of an inbox row, because it carries one decision that surprises people every time. The next lesson builds the writer; here, lock the data model.
+The last piece is the shape of an inbox row, which carries one decision that surprises people every time. The next lesson builds the writer; here you just settle the data model.
 
 <div data-mark-color="blue">
 
@@ -307,21 +307,21 @@ export const notifications = pgTable('notifications', {
 
 </div>
 
-Most of these columns explain themselves: `userId` is the recipient, `orgId` is the org context (nullable, because a personal event like a password change has no org), `eventType` matches a registry key, `subjectId` points at the entity, `readAt` is null until the user opens the message, and `payload` holds structured data the UI needs — a link target, an actor name. The full DDL and the `(userId, createdAt desc)` index that powers the feed are the next lesson's job.
+Most of these columns explain themselves. `userId` is the recipient. `orgId` is the org context, nullable because a personal event like a password change has no org. `eventType` matches a registry key, `subjectId` points at the entity, and `readAt` is null until the user opens the message. `payload` holds structured data the UI needs, such as a link target or an actor name. The full DDL and the `(userId, createdAt desc)` index that powers the feed are the next lesson's job.
 
-The two columns that carry the real decision are `title` and `body`. These are **computed when the event fires and stored on the row** — rendered at dispatch, not at display. The inbox UI then becomes a pure render of the row: it reads `title` and `body` and shows them, with no join to live data.
+The two columns that carry the real decision are `title` and `body`. These are **computed when the event fires and stored on the row**, rendered at dispatch rather than at display. The inbox UI then becomes a pure render of the row: it reads `title` and `body` and shows them, with no join to live data.
 
-Contrast the alternative, because it's the one people reach for by instinct. Render-at-display would store only the raw ids and compute the text when the user opens their inbox — joining to the users table for the actor's name, to the org for its name, to the invoice for the amount. That seems tidier until any of those things change. The actor renames themselves; now every old notification that mentioned them silently rewrites itself. The invoice amount gets corrected; the past-due notice from last week now quotes a number that was never shown at the time. And every inbox read pays for those joins. Snapshotting kills all of that: the row records the moment.
+Contrast the alternative, because it's the one people reach for by instinct. Render-at-display would store only the raw ids and compute the text when the user opens their inbox, joining to the users table for the actor's name, to the org for its name, to the invoice for the amount. That seems tidier until any of those things change. If the actor renames themselves, every old notification that mentioned them silently rewrites itself. If the invoice amount gets corrected, the past-due notice from last week now quotes a number that was never shown at the time. On top of that, every inbox read pays for those joins. Snapshotting avoids all of it, because the row records the moment.
 
-Which leads to the one thing students misread as a bug. A notification whose title says "Jane changed your role" stays exactly that even after Jane renames herself to "Jane Doe." That is not stale data — that is the feature. The row is a record of what was true when the event fired, the way a receipt doesn't update when a store changes its name. The experienced move is to snapshot the *display strings* into `title` and `body`, but keep stable *ids* in `payload`, so the UI can still link through to the live entity even though the text is frozen.
+This leads to the one thing people often misread as a bug. A notification whose title says "Jane changed your role" stays exactly that even after Jane renames herself to "Jane Doe." That is not stale data; it's the intended behavior. The row is a record of what was true when the event fired, the way a receipt doesn't update when a store changes its name. The practical move is to snapshot the display strings into `title` and `body` while keeping stable ids in `payload`, so the UI can still link through to the live entity even though the text is frozen.
 
-One last column: `readAt`. Null means unread. The unread badge is a single count of rows where `readAt` is null, and marking something read is a single update that stamps it with the current time. The queries and the inbox UI itself land in the next lesson and the project starter; here, just hold the shape.
+One last column: `readAt`. Null means unread. The unread badge is a single count of rows where `readAt` is null, and marking something read is a single update that stamps it with the current time. The queries and the inbox UI itself land in the next lesson and the project starter, so for now just hold the shape in mind.
 
 ## Where this goes next
 
-Here's the model to walk away with, in one breath: **call sites fire one event; the dispatcher owns every channel decision; audit logs are a separate, operator-facing write.** The dispatcher is the third named choke point you've built — after the action boundary and the webhook seam — and it earns the same payoff: channel knowledge lives in one module, so the system grows by editing one file instead of sweeping across dozens.
+Here's the model to walk away with: call sites fire one event, the dispatcher owns every channel decision, and audit logs are a separate, operator-facing write. The dispatcher is the third named choke point you've built, after the action boundary and the webhook seam, and it earns the same payoff: channel knowledge lives in one module, so the system grows by editing one file instead of sweeping across dozens.
 
-From here, the seam fills in. The next lesson builds the two channel functions — email through your existing Resend wrapper, and the inbox-row writer — and the rule that one channel failing never kills the other. The lesson after adds category-grained preferences, read exactly once inside the dispatcher. The one after that adds the 60-second dedup window that lets call sites fire freely without coordinating. Then the next chapter wires this seam into three real flows and you watch the pattern carry its weight.
+From here, the seam fills in. The next lesson builds the two channel functions, email through your existing Resend wrapper and the inbox-row writer, along with the rule that one channel failing never kills the other. The lesson after that adds category-grained preferences, read exactly once inside the dispatcher. The one after that adds the 60-second dedup window that lets call sites fire freely without coordinating. Then the next chapter wires this seam into three real flows, and you see the pattern carry its weight.
 
 ## External resources
 
@@ -331,7 +331,7 @@ From here, the seam fills in. The next lesson builds the two channel functions �
     href="https://microservices.io/patterns/data/transactional-outbox.html"
     icon="lucide:inbox"
     iconColor="#0EA5E9"
-    description="Chris Richardson's canonical pattern entry — the authoritative reference for the outbox upgrade the lesson names."
+    description="Chris Richardson's canonical pattern entry, the authoritative reference for the outbox upgrade the lesson names."
   />
   <ExternalResource
     title="Notification System Design: Push, SMS, Email at Scale"
