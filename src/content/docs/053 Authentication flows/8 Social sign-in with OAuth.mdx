@@ -27,35 +27,35 @@ import AccountRowAfterOauth from '../../../components/lessons/053/8/account-row-
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-A user clicks **Sign in with Google**, a Google screen flashes by, and a second later they're back in your app — signed in, no password ever typed. From the outside it's the smoothest sign-in you can offer. From the inside, three questions decide whether you've shipped it right: what did you have to *configure* for that button to work, **where did the user's identity get stored**, and — the part that generates support tickets — what happens the *second* time they sign in, or when they'd already signed up with a password back in January?
+A user clicks **Sign in with Google**, a Google screen flashes by, and a second later they're back in your app, signed in, no password ever typed. From the outside it's the smoothest sign-in you can offer. From the inside, three questions decide whether you've shipped it right: what did you have to *configure* for that button to work, where did the user's identity get stored, and (the part that generates support tickets) what happens the *second* time they sign in, or when they'd already signed up with a password back in January?
 
-You've already met the machinery. In the chapter on the auth mental model, you learned the OAuth 2.1 protocol: the redirect to the provider, the PKCE challenge, the `state` parameter, the exact-match redirect URIs — *how the bytes move* between your app and Google. This lesson is the cash-out: how you turn that protocol into a button. You won't write much new code. The `[...all]` catch-all you mounted in the previous chapter already receives the callback; Better Auth already owns every byte of the round-trip. What's left is **configuration plus a mental model of what the library does the instant the redirect lands** — and a handful of judgment calls that bite only in production.
+You've already met the machinery. In the chapter on the auth mental model, you learned the OAuth 2.1 protocol: the redirect to the provider, the PKCE challenge, the `state` parameter, the exact-match redirect URIs, all of which describe how the bytes move between your app and Google. This lesson turns that protocol into a button, and you won't write much new code to do it. The `[...all]` catch-all you mounted in the previous chapter already receives the callback, and Better Auth already owns every byte of the round-trip. What's left is configuration, a mental model of what the library does the instant the redirect lands, and a handful of judgment calls that bite only in production.
 
-Hold onto one sentence for the whole lesson, because everything falls out of it. A password flow **stores a secret the user set** — the Argon2 hash sitting in `account.password`. An OAuth flow **stores a pointer to an identity the provider owns**: no password, just which provider vouched for them and that provider's id for them, plus some tokens. Signing in stops being "this person knew the secret we stored" and becomes "the provider vouched for this identity." The lookup logic, the awkward UX gap, the decision about whether to keep the tokens at all — every one of them is a consequence of that shift.
+One idea carries the whole lesson, so hold onto it. A password flow stores a secret the user set: the Argon2 hash sitting in `account.password`. An OAuth flow instead stores a pointer to an identity the provider owns: no password, just which provider vouched for them, that provider's id for them, and some tokens. Signing in stops being "this person knew the secret we stored" and becomes "the provider vouched for this identity." The lookup logic, the awkward UX gap, and the decision about whether to keep the tokens at all are all consequences of that shift.
 
-By the end you'll have a working Google button, the right redirect URI registered for each environment, and a clear-eyed view of the find-or-create lookup, the scopes you're charging every user, and the OAuth-only-account gap that confuses real people.
+By the end you'll have a working Google button, the right redirect URI registered for each environment, and a clear view of the find-or-create lookup, the scopes you charge every user at sign-in, and the OAuth-only-account gap that confuses real people.
 
 ## What the library does when the redirect lands
 
-Here's the division of labor: **you wire the button; the library owns everything between the click and the session.** That "everything" is invisible — it happens across a redirect to a domain you don't control and back — so before you touch a single console screen, you need a model of what the library *decides* when the user comes back. This is the load-bearing concept of the lesson. The console steps that follow only make sense once you know what they're in service of.
+Here is the division of labor: you wire the button, and the library owns everything between the click and the session. That work is invisible, because it happens across a redirect to a domain you don't control and back. So before you touch a single console screen, you need a model of what the library decides when the user comes back. The console steps that follow only make sense once you know what they're in service of.
 
-Walk the round-trip. The protocol chapter owns the byte-level detail of PKCE and `state`, so this is the altitude that matters here:
+Walk the round-trip. The protocol chapter covers the byte-level detail of PKCE and `state`, so this is the altitude that matters here:
 
 1. The user clicks. Your button calls `authClient.signIn.social({ provider: 'google' })`, and the browser redirects to Google's <Term definition="The Google-hosted page where the user picks an account and approves the scopes your app requested. It runs on Google's domain, never yours.">consent screen</Term>. The library attaches the `state` value and the PKCE challenge on the way out.
-2. The user approves. Google redirects back to `…/api/auth/callback/google?code=…&state=…` — straight into the catch-all you already mounted. No new route, no handler to write.
+2. The user approves. Google redirects back to `…/api/auth/callback/google?code=…&state=…`, straight into the catch-all you already mounted. There is no new route and no handler to write.
 3. The library validates `state` (this is the CSRF defense from the protocol chapter), exchanges the `code` for tokens using the PKCE verifier, and reads the user's profile from Google's <Term definition="The provider's profile endpoint. The library calls it after the token exchange to read the user's email, name, and picture.">`userinfo`</Term> endpoint.
-4. **Now the library decides *who this is*.** This is the step that matters — call it the find-or-create lookup.
+4. Now the library decides *who this is*. Call this step the find-or-create lookup.
 5. It issues a session (the cookie rides back out through `nextCookies`) and redirects the browser to your `callbackURL`.
 
 Step 4 is where one button quietly produces several different outcomes. The library runs the lookup in a fixed order:
 
-- **First, look up by provider identity** — is there already an `account` row linking *this exact Google identity* to a user? If yes, this is a returning user: **sign them in.** This is the common case, the one that fires every time after the first.
-- **If not, look up by email** — does a `user` with this email already exist? Maybe they signed up with a password months ago. If a match exists *and Google is a trusted provider*, **link**: insert a fresh `account` row against that existing user and sign them in. If a match exists but the provider is **not** trusted, **refuse** — return `account-not-linked` rather than silently fold a Google login into a password account on the strength of an email claim nobody verified to *you*.
-- **If there's no user at all**, **create one**: a new `user` and its `account` row, with `emailVerified` set from what the provider claims, and sign them in. This is **first-time-OAuth sign-up** — one round-trip, no separate verification email, because the provider already proved the user owns that inbox.
+- **First, look up by provider identity.** Is there already an `account` row linking *this exact Google identity* to a user? If so, this is a returning user, so sign them in. This is the common case, the one that fires every time after the first.
+- **If not, look up by email.** Does a `user` with this email already exist? Maybe they signed up with a password months ago. If a match exists *and Google is a trusted provider*, link: insert a fresh `account` row against that existing user and sign them in. If a match exists but the provider is **not** trusted, refuse, returning `account-not-linked` rather than silently folding a Google login into a password account on the strength of an email claim nobody verified to *you*.
+- **If there's no user at all, create one.** A new `user` and its `account` row, with `emailVerified` set from what the provider claims, and sign them in. This is first-time-OAuth sign-up: one round-trip, no separate verification email, because the provider already proved the user owns that inbox.
 
 So the same button has three landing states: sign in an existing user, link to an existing user, or create a brand-new one. Which one fires depends on what's already in your database and whether the provider is trusted.
 
-That word "trusted" is doing real work, and there's a default here worth pinning down precisely, because it's easy to get backwards. Linking-on-email-match is **on by default** — but it's *gated on the provider being trusted*, and the list of trusted providers has **no default**. You have to name them. So until you configure that list (which is the next lesson's job), a same-email Google sign-in against an existing password account will **refuse**, not link. That's not a bug — it's the safe default. The next lesson owns the configuration of *which providers you trust* and the explicit link-and-unlink flows. Here, you only need the lookup order and the knowledge that the safe default is "refuse to auto-merge."
+The word "trusted" is doing real work here, and the default is easy to get backwards, so pin it down. Linking on email match is on by default, but it is gated on the provider being trusted, and the list of trusted providers has no default. You have to name them. So until you configure that list (which is the next lesson's job), a same-email Google sign-in against an existing password account will refuse, not link. That isn't a bug, it's the safe default. The next lesson owns the configuration of which providers you trust and the explicit link-and-unlink flows. Here, you only need the lookup order and the knowledge that the safe default is to refuse to auto-merge.
 
 <OauthCallbackFlow />
 
@@ -72,13 +72,13 @@ Lock the order in before moving to configuration. The following short exercise a
 
 ## Configuring Google as the canonical provider
 
-Google is the year-one default for a SaaS — it's the account almost everyone already has. Configure it once, well, and the other providers are the same shape with a few quirks (those come later in this lesson, as a reference you scan, not a tutorial you read).
+Google is the year-one default for a SaaS, since it's the account almost everyone already has. Configure it once, well, and the other providers are the same shape with a few quirks (those come later in this lesson, as a reference you scan, not a tutorial you read).
 
 There are three layers, and they stack in dependency order: the environment variables that hold your credentials, the `socialProviders` block that wires them into the auth instance, and the registration you do in Google's own console so Google agrees to talk to you.
 
 ### Layer one: the credentials in `env.ts`
 
-Google issues you two values for your app: a `client_id` and a `client_secret`. They go through the same validated `env` schema you set up earlier in the course — never read straight off `process.env`.
+Google issues you two values for your app: a `client_id` and a `client_secret`. They go through the same validated `env` schema you set up earlier in the course, never read straight off `process.env`.
 
 <div data-mark-color="blue">
 
@@ -92,15 +92,15 @@ const serverSchema = z.object({
 
 </div>
 
-Two judgment calls ride on those two lines, and they're rules, not asides.
+Two rules ride on those two lines.
 
-**Use separate credentials per environment.** Register a distinct OAuth client for dev, for staging, and for production in the Google console. A leaked staging secret then never touches production, and each environment carries its own redirect URI. This is the exact-match redirect rule from the protocol chapter cashed out in practice: there are no wildcards in OAuth redirect URIs, so each environment registers its own exact URL.
+**Use separate credentials per environment.** Register a distinct OAuth client for dev, for staging, and for production in the Google console. A leaked staging secret then never touches production, and each environment carries its own redirect URI. This is the exact-match redirect rule from the protocol chapter put into practice: there are no wildcards in OAuth redirect URIs, so each environment registers its own exact URL.
 
-**Read through the validated `env` object, never `process.env.GOOGLE_*` directly.** A missing secret should blow up at boot, the moment the app starts, where you'll see it instantly — not on the first sign-in attempt three days later, on a user.
+**Read through the validated `env` object, never `process.env.GOOGLE_*` directly.** A missing secret should fail at boot, the moment the app starts, where you'll see it instantly, rather than on a user's first sign-in attempt three days later.
 
 ### Layer two: the `socialProviders` block
 
-This is the block you add to `betterAuth({ ... })` in `lib/auth.ts`, right alongside the `emailAndPassword` and `emailVerification` options you've already configured. They're siblings — all configuration on the one auth instance. Step through it.
+This is the block you add to `betterAuth({ ... })` in `lib/auth.ts`, right alongside the `emailAndPassword` and `emailVerification` options you've already configured. They're siblings, all configuration on the one auth instance. Step through it.
 
 <AnnotatedCode lang="ts" code={`
 socialProviders: {
@@ -112,55 +112,55 @@ socialProviders: {
 },
 `}>
   <AnnotatedStep meta="{1-2}" color="blue">
-    The `socialProviders` block holds one entry per provider, keyed by name. `google` is a built-in — you don't install a plugin for it. Unlike the passkey or magic-link plugins from earlier lessons, built-in social providers are plain config.
+    The `socialProviders` block holds one entry per provider, keyed by name. `google` is built in, so you don't install a plugin for it. Unlike the passkey or magic-link plugins from earlier lessons, built-in social providers are plain config.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{3-4} "clientId" "clientSecret"`} color="blue">
-    The two credentials, pulled from the validated `env` object. This is the only place they're read — never off `process.env` directly.
+    The two credentials, pulled from the validated `env` object. This is the only place they're read, never off `process.env` directly.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{5}" color="violet">
-    `accessType: 'offline'` is shown commented out on purpose. It's the knob that makes Google issue a refresh token — and you only want it if you'll call Google's API on the user's behalf later. For plain sign-in, leave it off. More on this in the token-persistence section below.
+    `accessType: 'offline'` is shown commented out on purpose. It's the knob that makes Google issue a refresh token, and you only want it if you'll call Google's API on the user's behalf later. For plain sign-in, leave it off. More on this in the token-persistence section below.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{2}" color="blue">
-    Notice what's *absent*: there's no `redirectURI`. It defaults to `<baseURL>/api/auth/callback/google` — exactly the path your catch-all already serves. Only set it if you mounted auth at a non-default path; otherwise an override here is at best redundant and at worst wrong. Adding a second provider is just another key: `{ google: {...}, github: {...} }`.
+    Notice what's *absent*: there's no `redirectURI`. It defaults to `<baseURL>/api/auth/callback/google`, exactly the path your catch-all already serves. Only set it if you mounted auth at a non-default path; otherwise an override here is at best redundant and at worst wrong. Adding a second provider is just another key: `{ google: {...}, github: {...} }`.
   </AnnotatedStep>
 </AnnotatedCode>
 
-One thing worth saying out loud, because students go looking for it: the browser client in `lib/auth-client.ts` needs **no** extra plugin for built-in social providers. There's no `socialClient()` to add. The magic-link, passkey, and 2FA flows from earlier lessons each needed a matching client plugin; social sign-in does not. The button calls a method that's already on the client.
+One thing is worth stating plainly, because students go looking for it: the browser client in `lib/auth-client.ts` needs no extra plugin for built-in social providers. There's no `socialClient()` to add. The magic-link, passkey, and 2FA flows from earlier lessons each needed a matching client plugin; social sign-in does not. The button calls a method that's already on the client.
 
 ### Layer three: registering the app in Google Cloud Console
 
-The first two layers are code. The third is a procedure you click through in Google's console — external, occasionally re-skinned, and the part most likely to trip you up. The console UI shifts over time, so the goal here is *the six things you do*, not a pixel-by-pixel tour. The live console is always the source of truth; the cards at the end of this section link straight to it.
+The first two layers are code. The third is a procedure you click through in Google's console: external, occasionally re-skinned, and the part most likely to trip you up. The console UI shifts over time, so the goal here is the six things you do, not a pixel-by-pixel tour. The live console is always the source of truth, and the cards at the end of this section link straight to it.
 
 <Steps>
 
 1. Create a project in Google Cloud Console (or pick an existing one).
 
-2. Configure the **OAuth consent screen**. This is what the user sees when they approve. Set the publishing status — *testing* means only the test users you list can sign in; *in production* means anyone can — plus a support email and the scopes you request. For plain sign-in, the scopes are `openid email profile`. Anything more sensitive (Calendar, Drive) triggers a Google app-review process, so don't add it here unless sign-in itself genuinely needs it.
+2. Configure the **OAuth consent screen**. This is what the user sees when they approve. Set the publishing status, a support email, and the scopes you request. (*Testing* means only the test users you list can sign in; *in production* means anyone can.) For plain sign-in, the scopes are `openid email profile`. Anything more sensitive, such as Calendar or Drive, triggers a Google app-review process, so don't add it here unless sign-in itself genuinely needs it.
 
 3. Create **OAuth client credentials**, of type **Web application**.
 
-4. Register the **Authorized redirect URIs**. Add `http://localhost:3000/api/auth/callback/google` for local dev, and the staging and production URLs alongside it — each one **exact**. This is the single most common way an OAuth setup fails, so it gets its own warning below.
+4. Register the **Authorized redirect URIs**. Add `http://localhost:3000/api/auth/callback/google` for local dev, and the staging and production URLs alongside it, each one exact. This is the single most common way an OAuth setup fails, so it gets its own warning below.
 
-5. Copy the generated `client_id` and `client_secret` into *that environment's* `env`. Dev's credentials go in your local `.env`; production's go in your production secret store.
+5. Copy the generated `client_id` and `client_secret` into *that environment's* `env`. Dev's credentials go in your local `.env`, and production's go in your production secret store.
 
 6. Test the full loop end to end: click the button, approve on the consent screen, land back signed in.
 
 </Steps>
 
 :::caution
-Redirect URIs are matched **exactly** — scheme, host, port, path, trailing slash and all. `http://localhost:3000/api/auth/callback/google` and `http://localhost:3000/api/auth/callback/google/` are two different URIs to Google, and the second will silently fail. No wildcards, no "starts with." When one environment works and another mysteriously doesn't, this is almost always why: a `https` vs `http`, a missing port, a stray trailing slash in one of the registered URLs.
+Redirect URIs are matched exactly: scheme, host, port, path, trailing slash and all. `http://localhost:3000/api/auth/callback/google` and `http://localhost:3000/api/auth/callback/google/` are two different URIs to Google, and the second will silently fail. There are no wildcards and no "starts with." When one environment works and another mysteriously doesn't, this is almost always why: a `https` where you meant `http`, a missing port, or a stray trailing slash in one of the registered URLs.
 :::
 
 If you'd find it grounding to watch the whole loop done once on screen, this short walkthrough wires it end to end.
 
 <VideoCallout videoId="BTgCjLg4XrQ" videoTitle="Simplest Way to Add Google Login/Signup with Better Auth">
-  OrcDev wires the same Google button in ~6 min — Cloud Console credentials, the redirect URI, the `socialProviders` block, and the `signIn.social` call.
+  OrcDev wires the same Google button in about six minutes: the Cloud Console credentials, the redirect URI, the `socialProviders` block, and the `signIn.social` call.
 </VideoCallout>
 
-Console screens get re-skinned; the concept doesn't. Bookmark the live sources.
+Console screens get re-skinned, but the concept doesn't. Bookmark the live sources.
 
 <CardGrid>
   <ExternalResource
@@ -191,62 +191,62 @@ authClient.signIn.social({ provider: 'google', callbackURL: '/dashboard' });
 
 </div>
 
-That's the whole client-side surface. The button is a plain client `onClick` calling this method; the page around it can stay a Server Component, with only the button itself marked `'use client'`.
+That's the whole client-side surface. The button is a plain client `onClick` calling this method, and the page around it can stay a Server Component, with only the button itself marked `'use client'`.
 
-Now, if you've been following the password flows earlier in this chapter, you'll notice something missing — and the absence is deliberate.
+If you've been following the password flows earlier in this chapter, you'll notice something missing, and the absence is deliberate.
 
 :::note
-There is **no Server Action wrapping the OAuth start.** The password flows all run through the five-seam action shape — parse the FormData with Zod, return a `Result` the form renders. This call doesn't. `signIn.social` *triggers a browser redirect*; there's no FormData to parse, no `Result` to return on the start, because the response is a redirect to Google, not data for your UI. The boundary that produces a session is the **callback** — the catch-all route the library owns — not a `signInWithGoogleAction` you write. Don't go building one; there's nothing for it to do.
+There is no Server Action wrapping the OAuth start. The password flows all run through the five-seam action shape: parse the FormData with Zod, return a `Result` the form renders. This call doesn't. `signIn.social` triggers a browser redirect, so there's no FormData to parse and no `Result` to return on the start, because the response is a redirect to Google, not data for your UI. The boundary that produces a session is the callback, the catch-all route the library owns, not a `signInWithGoogleAction` you write. Don't build one; there's nothing for it to do.
 :::
 
-The `callbackURL` you pass rides through the whole round-trip and becomes the post-callback redirect. The library validates it against your configured `trustedOrigins`, so a hostile value can't bounce the user off-site. The one case that needs your own care: if *your* surrounding code ever reflects a `?next=` parameter into that `callbackURL`, route it through the `safeNext` guard from the password-reset lesson first — the library validates its own redirects, not values your code splices in.
+The `callbackURL` you pass rides through the whole round-trip and becomes the post-callback redirect. The library validates it against your configured `trustedOrigins`, so a hostile value can't bounce the user off-site. One case needs your own care: if *your* surrounding code ever reflects a `?next=` parameter into that `callbackURL`, route it through the `safeNext` guard from the password-reset lesson first, because the library validates its own redirects, not values your code splices in.
 
-So the user clicks, approves, lands on `/dashboard`. What's in the database now? This is the payoff — the moment the spine metaphor becomes something you can *see*. After a first-time Google sign-in, you get a `user` row and an `account` row, and the `account` row looks nothing like the password one.
+So the user clicks, approves, and lands on `/dashboard`. What's in the database now? This is where the password-versus-pointer contrast becomes something you can see. After a first-time Google sign-in, you get a `user` row and an `account` row, and the `account` row looks nothing like the password one.
 
 The following two row-cards show it. Compare the OAuth `account` row with the `'credential'` row a password sign-up produces.
 
 <AccountRowAfterOauth />
 
-Read the contrast. The credential row stores a secret — the Argon2 hash — and nothing else of note. The Google row stores no secret at all. It holds `providerId` and <Term definition="The provider's own stable id for this user (the OIDC `sub`). A public-ish identifier, not a secret — safe to log, unlike the tokens.">`accountId`</Term> — the pointer to a Google identity — plus the tokens Google handed back: an <Term definition="A short-lived token your app can present to the provider's API to act on the user's behalf. A secret; never log it.">`accessToken`</Term>, an <Term definition="A signed token (JWT) asserting who the user is and that the provider authenticated them. A secret; never log it.">`idToken`</Term>, and a `refreshToken` *only if* you set `accessType: 'offline'`. Mind the line between them: `accountId` is the provider's public-ish identifier and is **safe to log**; the three tokens are secrets — keep them out of your logs.
+Read the contrast. The credential row stores a secret, the Argon2 hash, and nothing else of note. The Google row stores no secret at all. It holds `providerId` and <Term definition="The provider's own stable id for this user (the OIDC `sub`). A public-ish identifier, not a secret — safe to log, unlike the tokens.">`accountId`</Term>, the pointer to a Google identity, plus the tokens Google handed back: an <Term definition="A short-lived token your app can present to the provider's API to act on the user's behalf. A secret; never log it.">`accessToken`</Term>, an <Term definition="A signed token (JWT) asserting who the user is and that the provider authenticated them. A secret; never log it.">`idToken`</Term>, and a `refreshToken` *only if* you set `accessType: 'offline'`. Mind the line between them: `accountId` is the provider's public-ish identifier and is safe to log, but the three tokens are secrets, so keep them out of your logs.
 
-That empty `password` column is the spine made literal. **This account row has no secret of its own.** Signing this user in isn't "they proved they knew our secret" — it's "Google vouched for them, and here's the pointer to prove it."
+That empty `password` column is the point made literal: this account row has no secret of its own. Signing this user in isn't "they proved they knew our secret," it's "Google vouched for them, and here's the pointer to prove it."
 
 ## The senior calls that bite in production
 
-The button works. The row fills. Now the part the happy path hides: four decisions where the code runs perfectly either way, and only judgment — or a breach, or a support queue — tells you whether you got them right. These are the calls juniors get wrong because nothing crashes when they do.
+The button works and the row fills. Now comes the part the happy path hides: four decisions where the code runs perfectly either way, and only judgment (or a breach, or a support queue) tells you whether you got them right. These are the calls juniors get wrong because nothing crashes when they do.
 
 ### Scopes: least privilege, charged to every user at sign-in
 
 Plain sign-in needs exactly three scopes: `openid email profile`. The trap is reaching for more.
 
-Say a feature in your app reads the user's Google Calendar. The tempting move is to add `calendar.readonly` to the sign-in config so the token's already there when they reach the feature. Don't. A scope on the sign-in config goes on the **consent screen for every user**, at sign-in — including the large majority who never touch that feature. Now everyone is asked, at the door, to grant calendar access to use your app at all. Conversion drops, trust erodes, and a sensitive scope drags Google's app-review process onto your whole sign-in.
+Say a feature in your app reads the user's Google Calendar. The tempting move is to add `calendar.readonly` to the sign-in config so the token's already there when they reach the feature. Don't. A scope on the sign-in config goes on the consent screen for every user at sign-in, including the large majority who never touch that feature. Now everyone is asked, at the door, to grant calendar access just to use your app at all. Conversion drops, trust erodes, and a sensitive scope drags Google's app-review process onto your whole sign-in.
 
-The pattern that scales: **sign-in asks for the basics; a feature that needs more requests it incrementally, at the moment the user opts into that feature** — via `linkSocial({ provider, scopes })`, which the next lesson covers. The rule to carry: *scopes are a conversion-and-trust cost paid by everyone, charged at sign-in. Only ask for what sign-in itself needs.*
+The pattern that scales is to let sign-in ask for the basics and let a feature that needs more request it incrementally, at the moment the user opts into that feature, via `linkSocial({ provider, scopes })`, which the next lesson covers. The rule to carry: scopes are a conversion-and-trust cost paid by everyone, charged at sign-in, so only ask for what sign-in itself needs.
 
 ### `email_verified`: the provider's claim is an input, not a guarantee
 
-When the library creates a user from an OAuth sign-in, it sets `user.emailVerified` from the provider's `email_verified` claim. For a consumer Google account that claim is `true`, which is genuinely useful: the OAuth sign-up *is* the verification, and the user skips the verification email entirely (the provider already proved they own the inbox).
+When the library creates a user from an OAuth sign-in, it sets `user.emailVerified` from the provider's `email_verified` claim. For a consumer Google account that claim is `true`, which is genuinely useful: the OAuth sign-up *is* the verification, and the user skips the verification email entirely, because the provider already proved they own the inbox.
 
-But "the provider's claim" is exactly that — a claim, and it's not uniform:
+But the provider's claim is exactly that, a claim, and it isn't uniform across providers:
 
 - **Google Workspace** accounts may report `email_verified` as false or absent, depending on the domain's configuration.
-- **Apple** serializes it as the **string** `"true"`, not a boolean — so a naive `=== true` check silently fails and treats a verified email as unverified.
+- **Apple** serializes it as the string `"true"`, not a boolean, so a naive `=== true` check silently fails and treats a verified email as unverified.
 - **GitHub** may assume the email is verified without actually checking.
 
-The senior call: *trust the provider for consumer Google; for mixed or enterprise audiences, treat `emailVerified` as a claim you may want to re-verify on top.* And remember the framing from the email-verification lesson — `emailVerified` is the **capability floor, not the ceiling.** It gates the basics; it never replaces the per-action authorization checks that run regardless (the org-and-roles work later in the course).
+The senior call: trust the provider for consumer Google, and for mixed or enterprise audiences, treat `emailVerified` as a claim you may want to re-verify on top. Remember the framing from the email-verification lesson, too: `emailVerified` is the capability floor, not the ceiling. It gates the basics, but it never replaces the per-action authorization checks that run regardless (the org-and-roles work later in the course).
 
 ### Token persistence and `encryptOAuthTokens`
 
-Start with the question most people skip: **do you even need to keep the provider tokens?**
+Start with the question most people skip: do you even need to keep the provider tokens?
 
-For **pure sign-in**, you don't. The tokens land in the `account` row at callback and are *never read again*. Your app trusts its **own** session cookie — not Google's `accessToken` — to know who's signed in. The tokens just sit there.
+For pure sign-in, you don't. The tokens land in the `account` row at callback and are never read again. Your app trusts its own session cookie, not Google's `accessToken`, to know who's signed in. The tokens just sit there.
 
-For products that **call the provider's API later** — read the user's calendar, push a file to their Drive — the tokens earn their keep: they're read on demand, and refreshed via the `refreshToken` when they expire (which is why that knob, `accessType: 'offline'`, exists; without it Google issues no refresh token). The rule: *keep tokens only when you actually use them.*
+For products that call the provider's API later, to read the user's calendar or push a file to their Drive, the tokens earn their keep: they're read on demand and refreshed via the `refreshToken` when they expire. That is why the `accessType: 'offline'` knob exists; without it Google issues no refresh token. The rule: keep tokens only when you actually use them.
 
-And when you do keep them, here's the hinge — the one default in this lesson that protects no one until you flip it:
+And when you do keep them, here is the hinge, the one default in this lesson that protects no one until you flip it:
 
 :::danger
-**`account.encryptOAuthTokens` defaults to `false`.** Stored tokens land in your database **in plaintext**. A leaked database dump then hands an attacker live, usable provider tokens — the keys to your users' Google accounts, not just your app. Whenever you actually persist and use tokens, set `account: { encryptOAuthTokens: true }`. The happy path works identically either way; only a breach reveals the gap.
+`account.encryptOAuthTokens` defaults to `false`, so stored tokens land in your database in plaintext. A leaked database dump then hands an attacker live, usable provider tokens, the keys to your users' Google accounts, not just your app. Whenever you actually persist and use tokens, set `account: { encryptOAuthTokens: true }`. The happy path works identically either way, and only a breach reveals the gap.
 :::
 
 <div data-mark-color="violet">
@@ -259,21 +259,21 @@ account: {
 
 </div>
 
-This is the same shape as the dangerous defaults from earlier in the chapter — the password-reset session revocation, the hashed reset token. The version that runs perfectly and protects no one is the one to watch for. Flip it on whenever tokens are persisted and used.
+This is the same shape as the dangerous defaults from earlier in the chapter, the password-reset session revocation and the hashed reset token. The version that runs perfectly and protects no one is the one to watch for. Flip it on whenever tokens are persisted and used.
 
 ### The OAuth-only account: the mistype that fills your support queue
 
-This is the most product-relevant beat in the lesson, and it falls straight out of the spine.
+This is the most product-relevant point in the lesson, and it follows straight from the password-versus-pointer contrast.
 
-A user who signed up with Google has **no `'credential'` account row.** No password exists anywhere — there was never one to create. Weeks later they come back, forget they used Google, and type their email and a made-up password into your password form. What happens?
+A user who signed up with Google has no `'credential'` account row. No password exists anywhere, because there was never one to create. Weeks later they come back, forget they used Google, and type their email and a made-up password into your password form. What happens?
 
-The library does exactly the right thing: the sign-in action returns the same opaque `'unauthorized'` `Result` as a genuinely wrong password — that's `mapSignInError` collapsing the library's `INVALID_EMAIL_OR_PASSWORD` into one shape, the enumeration discipline from the sign-in lesson holding the line. From the *security* side, perfect. From the *user's* side, baffling: they **have** an account, they just don't sign in this way, and the form is telling them their credentials are wrong.
+The library does exactly the right thing: the sign-in action returns the same opaque `'unauthorized'` `Result` as a genuinely wrong password. That's `mapSignInError` collapsing the library's `INVALID_EMAIL_OR_PASSWORD` into one shape, the enumeration discipline from the sign-in lesson holding the line. From the security side, this is perfect. From the user's side, it's baffling: they have an account, they just don't sign in this way, and the form is telling them their credentials are wrong.
 
-Better Auth won't fix this for you, and the default — staying opaque — is the correct floor. But you can do better, on purpose. On an `'unauthorized'` result, you can check whether that email has any `'credential'` account row. If it has *only* an OAuth account, surface something honest: **"This email signs in with Google,"** with a Google button right there.
+Better Auth won't fix this for you, and the default of staying opaque is the correct floor. But you can do better, on purpose. On an `'unauthorized'` result, you can check whether that email has any `'credential'` account row. If it has only an OAuth account, surface something honest: "This email signs in with Google," with a Google button right there.
 
-Name the trade-off out loud, because it's a real one. That friendly branch **does leak** that an account exists for the email — it's exactly the enumeration cost the chapter has been guarding against. The point isn't that leaking is fine; it's that this is a **deliberate** support-cost-versus-enumeration-cost trade, decided on purpose — the same shape as the "this email is already registered" call from the sign-up lesson. It costs one extra query and pays for itself in tickets you never receive. Make the default opaque; make the friendly branch a conscious choice, not an accident.
+Name the trade-off out loud, because it's a real one. That friendly branch does leak that an account exists for the email, which is exactly the enumeration cost the chapter has been guarding against. The point isn't that leaking is fine; it's that this is a deliberate trade of support cost against enumeration cost, decided on purpose, the same shape as the "this email is already registered" call from the sign-up lesson. It costs one extra query and pays for itself in tickets you never receive. Make the default opaque, and make the friendly branch a conscious choice, not an accident.
 
-Now the keystone exercise. The single most-misread idea in this lesson is that **one button has multiple landing states**, and that the password form has a confusing failure for OAuth users. The following classification drill makes you commit to which outcome each scenario produces. The two "email matches" cases — trusted versus untrusted provider — are the pair that separates understanding from guessing.
+Now the keystone exercise. The single most-misread idea in this lesson is that one button has multiple landing states, and that the password form has a confusing failure for OAuth users. The following classification drill makes you commit to which outcome each scenario produces. The two "email matches" cases, trusted versus untrusted provider, are the pair that separates understanding from guessing.
 
 <Buckets twoCol instructions="For each scenario, pick the outcome Better Auth produces — either at the OAuth callback or at the password form.">
   <Bucket name="signin" label="Sign in existing user" description="The account row already exists" />
@@ -293,50 +293,50 @@ Now the keystone exercise. The single most-misread idea in this lesson is that *
 
 ## Per-provider quirks: a reference, not a tutorial
 
-You configure Google once. Every other provider is the **same `socialProviders` shape** with its own handful of gotchas — and those gotchas are what this section is for. Don't read it front to back; treat the following tabs as a reference you jump to when you're actually wiring up "Sign in with GitHub" and want the 30-second list of what's different.
+You configure Google once. Every other provider is the same `socialProviders` shape with its own handful of gotchas, and those gotchas are what this section is for. Don't read it front to back; treat the following tabs as a reference you jump to when you're actually wiring up "Sign in with GitHub" and want a quick list of what's different.
 
 <TabbedContent syncKey="provider-quirks">
 
-  <TabbedItem label="Google" icon="simple-icons:google" caption="The canonical provider — already wired above. Two extra knobs worth knowing.">
-    - The spine of this lesson — `clientId` + `clientSecret`, scopes `openid email profile`, default redirect URI.
-    - `prompt: 'select_account'` forces the account-picker on every sign-in — useful when your users juggle multiple Google accounts.
-    - `accessType: 'offline'` paired with `prompt: 'select_account consent'` is the combo that yields a refresh token — and it only matters if you store and use tokens (see the token-persistence section).
-    - Consent-screen publishing: *testing* = only your listed test users can sign in; *in production* = anyone, but sensitive scopes need Google's review.
+  <TabbedItem label="Google" icon="simple-icons:google" caption="The canonical provider, already wired above. Two extra knobs worth knowing.">
+    - The core of this lesson: `clientId` plus `clientSecret`, scopes `openid email profile`, default redirect URI.
+    - `prompt: 'select_account'` forces the account-picker on every sign-in, useful when your users juggle multiple Google accounts.
+    - `accessType: 'offline'` paired with `prompt: 'select_account consent'` is the combination that yields a refresh token, and it only matters if you store and use tokens (see the token-persistence section).
+    - Consent-screen publishing: *testing* means only your listed test users can sign in; *in production* means anyone can, but sensitive scopes need Google's review.
   </TabbedItem>
 
   <TabbedItem label="GitHub" icon="simple-icons:github" caption="The one to read carefully: GitHub can hand you a null email.">
-    - The footgun: the default scope returns the **public** profile only, so **`user.email` can be `null`** when the user keeps their email private.
-    - Reaching for the `user:email` scope lets you *query* their emails — but `GET /user` **still returns `null`** for a private address. The primary verified address lives at a separate endpoint, `/user/emails`.
-    - **Never assume `user.email` is non-null on a fresh GitHub sign-up.** A null email breaks every downstream surface that keys on it — the welcome email, the account lookup, anything.
+    - The catch: the default scope returns the public profile only, so `user.email` can be `null` when the user keeps their email private.
+    - Reaching for the `user:email` scope lets you query their emails, but `GET /user` still returns `null` for a private address. The primary verified address lives at a separate endpoint, `/user/emails`.
+    - Never assume `user.email` is non-null on a fresh GitHub sign-up. A null email breaks every downstream surface that keys on it: the welcome email, the account lookup, anything.
   </TabbedItem>
 
-  <TabbedItem label="Apple" icon="simple-icons:apple" caption="Persist the email on first sign-in — Apple won't hand it back again.">
-    - Apple returns the user's email and name **only on the very first sign-in**. Every sign-in after returns just the `sub`. The app must persist the email at first sight — Apple has no `userinfo` endpoint to re-fetch it. (Better Auth stores it on that first sign-in; trust that storage afterward.)
-    - Requesting name/email requires `responseMode: 'form_post'` — the callback arrives as a `POST`, not a `GET`. Your catch-all handles this transparently.
-    - `email_verified` and `is_private_email` arrive as **strings** (`"true"`), not booleans — the same `=== true` footgun called out in the `email_verified` section.
+  <TabbedItem label="Apple" icon="simple-icons:apple" caption="Persist the email on first sign-in, because Apple won't hand it back again.">
+    - Apple returns the user's email and name only on the very first sign-in. Every sign-in after returns just the `sub`. The app must persist the email at first sight, because Apple has no `userinfo` endpoint to re-fetch it. (Better Auth stores it on that first sign-in; trust that storage afterward.)
+    - Requesting name and email requires `responseMode: 'form_post'`, so the callback arrives as a `POST`, not a `GET`. Your catch-all handles this transparently.
+    - `email_verified` and `is_private_email` arrive as strings (`"true"`), not booleans, the same `=== true` catch called out in the `email_verified` section.
   </TabbedItem>
 
   <TabbedItem label="Microsoft" icon="simple-icons:microsoftazure" caption="One real decision: which tenant audience you accept.">
-    - The `tenant` parameter picks the audience: `consumers` (personal Microsoft accounts), `organizations` (work/school accounts), or `common` (both).
+    - The `tenant` parameter picks the audience: `consumers` (personal Microsoft accounts), `organizations` (work or school accounts), or `common` (both).
     - B2B SaaS picks `organizations`; a consumer product picks `common`.
-    - Everything else is the same `socialProviders` shape — naming the tenant is the only real decision.
+    - Everything else is the same `socialProviders` shape, so naming the tenant is the only real decision.
   </TabbedItem>
 
 </TabbedContent>
 
-One last pointer. If you ever need a provider Better Auth doesn't ship built-in, the `genericOAuth()` plugin covers it — the same config shape, except you supply the authorize, token, and `userinfo` URLs yourself. It's a sibling of everything here, not something to learn now.
+One last pointer. If you ever need a provider Better Auth doesn't ship built in, the `genericOAuth()` plugin covers it: the same config shape, except you supply the authorize, token, and `userinfo` URLs yourself. It's a sibling of everything here, not something to learn now.
 
 ## Post-callback side-effects: done right
 
-One question the chapter has been building toward: when a brand-new user signs up — including a first-time OAuth user — **where does the welcome email fire?** You built that send path earlier in the course; this is where it plugs in.
+One question the chapter has been building toward: when a brand-new user signs up, including a first-time OAuth user, where does the welcome email fire? You built that send path earlier in the course, and this is where it plugs in.
 
-A natural guess is a per-provider success callback. There isn't one — there's no `socialProviders.google.onSuccess`. Side-effects after sign-in ride **global** hooks instead, and there are two seams worth knowing.
+A natural guess is a per-provider success callback. There isn't one; there's no `socialProviders.google.onSuccess`. Side-effects after sign-in ride global hooks instead, and there are two seams worth knowing.
 
 :::note
-Side-effects after an OAuth sign-in ride the **global** `databaseHooks` / `hooks`, **not** a per-provider callback. If you went looking for an `onSuccess` on the provider config, that's why you didn't find one.
+Side-effects after an OAuth sign-in ride the global `databaseHooks` and `hooks`, not a per-provider callback. If you went looking for an `onSuccess` on the provider config, that's why you didn't find one.
 :::
 
-The first seam, `mapProfileToUser`, runs *before* the user row is created and lets you remap profile fields — for example, splitting the provider's single `name` into `firstName` and `lastName`, or pulling a field the default mapping skips.
+The first seam, `mapProfileToUser`, runs *before* the user row is created and lets you remap profile fields, for example splitting the provider's single `name` into `firstName` and `lastName`, or pulling a field the default mapping skips.
 
 <div data-mark-color="blue">
 
@@ -353,7 +353,7 @@ google: {
 
 </div>
 
-The second seam is the welcome-email seam. `databaseHooks.user.create.after` is **global** and fires **once**, when a brand-new `user` row is created — which, for OAuth, means first-time-OAuth sign-up. This is where you call the `sendEmail` pipeline you built earlier in the course, when you wired up the welcome email through Resend.
+The second seam is the welcome-email seam. `databaseHooks.user.create.after` is global and fires once, when a brand-new `user` row is created, which for OAuth means first-time-OAuth sign-up. This is where you call the `sendEmail` pipeline you built earlier in the course, when you wired up the welcome email through Resend.
 
 <div data-mark-color="orange">
 
@@ -371,19 +371,19 @@ databaseHooks: {
 
 </div>
 
-There's a discipline here. The row insert and the session were already issued **before** this hook runs, so a slow or throwing hook must not block sign-in. Note the `void` in the snippet above: the email is fired and forgotten, not `await`ed into the critical path. Keep these hooks **small and side-effecting only** — kick off the email, record the analytics event, and return. The user is already signed in; don't make them wait on your follow-up work.
+There's a discipline here. The row insert and the session were already issued before this hook runs, so a slow or throwing hook must not block sign-in. Note the `void` in the snippet above: the email is fired and forgotten, not `await`ed into the critical path. Keep these hooks small and side-effecting only: kick off the email, record the analytics event, and return. The user is already signed in, so don't make them wait on your follow-up work.
 
 ## Where to go next
 
-You've shipped a working Google button, registered the redirect URI per environment, and — more importantly — you can now answer all three of the opening questions. You know *what you configured* (env, the `socialProviders` block, the console), *where the identity got stored* (an `account` row that's a pointer plus tokens, no password), and *what happens the second time* (the find-or-create lookup picks one of three landing states).
+You've shipped a working Google button, registered the redirect URI per environment, and, more importantly, you can now answer all three of the opening questions. You know what you configured (env, the `socialProviders` block, the console), where the identity got stored (an `account` row that's a pointer plus tokens, no password), and what happens the second time (the find-or-create lookup picks one of three landing states).
 
-Two threads are deliberately left open. The next lesson owns **account linking** — which providers you trust, what "link on email match" really does once you configure it, and the explicit link-and-unlink flows from a settings page. And calling a provider's API with the tokens you stored — token refresh, scope-on-demand — sits outside Better Auth's job; reach for it only when a feature genuinely needs it.
+Two threads are deliberately left open. The next lesson owns account linking: which providers you trust, what "link on email match" really does once you configure it, and the explicit link-and-unlink flows from a settings page. And calling a provider's API with the tokens you stored, including token refresh and scope-on-demand, sits outside Better Auth's job, so reach for it only when a feature genuinely needs it.
 
 A third thread sits one tier up, and it is worth naming so you recognize it when a deal raises it.
-Everything in this lesson is *consumer* social sign-in — the user signs in with a Google, GitHub, or Microsoft account they personally own.
-Enterprise SSO is a different shape: a customer's IT department wants their whole company to sign in against the company's own identity provider — "log in with our Okta" or "with our Entra ID" — so provisioning and deprovisioning stay in the customer's hands, not yours.
+Everything in this lesson is *consumer* social sign-in: the user signs in with a Google, GitHub, or Microsoft account they personally own.
+Enterprise SSO is a different shape: a customer's IT department wants their whole company to sign in against the company's own identity provider, "log in with our Okta" or "with our Entra ID," so that provisioning and deprovisioning stay in the customer's hands, not yours.
 That is the `organizations`-tenant world the Microsoft tab gestured at, taken to its conclusion: SAML 2.0 or OIDC brokered against an IdP the customer controls, not a social account.
-Better Auth covers it with a separate first-party plugin, `@better-auth/sso` (the `sso()` plugin) — distinct from the `socialProviders` block here and from `genericOAuth()`.
+Better Auth covers it with a separate first-party plugin, `@better-auth/sso` (the `sso()` plugin), distinct from the `socialProviders` block here and from `genericOAuth()`.
 You reach for it the first time a B2B prospect makes "sign in with our IdP" a procurement requirement; until then it is a named reach, not year-one work.
 
 <CardGrid>
@@ -403,7 +403,7 @@ You reach for it the first time a B2B prospect makes "sign in with our IdP" a pr
 
 ## External resources
 
-Two of this lesson's senior calls have well-documented sources worth keeping open: the scope-minimization rule comes straight from Google's own guidance, and the "refuse to auto-merge on an unverified claim" default is the textbook defense against a real, named attack.
+Two of this lesson's senior calls have well-documented sources worth keeping open. The scope-minimization rule comes straight from Google's own guidance, and the "refuse to auto-merge on an unverified claim" default is the textbook defense against a real, named attack.
 
 <CardGrid>
   <ExternalResource
