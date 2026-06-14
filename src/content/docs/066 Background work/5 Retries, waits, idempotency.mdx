@@ -33,50 +33,50 @@ import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
 
 Picture a task that exports an organization's invoices. It runs for about ten minutes, paging through the database five hundred rows at a time, and emails a download link when it finishes. Now picture the things that go wrong in production, because they will. At minute eight, the platform redeploys your code and recycles the worker out from under the running job. Or the box runs out of memory and gets killed. Or the third invoice page hits a downstream service that returns `429 Too Many Requests` because you've been hammering it.
 
-Three plain questions fall out of that, and they are the whole lesson. What does Trigger.dev handle for you, automatically, with no code on your part? What is left for *you* to handle? And — the one that ships the most production incidents — where do the bugs hide in the seam between those two?
+Three plain questions fall out of that, and together they are the whole lesson. What does Trigger.dev handle for you automatically, with no code on your part? What is left for *you* to handle? And, the question behind the most production incidents, where do the bugs hide in the seam between those two?
 
 By the end of this lesson you can write a multi-step task that survives every one of those failures: the redeploy, the kill, the `429`. It resumes from where it died instead of starting over, and it never sends the "your export is ready" email twice or re-charges a customer because a retry replayed a side effect. In the [previous lesson](/066-background-work/4-defining-and-triggering-triggerdev-tasks) you learned the SDK surface that lets you define, type, trigger, and queue a task. This lesson is what turns one of those tasks from *defined* into *crash-proof*.
 
-Hold onto one idea the whole way through, because every section is a different face of it: **durability lives in the seams between steps, not inside them.** Get that, and retries, idempotency keys, and durable waits stop being three APIs to memorize and become one mental model with three knobs. The exact shape you build here is the one the CSV export project ships in the next chapter — this lesson is its engine.
+Hold onto one idea the whole way through, because every section is a different view of it: durability lives in the seams between steps, not inside them. Once that clicks, retries, idempotency keys, and durable waits stop being three APIs to memorize and become one mental model with three knobs. The shape you build here is the one the CSV export project ships in the next chapter, so treat this lesson as that project's engine.
 
 ## Durability is a property of the seams, not the steps
 
-Start with what you're actually being promised. A <Term def="A task run that survives worker crashes, redeploys, and platform restarts by saving its progress and resuming a new worker from the last saved point.">durable run</Term> is a run that survives the worker dying. Redeploy your code mid-run, OOM-kill the box, let the platform recycle the machine on a whim — the run picks back up and finishes. That word, *durable*, is the one you met in name back when you decided this work belonged on Trigger.dev at all. Here's the machinery underneath it.
+Start with what you're actually being promised. A <Term def="A task run that survives worker crashes, redeploys, and platform restarts by saving its progress and resuming a new worker from the last saved point.">durable run</Term> is a run that survives the worker dying. Redeploy your code mid-run, OOM-kill the box, let the platform recycle the machine on a whim, and the run picks back up and finishes. You met that word, *durable*, by name when you decided this work belonged on Trigger.dev at all. Here is the machinery underneath it.
 
-The runtime serializes your run's state — where it is, what it has produced so far — and writes that snapshot down at specific moments. Each snapshot is a <Term def="A saved snapshot of a run's progress. On a crash the run resumes from the most recent one rather than from the beginning.">checkpoint</Term>. There are exactly three moments it checkpoints: at every `await wait.*` call, at every `await *.triggerAndWait` call, and at the end of every attempt. When the <Term def="The Trigger.dev compute process that runs your task. It is a separate process from the Vercel function that triggered the task.">worker</Term> — the compute process running your task, a different process from the Vercel function that kicked it off — dies, the runtime spins up a *new* worker, rehydrates it from the last checkpoint, and continues from there. Nothing you did before that checkpoint runs again. Everything after it does.
+The runtime serializes your run's state, meaning where it is and what it has produced so far, and writes that snapshot down at specific moments. Each snapshot is a <Term def="A saved snapshot of a run's progress. On a crash the run resumes from the most recent one rather than from the beginning.">checkpoint</Term>. It checkpoints at exactly three moments: at every `await wait.*` call, at every `await *.triggerAndWait` call, and at the end of every attempt. The <Term def="The Trigger.dev compute process that runs your task. It is a separate process from the Vercel function that triggered the task.">worker</Term> is the compute process running your task, a different process from the Vercel function that kicked it off. When that worker dies, the runtime spins up a *new* worker, rehydrates it from the last checkpoint, and continues from there. Nothing you did before that checkpoint runs again, and everything after it does.
 
-Read that last sentence again, because it has a sharp consequence that catches people. The checkpoints sit *between* operations, never in the middle of one. The code inside a single stretch of work is not snapshotted line by line. So if you write a task whose body is one nine-minute synchronous loop — crunching numbers, transforming rows, no `await wait.*` and no `triggerAndWait` anywhere inside it — and the worker dies at minute five, there is no checkpoint at minute five to resume from. The last checkpoint was the *start*. The whole loop runs again from zero. That task is technically running on a durable platform and is not, in any useful sense, durable.
+Read that last sentence again, because it has a sharp consequence that catches people. The checkpoints sit *between* operations, never in the middle of one, so the code inside a single stretch of work is not snapshotted line by line. Suppose your task body is one nine-minute synchronous loop, crunching numbers and transforming rows, with no `await wait.*` and no `triggerAndWait` anywhere inside it. If the worker dies at minute five, there is no checkpoint at minute five to resume from. The last checkpoint was the *start*, so the whole loop runs again from zero. That task runs on a durable platform but is not, in any useful sense, durable.
 
-The fix is the design principle this entire lesson serves: **split long work into small steps separated by a checkpoint.** You put a `wait` or a `triggerAndWait` between the pieces, and now each completed piece is a save point you never have to re-cross. Page one writes, checkpoint. Page two writes, checkpoint. Crash on page seven, and pages one through six stay done. Durability isn't something the runtime sprinkles over your code — it's a property of *where you place the seams*, and placing them is your job.
+The fix is the design principle this entire lesson serves: split long work into small steps separated by a checkpoint. You put a `wait` or a `triggerAndWait` between the pieces, and now each completed piece is a save point you never have to re-cross. Page one writes, checkpoint. Page two writes, checkpoint. Crash on page seven, and pages one through six stay done. Durability isn't something the runtime sprinkles over your code; it follows from *where you place the seams*, and placing them is your job.
 
-Scrub through the sequence below. It walks one run from start to finish, with a crash in the middle, so you can watch "resume from the last checkpoint" actually happen instead of taking my word for it.
+Scrub through the sequence below. It walks one run from start to finish with a crash in the middle, so you can watch "resume from the last checkpoint" actually happen.
 
 <DiagramSequence>
-  <DiagramStep caption="The run starts on a worker. Step A — writing page 1 — is executing. The checkpoint after it is still dim: that boundary hasn't been crossed yet.">
+  <DiagramStep caption="The run starts on a worker. Step A, writing page 1, is executing. The checkpoint after it is still dim, because that boundary hasn't been crossed yet.">
     <CrashResumeFrame state="start" />
   </DiagramStep>
-  <DiagramStep caption="Step A finishes and the runtime writes a checkpoint. That boundary is now crossed — page 1 is durably done.">
+  <DiagramStep caption="Step A finishes and the runtime writes a checkpoint. That boundary is now crossed, so page 1 is durably done.">
     <CrashResumeFrame state="checkpoint-a" />
   </DiagramStep>
-  <DiagramStep caption="The run moves past the checkpoint into Step B — writing page 2 — which is now executing.">
+  <DiagramStep caption="The run moves past the checkpoint into Step B, writing page 2, which is now executing.">
     <CrashResumeFrame state="step-b" />
   </DiagramStep>
-  <DiagramStep caption="The worker dies mid-Step-B — a redeploy, an OOM kill, a platform recycle. Step B is aborted. But checkpoint A is still lit.">
+  <DiagramStep caption="The worker dies mid-Step-B, whether from a redeploy, an OOM kill, or a platform recycle. Step B is aborted, but checkpoint A is still lit.">
     <CrashResumeFrame state="crash" />
   </DiagramStep>
-  <DiagramStep caption="A new worker spins up and rehydrates from checkpoint A. Step A is NOT re-run — it returns its cached result, greyed out. Step B re-executes from the top.">
+  <DiagramStep caption="A new worker spins up and rehydrates from checkpoint A. Step A is not re-run; it returns its cached result, greyed out. Step B re-executes from the top.">
     <CrashResumeFrame state="resume" />
   </DiagramStep>
-  <DiagramStep caption="Step B completes, a checkpoint is written, and the run finishes. The takeaway in one line: completed steps are never re-run; the step in flight at crash time is the one that repeats.">
+  <DiagramStep caption="Step B completes, a checkpoint is written, and the run finishes. In one line: completed steps are never re-run, and the step in flight at crash time is the one that repeats.">
     <CrashResumeFrame state="done" />
   </DiagramStep>
 </DiagramSequence>
 
-That last panel is the reflex to carry out of this section: **split long work at `wait` and `triggerAndWait` boundaries — each boundary is a save point.** Everything that follows is built on it. Retries decide what happens when a step throws. Idempotency keys make the step that *does* re-run safe to re-run. Waits are how you create the boundaries in the first place. Three knobs, one model.
+Carry the last panel out of this section: split long work at `wait` and `triggerAndWait` boundaries, where each boundary is a save point. Everything that follows builds on it. Retries decide what happens when a step throws. Idempotency keys make the step that *does* re-run safe to re-run. Waits are how you create the boundaries in the first place. Three knobs, one model.
 
 ## Retries are the runtime's job, declared not coded
 
-Lead with the failure this prevents: a transient blip — a downstream service that's briefly overloaded, a network hiccup, a database connection reset — kills a run that would have succeeded thirty seconds later if anyone had simply tried again. You do not want to write that "try again" logic by hand. The runtime owns it, and you configure it once.
+Start with the failure this prevents. A transient blip, such as a briefly overloaded downstream service, a network hiccup, or a database connection reset, kills a run that would have succeeded thirty seconds later if anyone had simply tried again. You do not want to write that "try again" logic by hand. The runtime owns it, and you configure it once.
 
 You declare retries as a config block on the task. The shape is small enough to read at a glance.
 
@@ -100,27 +100,27 @@ export const exportInvoices = schemaTask({
 
 </div>
 
-Each field controls one dimension of the back-off curve. `maxAttempts` is the total number of tries, including the first — so `5` means the original run plus four retries. `factor` is the exponential multiplier between waits: with `1.8`, each retry waits roughly `1.8×` as long as the one before. `minTimeoutInMs` is the floor for the first wait, `maxTimeoutInMs` the ceiling no wait exceeds — past the cap, retries keep firing but stop spreading further apart. And `randomize: true` adds jitter to each wait.
+Each field controls one dimension of the back-off curve. `maxAttempts` is the total number of tries, including the first, so `5` means the original run plus four retries. `factor` is the exponential multiplier between waits: with `1.8`, each retry waits roughly `1.8×` as long as the one before. `minTimeoutInMs` is the floor for the first wait, and `maxTimeoutInMs` the ceiling no wait exceeds; past the cap, retries keep firing but stop spreading further apart. `randomize: true` adds jitter to each wait.
 
-That last one matters more than it looks. You met <Term def="A retry strategy where each successive wait grows by a multiplier (exponential) and is then nudged by a random amount (jitter), so retries fan out instead of firing in lockstep.">exponential backoff with jitter</Term> by name earlier; here is the concrete reason jitter is non-negotiable. Imagine a downstream API falls over and a thousand of your runs all fail at the same instant. Without jitter, every one of them computes the *identical* back-off and retries at the exact same moment — a thundering herd that knocks the service straight back down the instant it recovers. Jitter scatters those thousand retries across a window so the recovering service sees a trickle, not a wall. You almost always want it on.
+That last field matters more than it looks. You met <Term def="A retry strategy where each successive wait grows by a multiplier (exponential) and is then nudged by a random amount (jitter), so retries fan out instead of firing in lockstep.">exponential backoff with jitter</Term> by name earlier; here is the concrete reason jitter is non-negotiable. Imagine a downstream API falls over and a thousand of your runs all fail at the same instant. Without jitter, every one of them computes the *identical* back-off and retries at the exact same moment, a thundering herd that knocks the service straight back down the instant it recovers. Jitter scatters those thousand retries across a window so the recovering service sees a trickle, not a wall. You almost always want it on.
 
 <VideoCallout videoId="8sTuCPh3s0s" videoTitle="Thundering Herd Problem and How not to do API retries">
-  Arpit Bhayani walks the thundering-herd failure end to end (~11 min) and shows why exponential backoff alone isn't enough — jitter is the missing piece.
+  Arpit Bhayani walks the thundering-herd failure end to end (~11 min) and shows why exponential backoff alone isn't enough: jitter is the missing piece.
 </VideoCallout>
 
 :::note
 Retries can also be set project-wide in `trigger.config.ts` and overridden per task. Set a sane default for the whole project once; reach for a per-task `retry` block only when a specific task genuinely needs a different curve.
 :::
 
-Here is the discipline that separates someone who understands this from someone who fights it: **retries are declarative, not imperative.** A `throw` inside your task triggers a retry, on the configured back-off, for free. You do **not** wrap an external call in a `try/catch` with your own retry loop. The runtime already owns retrying — hand-roll a second layer on top and the two multiply, so "five attempts" becomes twenty-five, and your carefully-tuned back-off curve dissolves into noise. Let it throw. If the body genuinely needs to know which attempt it's on — to log it, or branch on the final try — `ctx.attempt.number` tells you, but reaching for it should be rare.
+Here is the discipline that makes this work: retries are declarative, not imperative. A `throw` inside your task triggers a retry, on the configured back-off, for free. Do not wrap an external call in a `try/catch` with your own retry loop. The runtime already owns retrying, so a second hand-rolled layer on top multiplies with it: "five attempts" becomes twenty-five, and your carefully tuned back-off curve dissolves into noise. Let it throw. If the body genuinely needs to know which attempt it's on, to log it or to branch on the final try, `ctx.attempt.number` tells you, but reaching for it should be rare.
 
 ### Retry on transients, abort on permanents
 
-Now the decision that earns its keep in code review. Every `throw` retries by default, and that is the right default — but not every failure deserves a retry. Some failures will *never* succeed no matter how many times you try, and retrying them just burns the full run of attempts before failing anyway, delaying the inevitable and making the eventual error harder to spot in the noise.
+Now the decision that earns its keep in code review. Every `throw` retries by default, and that is the right default, but not every failure deserves a retry. Some failures will *never* succeed no matter how many times you try, and retrying them just burns the full run of attempts before failing anyway, delaying the inevitable and making the eventual error harder to spot in the noise.
 
-So Trigger.dev gives you one escape hatch: throw an `AbortTaskRunError` and the run fails *immediately*, skipping every remaining retry. The heuristic to internalize — say it out loud, you'll reuse it forever — is **retry on transients, abort on permanents.**
+So Trigger.dev gives you one escape hatch: throw an `AbortTaskRunError` and the run fails *immediately*, skipping every remaining retry. The heuristic to internalize is retry on transients, abort on permanents.
 
-A <Term def="A failure likely to clear on its own — a 5xx, a network error, a 429 rate-limit. Worth retrying.">transient</Term> failure is one that'll probably clear on its own: a `5xx` from an overloaded service, a dropped connection, a `429` rate-limit. Try again in a few seconds and it likely works. A permanent failure won't: a `400` from a request whose payload is malformed and will stay malformed, a validation error, a bug in your own code. Retrying a permanent failure is five guaranteed-to-fail attempts wearing a trenchcoat. The two throws sit side by side below.
+A <Term def="A failure likely to clear on its own — a 5xx, a network error, a 429 rate-limit. Worth retrying.">transient</Term> failure is one that will probably clear on its own: a `5xx` from an overloaded service, a dropped connection, a `429` rate-limit. Try again in a few seconds and it likely works. A permanent failure won't: a `400` from a request whose payload is malformed and will stay malformed, a validation error, a bug in your own code. Retrying a permanent failure just spends five guaranteed-to-fail attempts. The two throws sit side by side below.
 
 <CodeVariants>
   <CodeVariant label="Transient → retry">
@@ -134,7 +134,7 @@ A <Term def="A failure likely to clear on its own — a 5xx, a network error, a 
     ```
 
     </div>
-    **Let it throw — the runtime retries it.** A `429` or a `5xx` is almost always temporary; a bare `throw` hands it straight to the configured back-off, and a later attempt will likely succeed.
+    **Let it throw, and the runtime retries it.** A `429` or a `5xx` is almost always temporary; a bare `throw` hands it straight to the configured back-off, and a later attempt will likely succeed.
   </CodeVariant>
 
   <CodeVariant label="Permanent → abort">
@@ -148,13 +148,13 @@ A <Term def="A failure likely to clear on its own — a 5xx, a network error, a 
     ```
 
     </div>
-    **Abort — retrying is pointless.** A payload that failed validation will fail identically on every attempt. `AbortTaskRunError` fails the run now and skips the four wasted back-off windows a plain `throw` would have cost.
+    **Abort, because retrying is pointless.** A payload that failed validation will fail identically on every attempt. `AbortTaskRunError` fails the run now and skips the four wasted back-off windows a plain `throw` would have cost.
   </CodeVariant>
 </CodeVariants>
 
-`AbortTaskRunError` is your one tool here: <Term def="Throw this inside a task to fail the run immediately, skipping all remaining retries. For permanent failures that retrying cannot fix.">AbortTaskRunError</Term> — throw it to fail a run on the spot with no further retries. Everything else throws normally and rides the back-off.
+`AbortTaskRunError` is your one tool here. Throw <Term def="Throw this inside a task to fail the run immediately, skipping all remaining retries. For permanent failures that retrying cannot fix.">AbortTaskRunError</Term> to fail a run on the spot with no further retries. Everything else throws normally and rides the back-off.
 
-Sort the failures below into the two buckets. The skill being drilled is the transient-versus-permanent split as a reflex — this is the exact call you'll make every time you write an external call inside a task.
+Sort the failures below into the two buckets. The skill being practiced is the transient-versus-permanent split, which is the exact call you'll make every time you write an external call inside a task.
 
 <Buckets twoCol instructions="A task just hit each of these failures. Decide whether the runtime should retry it, or whether you should throw `AbortTaskRunError` and stop now.">
   <Bucket name="retry" label="Retry (transient)" description="Likely to clear on its own — let it throw" />
@@ -170,15 +170,15 @@ Sort the failures below into the two buckets. The skill being drilled is the tra
 
 ## Run-level retries and the duplicate-side-effect trap
 
-This is the hinge of the lesson, because it *creates* the problem that idempotency keys solve. To see the trap you first have to know exactly what a retry re-runs — and that depends on which of two retry layers you mean.
+This is the hinge of the lesson, because it *creates* the problem that idempotency keys solve. To see the trap you first have to know exactly what a retry re-runs, and that depends on which of two retry layers you mean.
 
-A <Term def="The runtime re-running a whole task on an unhandled throw, restarting from the most recent checkpoint. Configured by the task's retry block.">run-level retry</Term> is the one you just configured. On an unhandled throw, the runtime re-runs the task from its most recent checkpoint. And here is the part that bites: if the task body has *no* internal checkpoints between its start and the line that threw, "most recent checkpoint" means the very beginning — so **every line runs again.**
+A <Term def="The runtime re-running a whole task on an unhandled throw, restarting from the most recent checkpoint. Configured by the task's retry block.">run-level retry</Term> is the one you just configured. On an unhandled throw, the runtime re-runs the task from its most recent checkpoint. Here is the part that bites: if the task body has *no* internal checkpoints between its start and the line that threw, "most recent checkpoint" means the very beginning, so every line runs again.
 
-There's a second, quieter layer you should be able to name so you don't confuse it with the first. A <Term def="An SDK or HTTP client automatically retrying a single failed request (e.g. a 429 on one fetch), restarting only that call rather than the whole run.">call-level retry</Term> is when an SDK or HTTP client retries a *single* failed request on its own — a wrapper that quietly re-attempts a `429`'d `fetch`. That restarts only the one call, not the run. You configure and reason about run-level retries; just know call-level exists, living underneath, so you don't accidentally stack a third hand-rolled layer on top of two that already work.
+There is a second, quieter layer you should be able to name so you don't confuse it with the first. A <Term def="An SDK or HTTP client automatically retrying a single failed request (e.g. a 429 on one fetch), restarting only that call rather than the whole run.">call-level retry</Term> is when an SDK or HTTP client retries a *single* failed request on its own, like a wrapper that quietly re-attempts a `429`'d `fetch`. That restarts only the one call, not the run. You configure and reason about run-level retries; just know that call-level retries exist underneath, so you don't accidentally stack a third hand-rolled layer on top of two that already work.
 
-Now the trap. A run-level retry re-executes side-effecting lines — and a side effect is anything that touches the outside world and can't be quietly taken back: a row written, an email sent, a card charged. Consider a task that loops over the members of an organization and emails each one. It gets to member two hundred and throws — a transient blip on that one send. The run-level retry restarts the body from the top. So it sends to member one again. And member two. All the way back through member one hundred and ninety-nine — every one of whom *already got the email* on the first pass. This single mechanism is behind very nearly every duplicate-email incident in production background jobs. Not exotic. This one.
+Now the trap. A run-level retry re-executes side-effecting lines, and a side effect is anything that touches the outside world and can't be quietly taken back: a row written, an email sent, a card charged. Consider a task that loops over the members of an organization and emails each one. It gets to member two hundred and throws, a transient blip on that one send. The run-level retry restarts the body from the top, so it sends to member one again, and member two, all the way back through member one hundred and ninety-nine, every one of whom *already got the email* on the first pass. This one mechanism is behind very nearly every duplicate-email incident in production background jobs.
 
-Don't take my description of it — watch it happen. Predict what the program below prints.
+Rather than take the description on faith, watch it happen. Predict what the program below prints.
 
 <PredictOutput
   instructions="This is a sketch of a task body, not runnable code — reason it through. The task logs a line per member, then throws on the third iteration. Run-level retries are configured to allow two attempts in total, and there are three members. What does the worker's log show across both attempts?"
@@ -201,13 +201,13 @@ async function run() {
 
 </PredictOutput>
 
-The duplication is right there in the output: Ada and Bo, twice. The runtime will happily run your side effects twice — so the next section is how you make *twice* safe.
+The duplication is right there in the output: Ada and Bo, twice. The runtime will run your side effects twice without hesitation, so the next section is how you make *twice* safe.
 
 ## Idempotency keys make a retried step run once
 
-You've met this idea before, wearing different clothes. When you ingested Stripe webhooks, you guarded every event against double-processing with a stable key and a unique constraint — a stable identifier that makes repeated work happen exactly once. That discipline is the conceptual parent of what comes now. Same idea — a stable key collapses repeats into one — except Trigger.dev hands it to you as a first-class runtime primitive instead of a database claim row you assemble yourself.
+You've met this idea before, in different clothes. When you ingested Stripe webhooks, you guarded every event against double-processing with a stable key and a unique constraint, so repeated work happened exactly once. That discipline is the conceptual parent of what comes now: a stable key collapses repeats into one. The difference is that Trigger.dev hands it to you as a first-class runtime primitive instead of a database claim row you assemble yourself.
 
-Every `trigger`, `triggerAndWait`, and `batchTriggerAndWait` accepts an <Term def="A stable identifier attached to a trigger. Within its TTL, re-triggering with the same key returns the original run instead of starting a new one.">idempotency key</Term>. The contract is simple: within a time window, the *same key returns the same run*. No new run starts, no body re-executes; you get a handle to the original run — finished or still in flight — and its result. Re-trigger with that key a thousand times and the work happens once.
+Every `trigger`, `triggerAndWait`, and `batchTriggerAndWait` accepts an <Term def="A stable identifier attached to a trigger. Within its TTL, re-triggering with the same key returns the original run instead of starting a new one.">idempotency key</Term>. The contract is simple: within a time window, the *same key returns the same run*. No new run starts and no body re-executes; you get a handle to the original run, finished or still in flight, along with its result. Re-trigger with that key a thousand times and the work happens once.
 
 <div data-mark-color="blue">
 
@@ -220,15 +220,15 @@ await chargeCustomer.trigger(payload, {
 
 </div>
 
-A few specifics are easy to get wrong, so pin them now. The window is set by <Term def="How long the same idempotency key keeps returning the original run. A duration string like '5m' or '24h'. Defaults to 30 days.">idempotencyKeyTTL</Term>, and it's a *duration string* — `'60s'`, `'5m'`, `'24h'`, `'3d'` — not a number of milliseconds. Leave it off and the default is **thirty days**. Inside that window, a late duplicate (a retried POST that arrives an hour later, a user who double-clicks) maps to the same run; past it, the key is free to start a fresh one.
+A few specifics are easy to get wrong, so pin them now. The window is set by <Term def="How long the same idempotency key keeps returning the original run. A duration string like '5m' or '24h'. Defaults to 30 days.">idempotencyKeyTTL</Term>, and it takes a *duration string* such as `'60s'`, `'5m'`, `'24h'`, or `'3d'`, not a number of milliseconds. Leave it off and the default is **thirty days**. Inside that window, a late duplicate (a retried POST that arrives an hour later, a user who double-clicks) maps to the same run; past it, the key is free to start a fresh one.
 
-You don't usually build the key by hand-splicing strings. You call `idempotencyKeys.create(key, { scope })`, and you can pass it an *array* of parts — `[organizationId, 'export', day]` — which it hashes into one stable key. That's the ergonomic way to compose a key from the pieces that make it unique. (Mentally, you can still picture it as `organizationId:export:day` glued together; the array form is just that, done safely.)
+You don't usually build the key by splicing strings by hand. You call `idempotencyKeys.create(key, { scope })`, and you can pass it an *array* of parts, like `[organizationId, 'export', day]`, which it hashes into one stable key. That's the ergonomic way to compose a key from the pieces that make it unique. You can still picture it as `organizationId:export:day` glued together; the array form is just that, done safely.
 
 The real lever is <Term def="Controls how an idempotency key is namespaced: 'run' (per parent run, the default), 'attempt' (per retry attempt), or 'global' (the key alone).">scope</Term>, and it's where the design thinking lives. Scope decides what the key is namespaced against:
 
-- **`scope: 'run'`** — the default — hashes the key together with the *parent run id*. So the same logical key, re-issued by a retry of the same parent, maps to the same child run. This is exactly what you want for keys *inside* a task that retries: the retry regenerates the same keys, and the runtime recognizes the child work as already done. It replaces the older habit of manually prefixing `ctx.run.id` onto your keys.
-- **`scope: 'global'`** — hashes the key alone, namespaced against nothing. This is "*this runs once, ever*" — a stable business key triggered from your app. One export per organization per day, no matter how many times the button is clicked or the action retried.
-- **`scope: 'attempt'`** — re-allows the work on each retry attempt. Named here only so you recognize it; it's rarely what you want for a side effect, since the whole point of a key is usually to survive across attempts.
+- **`scope: 'run'`**, the default, hashes the key together with the *parent run id*. So the same logical key, re-issued by a retry of the same parent, maps to the same child run. This is exactly what you want for keys *inside* a task that retries: the retry regenerates the same keys, and the runtime recognizes the child work as already done. It replaces the older habit of manually prefixing `ctx.run.id` onto your keys.
+- **`scope: 'global'`** hashes the key alone, namespaced against nothing. This means "*this runs once, ever*", a stable business key triggered from your app. One export per organization per day, no matter how many times the button is clicked or the action retried.
+- **`scope: 'attempt'`** re-allows the work on each retry attempt. It's named here only so you recognize it; it's rarely what you want for a side effect, since the whole point of a key is usually to survive across attempts.
 
 The two scopes you'll actually reach for are `global` (from the app) and `run` (inside a task). Step through both below.
 
@@ -254,11 +254,11 @@ for (const member of members) {
 }
 `}>
   <AnnotatedStep meta="{2-9}" color="blue">
-    The app-side key. Built from `[org.id, 'export', day]` with `scope: 'global'` — namespaced against nothing, so it means "one export for this org on this day, period." Double-click the export button, retry the POST, fire the action ten times: the first wins, the rest return that same run. The business rule lives in the key.
+    The app-side key. It's built from `[org.id, 'export', day]` with `scope: 'global'`, which is namespaced against nothing, so it means "one export for this org on this day, period." Double-click the export button, retry the POST, fire the action ten times: the first wins, and the rest return that same run. The business rule lives in the key.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{12-19}" color="green">
-    The in-task key. Built per member from `[member.id, 'notify']` with `scope: 'run'` (the default). Because it's hashed with the parent run id, a retry of *this* task regenerates the identical key for each member, and the runtime returns the prior child run instead of sending again.
+    The in-task key. It's built per member from `[member.id, 'notify']` with `scope: 'run'` (the default). Because it's hashed with the parent run id, a retry of *this* task regenerates the identical key for each member, and the runtime returns the prior child run instead of sending again.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{8} "idempotencyKeyTTL"`} color="orange">
@@ -266,7 +266,7 @@ for (const member of members) {
   </AnnotatedStep>
 </AnnotatedCode>
 
-That second block is the fix for the duplicate-send trap you just watched. Pull it out on its own, because this exact loop is the shape that closes the whole thread.
+That second block is the fix for the duplicate-send trap you just watched. Here it is on its own, because this exact loop is the shape that closes the whole thread.
 
 <div data-mark-color="green">
 
@@ -281,11 +281,11 @@ for (const member of members) {
 
 </div>
 
-Walk it against the trap. `scope: 'run'` ties each key to the parent run, so when the outer task throws on member two hundred and retries, it regenerates the *same* two hundred keys it built the first time. For members one through one hundred and ninety-nine, the runtime sees a key whose run already completed and hands back the cached result — no second email. Only the member it hadn't reached yet actually sends. This single line is the difference between the duplicated output you predicted a moment ago and a clean one-email-per-member run.
+Walk it against the trap. `scope: 'run'` ties each key to the parent run, so when the outer task throws on member two hundred and retries, it regenerates the *same* two hundred keys it built the first time. For members one through one hundred and ninety-nine, the runtime sees a key whose run already completed and hands back the cached result, so no second email goes out. Only the member it hadn't reached yet actually sends. This one line is the difference between the duplicated output you predicted a moment ago and a clean one-email-per-member run.
 
-So treat this as a rule, not a nicety: **an idempotency key is required on every `trigger`, `triggerAndWait`, and `wait.forToken`.** It isn't an optimization you add when you remember — it's non-optional, the same way a Server Action's input schema is non-optional. A trigger without a key is a duplicate side effect waiting for its first retry.
+So treat this as a rule, not a nicety: an idempotency key is required on every `trigger`, `triggerAndWait`, and `wait.forToken`. It isn't an optimization you add when you remember; it's non-optional, the same way a Server Action's input schema is non-optional. A trigger without a key is a duplicate side effect waiting for its first retry.
 
-Which key, with which scope, actually dedupes the per-member sends across a parent retry? Pick carefully — composition and scope both matter.
+Which key, with which scope, actually dedupes the per-member sends across a parent retry? Choose carefully, because composition and scope both matter.
 
 <MultipleChoice>
   Inside a task that loops over members and may itself be retried at the run level, which key correctly sends each member exactly one notification — even across a retry of the parent?
@@ -320,9 +320,9 @@ Which key, with which scope, actually dedupes the per-member sends across a pare
 
 ## Durable pauses: wait.for and wait.until
 
-Idempotency keys make a re-run step safe. But re-runs and checkpoints only exist because something put a *boundary* in the task. Durable waits are how you create those boundaries on purpose — and they come with two gotchas that bite hard enough to be worth meeting head-on.
+Idempotency keys make a re-run step safe. But re-runs and checkpoints only exist because something put a *boundary* in the task. Durable waits are how you create those boundaries on purpose, and they come with two gotchas worth meeting head-on.
 
-Start with the relative one. <Term def="A durable relative pause. Checkpoints, frees the worker (no compute billed while waiting), and resumes after the given duration on a possibly new worker.">wait.for</Term> pauses for a duration — `await wait.for({ seconds: 2 })`, `await wait.for({ minutes: 5 })`. Three things happen, and all three matter. It checkpoints, so it's a save point. It *frees the worker* — the compute process is released and you are billed nothing while the run sleeps. And it resumes after the duration on a possibly-new worker, which is precisely why it survives a crash: there's no live process holding the pause, just a checkpoint and a wake-up time. Reach for it to pace a loop between export pages, or to back off until a rate-limit window reopens.
+Start with the relative one. <Term def="A durable relative pause. Checkpoints, frees the worker (no compute billed while waiting), and resumes after the given duration on a possibly new worker.">wait.for</Term> pauses for a duration, as in `await wait.for({ seconds: 2 })` or `await wait.for({ minutes: 5 })`. Three things happen, and all three matter. It checkpoints, so it's a save point. It *frees the worker*, meaning the compute process is released and you are billed nothing while the run sleeps. And it resumes after the duration on a possibly-new worker, which is precisely why it survives a crash: there's no live process holding the pause, just a checkpoint and a wake-up time. Reach for it to pace a loop between export pages, or to back off until a rate-limit window reopens.
 
 The trap is that `wait.for` looks like `setTimeout`, and `setTimeout` is the wrong tool here in two compounding ways. Compare them directly.
 
@@ -335,7 +335,7 @@ The trap is that `wait.for` looks like `setTimeout`, and `setTimeout` is the wro
     ```
 
     </div>
-    **Wrong on a durable platform.** The worker sits there doing nothing for the full two seconds — you pay for the idle wait — and the timer lives in process memory, so a crash evaporates it. The run never resumes; the pause is simply gone with the worker.
+    **Wrong on a durable platform.** The worker sits there doing nothing for the full two seconds, so you pay for the idle wait, and the timer lives in process memory, so a crash evaporates it. The run never resumes; the pause is simply gone with the worker.
   </CodeVariant>
 
   <CodeVariant label="wait.for — durable">
@@ -346,21 +346,21 @@ The trap is that `wait.for` looks like `setTimeout`, and `setTimeout` is the wro
     ```
 
     </div>
-    **Right.** It checkpoints and releases the worker — no compute billed while it sleeps — and because the pause is a checkpoint rather than a live timer, a crash mid-wait resumes cleanly on a new worker.
+    **Right.** It checkpoints and releases the worker, so no compute is billed while it sleeps, and because the pause is a checkpoint rather than a live timer, a crash mid-wait resumes cleanly on a new worker.
   </CodeVariant>
 </CodeVariants>
 
-The absolute version is <Term def="A durable pause until an absolute wall-clock Date. Same checkpoint, free-the-worker, crash-safe semantics as wait.for.">wait.until</Term>: `await wait.until({ date })`. Same checkpoint-free-resume semantics, but instead of a duration it waits to a specific wall-clock moment. This is what you want for "send the welcome email twenty-four hours after signup" or "act exactly at the trial's period end."
+The absolute version is <Term def="A durable pause until an absolute wall-clock Date. Same checkpoint, free-the-worker, crash-safe semantics as wait.for.">wait.until</Term>: `await wait.until({ date })`. It has the same checkpoint, free-the-worker, resume semantics, but instead of a duration it waits to a specific wall-clock moment. This is what you want for "send the welcome email twenty-four hours after signup" or "act exactly at the trial's period end."
 
-Its gotcha is quieter than `setTimeout`'s and therefore sneakier. If the date you pass is already in the *past*, `wait.until` resolves **immediately**. It does not error, and it does not skip the rest of the task — it just falls straight through as if there were no wait at all. So if your intent is "do nothing once this date has passed," `wait.until` will not enforce that for you; you have to check the date yourself before you decide to act. Name that to yourself now so a past date never surprises you later.
+Its gotcha is quieter than the `setTimeout` one and therefore sneakier. If the date you pass is already in the *past*, `wait.until` resolves **immediately**. It does not error, and it does not skip the rest of the task; it just falls straight through as if there were no wait at all. So if your intent is "do nothing once this date has passed," `wait.until` will not enforce that for you, and you have to check the date yourself before you decide to act. Keep that in mind so a past date never surprises you later.
 
 :::caution
-There's a wait reflex coming in the next lesson that doesn't apply yet but is worth planting: any wait that depends on an *external* signal must carry a `timeout`, because a signal that never arrives is an indefinite wait, and an indefinite wait is a resource leak. `wait.for` and `wait.until` are bounded by their own duration, so they terminate themselves — the timeout rule bites when you start waiting on tokens.
+There's a rule coming in the next lesson that doesn't apply yet but is worth planting: any wait that depends on an *external* signal must carry a `timeout`, because a signal that never arrives is an indefinite wait, and an indefinite wait is a resource leak. `wait.for` and `wait.until` are bounded by their own duration, so they terminate themselves; the timeout rule matters when you start waiting on tokens.
 :::
 
 ## A paginated export that survives a crash
 
-Time to assemble all four pieces — checkpoints, retries, per-step keys, durable waits — into one realistic task, the direct precursor to the CSV export you build in the next chapter. The job: export an organization's invoices in pages of five hundred, updating progress as it goes, then email a download link. Read it as a whole first, then we'll kill the worker and watch it recover.
+Now assemble all four pieces, namely checkpoints, retries, per-step keys, and durable waits, into one realistic task, the direct precursor to the CSV export you build in the next chapter. The job is to export an organization's invoices in pages of five hundred, update progress as it goes, then email a download link. Read it as a whole first, then we'll kill the worker and watch it recover.
 
 <AnnotatedCode lang="ts" maxLines={18} code={`
 export const exportInvoices = schemaTask({
@@ -380,7 +380,7 @@ export const exportInvoices = schemaTask({
 });
 `}>
   <AnnotatedStep meta={`{5} "organizationId"`} color="orange">
-    The task has no session — tenancy rides in on the payload as `organizationId` and travels onward into every child (`writePage` scopes its own queries from it). The org context is cargo, re-derived from data, never ambient.
+    The task has no session, so tenancy rides in on the payload as `organizationId` and travels onward into every child (`writePage` scopes its own queries from it). The org context is cargo, re-derived from data, never ambient.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{7-8}" color="green">
@@ -388,31 +388,31 @@ export const exportInvoices = schemaTask({
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{9} "metadata.set('page', page)"`} color="blue">
-    After each page, `metadata.set` publishes progress to the dashboard and the in-app inspector — live "page 7 of 20" with no extra plumbing.
+    After each page, `metadata.set` publishes progress to the dashboard and the in-app inspector: a live "page 7 of 20" with no extra plumbing.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{10} "wait.for({ seconds: 2 })"`} color="violet">
-    The pause between pages does double duty: it's a checkpoint boundary — the save point that makes a mid-export crash resumable — and it paces the load on the database and downstream so the export doesn't hammer them flat.
+    The pause between pages does double duty. It's a checkpoint boundary, the save point that makes a mid-export crash resumable, and it paces the load on the database and downstream so the export doesn't hammer them flat.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{12-13}" color="green">
-    The final email. It carries its own idempotency key too, so if the *whole task* retries after the last page, the "your export is ready" email is sent once, not twice. Every side effect in the task is key-guarded — no exceptions.
+    The final email. It carries its own idempotency key too, so if the *whole task* retries after the last page, the "your export is ready" email is sent once, not twice. Every side effect in the task is key-guarded, with no exceptions.
   </AnnotatedStep>
 </AnnotatedCode>
 
-Now kill it. The worker dies at page seven of twenty. A new worker spins up and rehydrates from the **last checkpoint** — the `wait.for` after page six. Pages one through six don't re-export: their `triggerAndWait` calls re-issue the same `scope: 'run'` idempotency keys, the runtime sees those child runs already completed, and it returns their cached results. Page seven, the one in flight when the worker died, re-executes from the top — and that's fine, because writing a page is the work, not a duplicate side effect. The loop carries on to page twenty, the final email fires exactly once under its own key, and the run finishes.
+Now kill it. The worker dies at page seven of twenty. A new worker spins up and rehydrates from the **last checkpoint**, the `wait.for` after page six. Pages one through six don't re-export: their `triggerAndWait` calls re-issue the same `scope: 'run'` idempotency keys, the runtime sees those child runs already completed, and it returns their cached results. Page seven, the one in flight when the worker died, re-executes from the top, and that's fine, because writing a page is the work, not a duplicate side effect. The loop carries on to page twenty, the final email fires exactly once under its own key, and the run finishes.
 
-Every claim in that paragraph traces back to a named mechanism from this lesson: the **checkpoint** at the `wait.for` is why there's somewhere to resume from; the **run-level retry** is what re-ran the task at all; the **per-step idempotency keys** are why pages one through six came back cached instead of duplicated; the **durable wait** is what created the boundary in the first place. That's the whole lesson in one task — and it is, almost line for line, the shape the CSV export ships in the next chapter.
+Every claim in that paragraph traces back to a named mechanism from this lesson. The **checkpoint** at the `wait.for` is why there's somewhere to resume from. The **run-level retry** is what re-ran the task at all. The **per-step idempotency keys** are why pages one through six came back cached instead of duplicated. The **durable wait** is what created the boundary in the first place. That's the whole lesson in one task, and it is, almost line for line, the shape the CSV export ships in the next chapter.
 
 ## Cancellation, briefly
 
-One last thing to name, not to drill. Sometimes a run needs to stop before it finishes — a user cancels an export, an admin kills a runaway job. A run can be canceled from the Trigger.dev dashboard, or programmatically with `runs.cancel(runId)`.
+One last thing to name, not to drill. Sometimes a run needs to stop before it finishes: a user cancels an export, or an admin kills a runaway job. A run can be canceled from the Trigger.dev dashboard, or programmatically with `runs.cancel(runId)`.
 
-Cancellation, though, is *cooperative*, and the word matters. The runtime stops scheduling new steps the moment you cancel — but a step that's already running only stops if you wired it to. Inside the body, the run exposes an <Term def="A signal that fires when a run is canceled. Forward it to fetch and SDK calls so in-flight requests actually abort.">AbortSignal</Term> that fires on cancel; forward it into your `fetch` and SDK calls and an in-flight HTTP request actually aborts. Skip that and your canceled run keeps grinding through whatever call it was mid-way through until that call returns on its own. <Term def="Cancellation where the runtime stops new steps but an in-flight step halts only if it honors the abort signal.">Cooperative cancellation</Term> in one line: the runtime stops the *next* step for free; stopping the *current* one is on you. Forward the signal and check it at step boundaries.
+Cancellation, though, is *cooperative*, and the word matters. The runtime stops scheduling new steps the moment you cancel, but a step that's already running only stops if you wired it to. Inside the body, the run exposes an <Term def="A signal that fires when a run is canceled. Forward it to fetch and SDK calls so in-flight requests actually abort.">AbortSignal</Term> that fires on cancel; forward it into your `fetch` and SDK calls and an in-flight HTTP request actually aborts. Skip that and your canceled run keeps grinding through whatever call it was midway through until that call returns on its own. <Term def="Cancellation where the runtime stops new steps but an in-flight step halts only if it honors the abort signal.">Cooperative cancellation</Term> in one line: the runtime stops the *next* step for free, and stopping the *current* one is on you. Forward the signal and check it at step boundaries.
 
 ## External resources
 
-This API moved recently — Trigger.dev v4 is the current line, and the web is still full of v3 examples that will quietly mis-teach you. When you reach for a detail this lesson didn't cover, go to the canonical current docs, not a blog post.
+This API moved recently. Trigger.dev v4 is the current line, and the web is still full of v3 examples that will quietly mis-teach you. When you reach for a detail this lesson didn't cover, go to the canonical current docs, not a blog post.
 
 <CardGrid>
   <ExternalResource
@@ -420,7 +420,7 @@ This API moved recently — Trigger.dev v4 is the current line, and the web is s
     href="https://trigger.dev/docs/idempotency"
     icon="lucide:workflow"
     iconColor="#A78BFA"
-    description="Idempotency keys, TTL, and scopes — the canonical reference for the primitive this lesson centers on."
+    description="Idempotency keys, TTL, and scopes: the canonical reference for the primitive this lesson centers on."
   />
   <ExternalResource
     title="Trigger.dev — Errors & Retrying"
@@ -434,8 +434,8 @@ This API moved recently — Trigger.dev v4 is the current line, and the web is s
     href="https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/"
     icon="simple-icons:amazonwebservices"
     iconColor="#FF9900"
-    description="Marc Brooker's gold-standard write-up of why backoff needs jitter — the timeless theory under this lesson's retry knobs."
+    description="Marc Brooker's gold-standard write-up of why backoff needs jitter: the timeless theory under this lesson's retry knobs."
   />
 </CardGrid>
 
-You now have the mental model the rest of background work hangs on. A durable task is a chain of small, idempotent steps separated by checkpoints. The runtime owns resume and retry; you own two things — making each step safe to run twice, and choosing where the boundaries go. In the next lesson you'll add the one kind of wait this one deliberately skipped: pausing a task on a signal from the outside world — a human clicking *approve*, a third party calling you back — and the mandatory `timeout` that keeps such a wait from leaking.
+You now have the mental model the rest of background work hangs on. A durable task is a chain of small, idempotent steps separated by checkpoints. The runtime owns resume and retry; you own two things: making each step safe to run twice, and choosing where the boundaries go. In the next lesson you'll add the one kind of wait this one deliberately skipped, pausing a task on a signal from the outside world such as a human clicking *approve* or a third party calling you back, along with the mandatory `timeout` that keeps such a wait from leaking.
