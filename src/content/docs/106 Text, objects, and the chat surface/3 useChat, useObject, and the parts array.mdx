@@ -1,0 +1,531 @@
+---
+title: useChat, useObject, and the parts array
+tagline: The Vercel AI SDK React hooks that subscribe to your streaming route and render the answer on screen as it arrives.
+chapter-id: 106
+course-progress: 0.00005
+sidebar:
+  order: 3
+  label: The chat surface in React
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import TwoMessageTypes from '../../../components/lessons/106/3/TwoMessageTypes.astro';
+import ServerClientBoundary from '../../../components/lessons/106/3/ServerClientBoundary.astro';
+import UseObjectFillsIn from '../../../components/lessons/106/3/UseObjectFillsIn.astro';
+import FullLifecycle from '../../../components/lessons/106/3/FullLifecycle.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The last two lessons built the half of the system the user never sees. The route handler reads the conversation, calls `streamText` or `streamObject`, and returns a stream of tokens — and then it just... pushes them out over the wire. Tokens leave the server one at a time. Nobody is catching them yet.
+
+This lesson is the catcher. The server pushes a stream; something on the React side has to subscribe to it, accumulate the tokens, and re-render the screen on every chunk so the user watches the answer type itself out. That something is a hook. By the end you'll be able to wire a streaming chat box and a structured-output form against the exact `/api/chat` route you already built — with the input box, the live render, the cancel button, and the conversation history all sitting in the right place.
+
+Two ideas carry the whole lesson, and almost everything else is a consequence of them. The first is that your app deals in **two different shapes of message** — a rich one it stores and renders, and a lossy one the model reads — and a single seam converts between them. The second is one rendering rule that falls straight out of the first: you render `message.parts`, never `message.content`. Get those two, and the three hooks are just the right tool reached for the right job.
+
+## Two message types: what the app stores versus what the model reads
+
+In the first lesson of this chapter you met a pair of types at the route handler: `UIMessage` and `ModelMessage`. You wrote the line that converts one into the other. Now you're standing on the other side of that seam — the client side — and the distinction stops being a detail and becomes the thing the whole architecture is built around. So it's worth re-stating cleanly, even if it's already half-familiar.
+
+A <Term definition={"The rich, app-owned message shape — { id, role, parts } plus metadata.\nThe shape your app stores in the database and renders in React."}>`UIMessage`</Term> is the **rich, app-owned** shape. It looks like `{ id, role, parts }`, plus room for metadata, and that `parts` array can hold prose, reasoning traces, file attachments, the record of a tool the model called — the full texture of a turn. This is the shape your app **stores in the database and renders in React**. It's the conversation as the *application* understands it.
+
+A <Term definition={"The lossy message shape the model actually reads — essentially a role and flattened text, with the app-level richness stripped out."}>`ModelMessage`</Term> is the **lossy** shape — basically a role and some text. It's all the model ever actually reads. The model doesn't need your message ids or your render metadata; it needs the content, flattened into the format the provider's API expects.
+
+So the app world and the model world speak different dialects, and exactly one place translates between them. That place is the **server**, at the route handler — never the client.
+
+<Figure expandable={false}>
+  <TwoMessageTypes />
+  <Fragment slot="caption">
+    The two converters live on the server. The client sends `UIMessage[]` up and receives stream parts down — it never touches `ModelMessage`.
+  </Fragment>
+</Figure>
+
+Look at the two arrows in that figure, because they're the entire contract. On the way *to* the model, `convertToModelMessages(messages)` collapses your `UIMessage[]` down into `ModelMessage[]` right before the call to `streamText` — that's the line you wrote in the first lesson. On the way *back*, `result.toUIMessageStreamResponse()` streams parts to the browser in a protocol the client hook knows how to decode. The client itself never calls either converter. It sends `UIMessage[]` up and receives stream parts down. The whole rich-versus-lossy negotiation is a server concern.
+
+Which leads to the one rule worth tattooing on the back of your hand, because you'll watch it get enforced twice more before the lesson ends: **persist `UIMessage[]`, never `ModelMessage[]`.** If you save the lossy shape, you've thrown away the tool calls, the reasoning, and the metadata — so the next time the page loads, you cannot faithfully rebuild the conversation. The full version is simply gone. This is why, later in this lesson, the persistence write saves the *UI* shape and nothing else.
+
+## The parts array is the render source of truth
+
+Now to that one rendering rule. A v5 message is `{ id, role, parts }`. The interesting field is <Term definition={"The array on a UIMessage holding the message's content as typed pieces — text, reasoning, files, tool calls.\nThe render source of truth in v5; replaces v4's flat content string."}>`parts`</Term>: an array where every element carries a `type`. The most common is `'text'` for prose. But there's also `'reasoning'` for a model's chain-of-thought trace, `'file'` for an attachment, `'tool-<name>'` for the record of a tool the model invoked, plus data parts you define yourself. The richness of a turn doesn't live in one string — it's spread across that array.
+
+So the way you render an assistant message is to walk the array and switch on each part's type:
+
+```tsx
+{message.parts.map((part, index) =>
+  part.type === 'text' ? <span key={index}>{part.text}</span> : null,
+)}
+```
+
+In this lesson you only handle `'text'`; everything else falls through to `null`. You might reasonably ask why the array exists at all if you're only reading one kind of part out of it. The answer is the next chapter: tool calls render as `'tool-<name>'` parts, and that's where the array earns its keep. It's not over-engineering — it's the slot that rich content lands in once the model can do more than talk. For now, hold the shape and render the text.
+
+Here's where the web will actively mislead you. The internet is full of `useChat` tutorials written against v4, and a huge number of them render the message like this:
+
+<CodeVariants maxLines={10}>
+  <CodeVariant label="v4 (breaks on v5)">
+    ```tsx del={2}
+    {messages.map((message) => (
+      <div key={message.id}>{message.content}</div>
+    ))}
+    ```
+    **Drops every tool call, file, and reasoning part on the floor.** In v5 there is no `message.content` string — the field is gone, so this renders empty for any message that isn't pure text, and silently breaks the moment the model calls a tool.
+  </CodeVariant>
+
+  <CodeVariant label="v5">
+    ```tsx ins={3-5}
+    {messages.map((message) => (
+      <div key={message.id}>
+        {message.parts.map((part, index) =>
+          part.type === 'text' ? <span key={index}>{part.text}</span> : null,
+        )}
+      </div>
+    ))}
+    ```
+    **Renders every part, future-proof.** Walking `parts` and switching on `type` is the only render that survives tool calls and attachments landing in the array later. Each mapped part needs a stable `key` — the part's index within this message is fine; never reuse a bare array index across different messages.
+  </CodeVariant>
+</CodeVariants>
+
+That `message.content` field is genuinely gone in v5. Rendering it doesn't error — it just quietly drops every non-text part, which is the worst kind of bug, because it works perfectly in the demo where the model only ever says words. The first time the model calls a tool, half the answer vanishes. Seeing the wrong shape labeled as wrong is the inoculation: when you copy a snippet off a blog and it reaches for `.content`, you'll now recognize it as a v4 fossil.
+
+One small thing carried in that v5 pane that's easy to skip past: list items need a stable `key`. Use the part's index *within its message*, or a part id if you have one — but never a bare array index reused across messages, because React keys have to be unique among siblings, and a render that mixes messages will collide.
+
+<MultipleChoice>
+  You follow a `useChat` tutorial. The chat works fine for plain answers, but the moment the assistant calls a tool, that part of the reply renders as nothing — the bubble is half-empty. The render code is `{messages.map((m) => <div key={m.id}>{m.content}</div>)}`. What's wrong?
+
+  <McqChoice correct>
+    The render reads a field that only carries plain text and silently ignores everything richer; the tool result lives somewhere this code never looks.
+  </McqChoice>
+  <McqChoice>
+    The list is missing a `key`, so React refuses to render the tool part.
+  </McqChoice>
+  <McqChoice>
+    `status` isn't being checked, so the component renders before the tool part has finished streaming.
+  </McqChoice>
+  <McqChoice>
+    The transport is misconfigured, so tool parts never reach the client at all.
+  </McqChoice>
+
+  <McqWhy>`message.content` is the v4 shape — a flat string. In v5 a message's content lives in its `parts` array, and `.content` only ever exposes the text, so any non-text part (a tool call) renders as nothing. The fix is `message.parts.map(...)` switching on `part.type`. The other options are red herrings: the render already has `key={m.id}`; `status` gates UX affordances, not whether a part renders; and a broken transport would stream nothing at all, yet plain text arrives fine.</McqWhy>
+</MultipleChoice>
+
+## useChat: the conversation hook
+
+You now have the two facts every hook depends on — the two message types, and the parts render. Time for the headline hook. `useChat` is what you reach for when the surface is a *conversation*: a back-and-forth that accumulates history. It's the one wired to the `/api/chat` route from the first lesson. Let me build it up in stages, because there are five distinct things happening in one small component and taking them at once is how the API feels overwhelming.
+
+Start with the call and what it returns:
+
+```tsx
+const { messages, sendMessage, regenerate, status, error, stop } = useChat({
+  transport: new DefaultChatTransport({ api: '/api/chat' }),
+});
+```
+
+The endpoint is wired through a <Term definition={"The built-in ChatTransport that talks to a route handler over HTTP POST plus a streaming response.\nThe default useChat transport — you pass it the api path."}>`DefaultChatTransport`</Term>, not a bare `api` string handed to the hook. That's worth a sentence of *why*, because it explains the shape. In v5 the hook delegates the actual work of sending to a <Term definition={"The object useChat delegates sending to — an interface that knows how to ship messages to a backend and stream the response back.\nSwappable; the HTTP default covers route handlers."}>`ChatTransport`</Term> — an object that knows how to talk to a backend. `DefaultChatTransport` is the one that speaks plain HTTP POST plus a streaming response against your route, which is exactly what your handler returns. You won't write a custom transport in this course; the default is the right call for an HTTP route handler. But the *shape* matters, because it's the reason the endpoint is a property of the transport rather than a method on the hook.
+
+Now the change that trips up the most people coming from v4. Notice what the hook **does not** return: there's no `input`, no `handleInputChange`, no `handleSubmit`. In v4, `useChat` managed the text in the input box for you. In v5 it doesn't, and that's a deliberate subtraction. You own the input the way you'd own any form field — a plain `useState`:
+
+```tsx
+const [input, setInput] = useState('');
+```
+
+I want to reframe this, because "the new version has a new API to memorize" is the wrong way to hold it. A data-fetching hook that also secretly owned your form's input state was always a slightly leaky abstraction — it bundled two unrelated jobs. Stripping the input state out didn't make the hook bigger and more confusing; it made it *smaller and more honest*. What's left is a normal React form, exactly the kind you built back when you first learned `useState` for a controlled input. The hook fetches; your component holds the text. That's the whole change.
+
+<VideoCallout videoId="y4IMq43KvRw" videoTitle="Vercel AI SDK in React (Beginner Tutorial)">
+  Cosden Solutions builds the chat box end to end in 20 minutes — watch the `messages`/`parts` render and streaming loop in action (note: it predates the v5 input change, so it still pulls input helpers off the hook).
+</VideoCallout>
+
+That leaves `status` and `stop`, which together are the streaming UX. <Term definition={"The useChat request lifecycle as a string union: 'submitted' | 'streaming' | 'ready' | 'error'.\nDrives the typing indicator, the disabled input, and the cancel button."}>`status`</Term> is one of `'submitted' | 'streaming' | 'ready' | 'error'` — a little state machine for the request. The one you key off most is `'streaming'`: while `status === 'streaming'`, you show the typing indicator, disable the input, and reveal a cancel button. And `stop()` is what that cancel button calls — it aborts the in-flight request. This closes a loop from the cost work in the previous chapter: the abort propagates through the handler's `abortSignal` down to the provider, so cancelling actually stops the model from generating, which actually stops burning tokens. A chat surface without a visible cancel control is leaving money on the table every time a user gives up on a long answer. Every chat surface gets a `stop` affordance.
+
+Two more renames you'll see at the call site, named once so they don't surprise you: what v4 called `append` is now `sendMessage`, and what it called `reload` is now `regenerate`. `regenerate()` re-runs the last assistant turn — it's your "try again" button when an answer comes back wrong.
+
+Here's the whole component. It's small. Step through it.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+'use client';
+
+export const Chat = () => {
+  const { messages, sendMessage, status, stop } = useChat({
+    transport: new DefaultChatTransport({ api: '/api/chat' }),
+  });
+  const [input, setInput] = useState('');
+
+  return (
+    <div>
+      {messages.map((message) => (
+        <div key={message.id}>
+          {message.parts.map((part, index) =>
+            part.type === 'text' ? <span key={index}>{part.text}</span> : null,
+          )}
+        </div>
+      ))}
+
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          sendMessage({ text: input });
+          setInput('');
+        }}
+      >
+        <input value={input} onChange={(event) => setInput(event.target.value)} />
+        {status === 'streaming' && <button type="button" onClick={stop}>Stop</button>}
+      </form>
+    </div>
+  );
+};
+`}>
+  <AnnotatedStep meta="{1} {4-6}" color="blue">
+    `'use client'` because this component holds state and handles events — it can't be a Server Component. The hook is wired to your route through `DefaultChatTransport`; everything below hangs off what it returns.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7}" color="orange">
+    The component owns the input, not the hook. This is the biggest v5 change and it's the least dramatic one — it's a plain controlled input, the same `useState` form you'd write for any text field. The hook deliberately doesn't manage this anymore.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11-17}" color="blue">
+    The render walks `messages`, and for each message walks its `parts`, drawing the text parts. As tokens stream in, `messages` updates and this re-runs — that's the answer typing itself out.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{19-25}" color="blue">
+    On submit, `sendMessage({ text: input })` sends the text part up the transport, then `setInput('')` clears the box. `{ text }` is the send shape for a text message — not `append`, which was the v4 name.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{27}" color="blue">
+    While the response streams, a Stop button appears, wired to `stop()`. Without this, a user who navigates away or gives up leaves the model generating into the void, burning tokens for an answer nobody will read.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Three failure modes are worth naming, because each one is a real trap. Reaching for `input` / `handleInputChange` / `handleSubmit` off the hook — they don't exist, you own input with `useState`. Calling `append` or `reload` — renamed to `sendMessage` and `regenerate`. And forgetting to wire `stop` — an abandoned stream keeps generating, which is the cost mistake the whole chapter has been guarding against.
+
+<Dropdowns
+  instructions="Fill the blanks so the chat owns its own input, sends the text part, and can cancel an in-flight stream."
+  answers={[
+    { answer: 'stop', options: ['stop', 'reload', 'handleSubmit'] },
+    { answer: 'useState', options: ['useState', 'useChat', 'useInput'] },
+    { answer: 'sendMessage', options: ['sendMessage', 'append', 'submit'] },
+  ]}
+>
+```tsx
+'use client';
+
+export const Chat = () => {
+  const { messages, status, ___ } = useChat({
+    transport: new DefaultChatTransport({ api: '/api/chat' }),
+  });
+  const [input, setInput] = ___('');
+
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        ___({ text: input });
+        setInput('');
+      }}
+    >
+      <input value={input} onChange={(event) => setInput(event.target.value)} />
+      {status === 'streaming' && (
+        <button type="button" onClick={stop}>Stop</button>
+      )}
+    </form>
+  );
+};
+```
+</Dropdowns>
+
+## Persisting and resuming the conversation
+
+A chat that forgets everything the moment you refresh isn't a product. So the conversation has to survive a reload — which is where the "two message types" rule pays its rent, and where a second architectural boundary shows up. This earns its own section because persistence isn't a footnote on `useChat`; it's a distinct decision with a clear right answer.
+
+The decision is **where the durable write happens**, and the answer is: **server-side, in the handler's `onFinish` — not on the client.** This is the same discipline the first two lessons established for every write in this chapter: the save lives inside `onFinish`, on the server, right next to where the token counts and the audit event already land. The handler you already wrote needs one small addition:
+
+```ts {2-3}
+return result.toUIMessageStreamResponse({
+  originalMessages: messages,
+  onFinish: ({ messages }) => saveChat({ chatId, messages }),
+});
+```
+
+Two arguments do the work. `originalMessages` is the incoming history — the conversation as it stood when the request arrived. The `messages` handed to `onFinish` is the *full updated* `UIMessage[]` after the assistant's turn finished streaming. You save **that** one — the complete, post-answer conversation, in the UI shape. This is the "persist the UI shape, never the lossy shape" rule from the start of the lesson, now showing up as actual code. Same seam you wrote in the first lesson; it just does one more thing now.
+
+Here's a subtlety that's caused real production bugs, so name it explicitly. `useChat` *also* exposes its own `onFinish` on the client — `onFinish({ message, messages, isAbort, isDisconnect, isError })`. It's tempting to save from there. Don't. The client's `onFinish` is for *UI reactions* — pinging analytics, scrolling to the bottom, popping a toast. It is **not** a reliable persistence trigger, and the `isAbort` / `isDisconnect` / `isError` flags are the tell: a user who closes the tab mid-stream never fires it at all. The durable write has to be somewhere that always runs to completion, and that's the server's `onFinish`. Use the client's for cosmetics; never trust it with the source of truth.
+
+So that's the write. Now the read — loading the saved conversation on the next visit — and this is the second boundary. The chat page is a **Server Component**: it reads the conversation's `UIMessage[]` straight from the database, scoped to the org, and passes them down to the Client Component as a prop.
+
+<Figure expandable={false}>
+  <ServerClientBoundary />
+  <Fragment slot="caption">
+    Static shell rendered on the server, live stream rendered on the client. The boundary is one prop hand-off — no client fetch.
+  </Fragment>
+</Figure>
+
+On the client side, the component mounts the hook with that history wired into the `messages` option:
+
+```tsx
+const { messages, sendMessage, status, stop } = useChat({
+  messages: initialMessages,
+  transport: new DefaultChatTransport({ api: '/api/chat' }),
+});
+```
+
+One naming trap to defuse here. You'll often see the prop *value* called <Term definition={"Just a conventional variable name for the history you loaded from the database.\nIt is not a useChat option — in v5 you assign it to the messages option."}>`initialMessages`</Term> — that's just a conventional variable name for "the history we loaded." But the hook *option* it gets assigned to is **`messages`**, not `initialMessages`. (v4 had an option literally named `initialMessages`; in v5 it's `messages`, and a fair amount of stale documentation still says otherwise.) Name your variable whatever reads well; assign it to `messages`.
+
+Notice what this architecture *doesn't* do: it doesn't fetch the history from the client. It would be tempting to mount the component, fire a `fetch` inside a `useEffect`, and load the conversation that way — and it's wrong on two counts. It adds a network round-trip the architecture doesn't need, since the server was already rendering the page and could just read the rows in-process. And `useEffect` for fetching server data is a known anti-pattern in this codebase for exactly this reason — the server component is the better fetch point, full stop. The page reads the rows; the prop carries them; the hook hydrates. No client fetch.
+
+Step back and the round-trip closes into a clean loop. The handler runs `convertToModelMessages` before `streamText`; on completion `toUIMessageStreamResponse({ originalMessages, onFinish })` persists the `UIMessage[]`; the next visit rehydrates from that same UI shape through the Server Component prop. Two message types, one seam, and it shows up three times — on the way down to the model, on the way back to save, and on the way in on the next load.
+
+## useCompletion: single-shot text in, streaming text out
+
+Not every AI surface is a conversation. Sometimes it's one box, one button, one streaming answer, and no history to speak of — a "summarize this" widget, a draft generator, an autocomplete drawer. For those, `useChat` is the wrong tool: it drags in a whole `messages` array and a parts render for a surface that has exactly one output and no memory. The right tool is `useCompletion`, the client twin of the single-shot text call.
+
+It's deliberately simpler:
+
+```tsx
+const { completion, complete, isLoading, stop, error } = useCompletion({
+  api: '/api/complete',
+});
+```
+
+`completion` is the streaming string — the answer, growing token by token, ready to drop straight into the page. `complete(prompt)` fires the request. There's no `messages`, no `parts`, no `sendMessage` — just a prompt in and a string out. Here's the minimal surface — simple enough that it needs no stepped walkthrough:
+
+```tsx
+'use client';
+
+export const SummaryBox = () => {
+  const { completion, complete, isLoading } = useCompletion({
+    api: '/api/complete',
+  });
+  const [input, setInput] = useState('');
+
+  return (
+    <div>
+      <textarea value={input} onChange={(event) => setInput(event.target.value)} />
+      <button onClick={() => complete(input)} disabled={isLoading}>
+        {isLoading ? 'Generating…' : 'Summarize'}
+      </button>
+      <p>{completion}</p>
+    </div>
+  );
+};
+```
+
+The route behind it is the same shape you already know — `authedRoute`, the quota guard, all of it — with one difference in the return helper: it returns `result.toTextStreamResponse()`, the *text* protocol, not the parts protocol. That mirrors exactly what you saw in the last two lessons: the handler's return helper is chosen by the hook on the other end. `useChat` wants parts, so the handler speaks `toUIMessageStreamResponse`. `useCompletion` wants a string, so it speaks `toTextStreamResponse`. The hook and the helper are two ends of one contract.
+
+The decision is one line: conversation → `useChat`; stateless single-shot → `useCompletion`. Reaching for `useChat` when there's no conversation means maintaining a `messages` array and a parts render that the surface never uses.
+
+## useObject: partial objects that fill in as they stream
+
+The third hook is the client side of the structured-output work from the last lesson, and it's the one that pays off the whole "ask the model for typed data, not prose" thread. When the server primitive is `streamObject`, the client primitive is `useObject` — and it does something the others can't: it renders a *typed object* that fills in field by field as the model parses it.
+
+One import gotcha first, because it'll bite you otherwise. The hook still ships under an experimental name, <Term definition={"The current export name for the object-streaming hook, flagged experimental because its surface may still change.\nAlias it to useObject on import."}>`experimental_useObject`</Term>, so you import it under an alias:
+
+```ts
+import { experimental_useObject as useObject } from '@ai-sdk/react';
+```
+
+That's the whole ceremony — `experimental_useObject`, aliased to `useObject` on the way in, and you never think about it again.
+
+The call mirrors the others, with one prop that ties the two halves of the system together:
+
+```tsx
+const { object, submit, isLoading, stop, error } = useObject({
+  api: '/api/extract',
+  schema: invoiceLineItemSchema,
+});
+```
+
+That `schema` is the *same Zod object you used on the server* — the `invoiceLineItemSchema` from the last lesson, with its `description`, `quantity`, and `unitAmount` fields. One schema, both ends of the wire. That's the same portability win the last lesson sold you for swapping providers, now paying off across the client/server boundary too: the contract lives in one place, and both sides read from it.
+
+The interesting field is `object`. Its type is <Term definition={"A version of the result type where every field, at every depth, is optional.\nIt models a half-built object — fields that haven't streamed in yet are simply absent."}>`DeepPartial<RESULT>`</Term>` | undefined` — and that "deep partial" is the whole point. As the stream parses, `object` builds up incrementally: first it's `undefined`, then it has a `description`, then a `quantity` lands, then `unitAmount`. So you render it conditionally, each piece lighting up as it arrives:
+
+```tsx
+'use client';
+
+export const LineItemExtractor = () => {
+  const { object, submit, isLoading } = useObject({
+    api: '/api/extract',
+    schema: invoiceLineItemSchema,
+  });
+  const [input, setInput] = useState('');
+
+  return (
+    <div>
+      <textarea value={input} onChange={(event) => setInput(event.target.value)} />
+      <button onClick={() => submit(input)} disabled={isLoading}>
+        Extract line item
+      </button>
+      {object?.description != null && <p>{object.description}</p>}
+      {object?.quantity != null && <span>Qty: {object.quantity}</span>}
+      {object?.unitAmount != null && <span>{object.unitAmount}</span>}
+    </div>
+  );
+};
+```
+
+`submit(input)` kicks it off; `isLoading` and `stop` behave just like they do in the other hooks. Watch what that conditional render buys you in the next figure — the fields appearing one at a time as the model fills them in:
+
+<DiagramSequence>
+  <DiagramStep caption="The description lands first — object?.description != null flips, so its <p> renders while quantity and unit amount are still absent.">
+    <UseObjectFillsIn filled={1} />
+  </DiagramStep>
+
+  <DiagramStep caption="Quantity parses next. The same object, one more field deep — the description doesn't move or re-render, the new value just lands in its slot.">
+    <UseObjectFillsIn filled={2} />
+  </DiagramStep>
+
+  <DiagramStep caption="Unit amount completes the object. Each field landed in a stable slot and stayed — partial output that reads as progress, not a glitch.">
+    <UseObjectFillsIn filled={3} />
+  </DiagramStep>
+</DiagramSequence>
+
+There's a design judgment hiding in that streaming render, and it's worth pulling out on its own, because the SDK won't enforce it for you. **Partial output has to be useful, not jarring.** A chat box reading text as it streams feels natural — that's just reading. But a structured form whose fields *appear, change, and reorder* as the model second-guesses itself looks broken, like the page is glitching. The rule: stream into **append-only or stable slots**. Let a field land and stay; don't let a half-parsed value flicker between guesses in front of the user. `useObject` hands you the partial; designing the surface so the partial reads as *progress* rather than *malfunction* is on you.
+
+<Buckets instructions="Sort each workload into the hook that names it.">
+  <Bucket name="chat" label="useChat" description="Multi-turn, with history" />
+  <Bucket name="completion" label="useCompletion" description="One prompt in, one string out" />
+  <Bucket name="object" label="useObject" description="Typed object that fills in as it streams" />
+
+  <Item bucket="chat">A multi-turn customer support assistant</Item>
+  <Item bucket="chat">A conversation that must survive a page reload</Item>
+  <Item bucket="completion">A one-shot summary of a blog post</Item>
+  <Item bucket="completion">Draft a tweet from a short brief</Item>
+  <Item bucket="object">Pull invoice line items into a typed shape, fields appearing as they arrive</Item>
+  <Item bucket="object">Turn a paragraph into the fields of a form</Item>
+</Buckets>
+
+## Error states the user should actually see
+
+Models fail. The provider rate-limits you, a request times out, the user blows through their daily token budget. Every one of these hooks hands you an `error` and flips `status` to `'error'` — so the question isn't *whether* you handle failure, it's *what you put on the screen* when it happens. And the answer has a security edge that makes it worth its own section.
+
+The reflex to build is: **a retry control plus a sanitized message** — something like "the model couldn't complete that request" — and **never the raw `error.message`.** Provider error strings leak vendor identifiers, model names, occasionally stack fragments. They're an information disclosure on top of being terrible UX. This is the same security baseline the whole course has held: internal and vendor detail never reaches the client.
+
+<CodeVariants maxLines={8}>
+  <CodeVariant label="Leaks vendor detail">
+    ```tsx del={1}
+    {status === 'error' && <p>{error.message}</p>}
+    ```
+    **Leaks the provider's raw failure to the user.** That string can carry the vendor's name, the model id, even a stack fragment — an information disclosure and a confusing message besides. The user learns nothing actionable and you've exposed your internals.
+  </CodeVariant>
+
+  <CodeVariant label="Sanitized + retry">
+    ```tsx ins={2-5}
+    {status === 'error' && (
+      <div role="alert">
+        <p>The assistant couldn't finish that response.</p>
+        <button onClick={() => regenerate()}>Try again</button>
+      </div>
+    )}
+    ```
+    **A safe message and a way forward.** A fixed, friendly string tells the user what happened without leaking anything, and `regenerate()` gives them the retry. The specifics of *why* it failed belong in your server logs, not the user's screen.
+  </CodeVariant>
+</CodeVariants>
+
+There's a nice consequence of where the friendly text comes from. It isn't the model's error string at all — it's mapped from the **handler's HTTP response**, the RFC 9457 <Term definition={"The standard JSON error envelope your route handlers return — a type, title, status, and detail, served as application/problem+json.\nA uniform, sanitized error contract for the client."}>Problem Details</Term> envelope your route already returns. The client reads the *status code*, not the body string: a provider 429 or 5xx degrades to "try again in a moment"; the user's exhausted daily quota from the cost lesson shows "you've used your daily limit, resets at midnight UTC." The status is the contract; the prose is yours.
+
+And this is the quiet payoff of a decision made two lessons ago. The reason the auth, quota, and rate-limit guards all live *in the handler* is precisely so the client has a clean, sanitized HTTP contract to render against — a tidy set of status codes — instead of ever having to stare at the provider's raw failure and guess. The handler does the sanitizing; the client just maps codes to friendly copy.
+
+## The full lifecycle, end to end
+
+You have every piece now. Let me stitch them into one continuous movie, because the value is in seeing the whole flow as a single loop rather than a pile of parts.
+
+A user opens a saved chat and sends a message. The Server Component reads the conversation's `UIMessage[]` from the database and passes it down as a prop. The Client Component mounts `useChat` with that history and the transport. The user types into a plain `useState` input and hits send, which fires `sendMessage({ text })`. That POSTs the `UIMessage[]` to `/api/chat`, where the `authedRoute` guards check identity and quota. The handler runs `convertToModelMessages`, calls `streamText`, and streams parts back via `toUIMessageStreamResponse`. On the client, `messages` updates chunk by chunk, the render walks `parts`, and `status: 'streaming'` drives the typing indicator and the Stop button. When the turn finishes, the handler's `onFinish` saves the full `UIMessage[]` back to the database, server-side — and the next time the page loads, the loop starts over from that saved history.
+
+Here's that movie as a diagram you can scrub through. Each step lands on one seam, and names the chapter that owns it — so it doubles as a map of the whole AI section so far.
+
+<DiagramSequence>
+  <DiagramStep caption="Load — the Server Component reads the saved conversation from the database and passes it down as the messages prop. (Server Components — an earlier chapter.)">
+    <FullLifecycle step={1} />
+  </DiagramStep>
+
+  <DiagramStep caption="Mount — the Client Component mounts useChat({ messages, transport }), hydrating the loaded history. (This lesson.)">
+    <FullLifecycle step={2} />
+  </DiagramStep>
+
+  <DiagramStep caption="Type & send — the user types into a plain useState input and submits, firing sendMessage({ text }). (Plain React forms — an earlier chapter.)">
+    <FullLifecycle step={3} />
+  </DiagramStep>
+
+  <DiagramStep caption="POST — the UIMessage[] goes to /api/chat, where authedRoute checks identity, role, rate limit, and the daily token quota. (Route handlers + the cost lesson.)">
+    <FullLifecycle step={4} />
+  </DiagramStep>
+
+  <DiagramStep caption="Generate — the handler runs convertToModelMessages, calls streamText, and streams parts back via toUIMessageStreamResponse. (The earlier lessons of this chapter.)">
+    <FullLifecycle step={5} />
+  </DiagramStep>
+
+  <DiagramStep caption="Render — messages updates chunk by chunk, the render walks parts, and status: 'streaming' drives the typing indicator and Stop button. (This lesson.)">
+    <FullLifecycle step={6} />
+  </DiagramStep>
+
+  <DiagramStep caption="Persist — on completion the handler's onFinish saves the full UIMessage[] to the database, server-side. The next load resumes from the top. (This lesson.)">
+    <FullLifecycle step={7} />
+  </DiagramStep>
+</DiagramSequence>
+
+That loop is the single figure worth screenshotting out of this chapter: two message types, one converting seam, and a persistence cycle that makes the conversation durable. Everything you wrote across the three lessons is somewhere on it.
+
+To make the ordering stick, put the steps back in order yourself:
+
+<Sequence instructions="Order the seven seams a single message crosses, from page load to the durable save.">
+  <Step>The Server Component reads the saved `UIMessage[]` from the database and passes it as the `messages` prop.</Step>
+  <Step>The Client Component mounts `useChat({ messages, transport })`, hydrating the history.</Step>
+  <Step>The user types into a `useState` input and submits, firing `sendMessage({ text })`.</Step>
+  <Step>The `UIMessage[]` POSTs to `/api/chat`, where `authedRoute` checks identity and the token quota.</Step>
+  <Step>The handler runs `convertToModelMessages`, calls `streamText`, and streams parts back via `toUIMessageStreamResponse`.</Step>
+  <Step>`messages` updates chunk by chunk; the render walks `parts` while `status: 'streaming'` drives the UX.</Step>
+  <Step>On completion the handler's `onFinish` saves the full `UIMessage[]` to the database, server-side.</Step>
+</Sequence>
+
+## External resources
+
+The hook surface here is the stable, load-bearing core — but the AI SDK's UI layer moves fast, and these references are the ones to keep open while you build. Point at the current docs rather than trusting any pinned snippet, your own or anyone else's.
+
+<CardGrid>
+  <ExternalResource
+    href="https://ai-sdk.dev/docs/ai-sdk-ui/chatbot"
+    title="AI SDK UI: Chatbot"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The canonical guide to building a chat surface with useChat — message rendering, the transport, status, and the streaming lifecycle."
+  />
+
+  <ExternalResource
+    href="https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-message-persistence"
+    title="Chatbot Message Persistence"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The persistence section of this lesson in depth — saving UIMessage[] from onFinish server-side, loading history, and surviving a mid-stream disconnect."
+  />
+
+  <ExternalResource
+    href="https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-object"
+    title="useObject reference"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The hook reference for streaming partial structured output into a typed object on the client."
+  />
+
+  <ExternalResource
+    href="https://ai-sdk.dev/docs/migration-guides/migration-guide-5-0"
+    title="AI SDK 4.x → 5.0 Migration Guide"
+    icon="lucide:arrow-right-left"
+    iconColor="#10A37F"
+    description="Why message.content is gone and the input helpers left the hook — the exact v4-to-v5 changes that make the blog snippets you'll find online wrong."
+  />
+</CardGrid>
