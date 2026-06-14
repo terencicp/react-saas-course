@@ -43,13 +43,13 @@ Run that and it sort of works, until it doesn't. There are four problems, and ea
 - The leading `%` means Postgres can't use a normal index, so it scans every row and the box gets slower as the table grows.
 - They search `the` and every single invoice comes back, because `%the%` matches "the", "theme", "other", and "weather".
 
-That last one isn't a bug you can patch; it's a sign you're using the wrong tool. `ilike` matches characters, but search needs to match *words*, with all their messiness: plurals, tenses, word order, and noise words like "the". This is what Postgres <Term definition={"Searching documents by the words they contain, with stemming and ranking, rather than by raw substring.\nPostgres ships it in the box via tsvector, tsquery, and the @@ match operator."}>full-text search</Term> is built for, and it ships in the box.
+That last problem isn't something you can patch; it's a sign you're using the wrong tool. `ilike` matches characters, but search needs to match *words*, with all their messiness: plurals, tenses, word order, and noise words like "the". Matching words is what Postgres <Term definition={"Searching documents by the words they contain, with stemming and ranking, rather than by raw substring.\nPostgres ships it in the box via tsvector, tsquery, and the @@ match operator."}>full-text search</Term> is built for, and it ships in the box.
 
-This raises the question the whole lesson is really about. A SaaS app needs search: is that a Postgres feature, or a separate service like Algolia or Meilisearch? This is a build-vs-buy call, and for the overwhelming majority of apps in 2026 the answer is to reach for Postgres first. Its full-text search comfortably covers a corpus into the low millions of documents at modest query rates, which describes almost every SaaS that already runs Postgres. An external search engine is a real power tool, but it has a real threshold, and you cross it later than you'd think. By the end of this lesson you'll have a ranked, highlighted, injection-safe search query running against Postgres, and you'll know the line where you'd leave it for something else.
+That leads to the question this lesson is really about. A SaaS app needs search, so is that a Postgres feature or a separate service like Algolia or Meilisearch? It's a build-versus-buy call, and for the great majority of apps in 2026 the answer is to reach for Postgres first. Its full-text search comfortably covers a corpus into the low millions of documents at modest query rates, which describes almost every SaaS that already runs Postgres. An external search engine is a real power tool, but the threshold where you need it sits further out than you'd think. By the end of this lesson you'll have a ranked, highlighted, injection-safe search query running against Postgres, and you'll know the line where you'd leave it for something else.
 
 ## Lexemes, vectors, and queries: the mental model
 
-Before any Drizzle, you need the one idea everything else hangs off. Full-text search does not compare strings. It compares *normalized words*, and it normalizes both sides, the stored text and the search term, into the same shape before comparing them. Once you have this picture, every surprising behavior later stops being surprising.
+Before any Drizzle, fix the one idea everything else builds on. Full-text search does not compare strings. It compares *normalized words*, and it normalizes both sides, the stored text and the search term, into the same shape before comparing them. Once you have this picture, every surprising behavior later stops being surprising.
 
 The whole engine is three terms and one operator.
 
@@ -61,19 +61,19 @@ A <Term definition={"Postgres data type holding a search expression in the lexem
 
 And `@@` is the match operator that connects them. `tsvector @@ tsquery` returns a boolean: does this document contain these search lexemes? That single line is the engine, and everything else in this lesson is plumbing around it.
 
-The diagram below shows the whole flow. Watch how both sides, the stored document and the search term, pass through their own normalization and arrive as lexemes, and only then meet at `@@`. This picture matters because it explains every later behavior at once: why a plural matches a singular, why "the" disappears, why an exact-substring search will sometimes surprise you. All of it follows from this one move: normalize both sides into the same space, then compare.
+The diagram below shows the whole flow. Watch how both sides, the stored document and the search term, pass through their own normalization and arrive as lexemes, and only then meet at `@@`. This one move, normalizing both sides into the same space before comparing, explains every later behavior at once: why a plural matches a singular, why "the" disappears, and why an exact-substring search will sometimes surprise you.
 
 <FtsLexemeFlow />
 
-The `'english'` argument in those calls isn't decoration. It picks the <Term definition={"A named Postgres bundle of a stemmer and a stop-word list (e.g. 'english', 'simple').\nIt decides how text is broken into lexemes."}>text search configuration</Term>: which <Term definition={"The process of reducing a word to its root form so that variants match.\n'running'/'ran'/'runs' all stem to 'run'."}>stemming</Term> rules and which <Term definition={"A common word ('the', 'a', 'are') dropped during normalization because it carries no search signal and would match nearly every document."}>stop word</Term> list to apply. `'english'` knows English plurals, tenses, and noise words. There's also a `'simple'` config that does no stemming and keeps every word, which is useful when you want near-exact tokens, like searching SKUs or code identifiers where "running" should *not* collapse into "run". For a single-language SaaS, hardcode `'english'` and move on. For a multilingual one, you'd store the language per row and pass it in dynamically; that's worth knowing about, but not worth drilling here.
+The `'english'` argument in those calls does real work. It picks the <Term definition={"A named Postgres bundle of a stemmer and a stop-word list (e.g. 'english', 'simple').\nIt decides how text is broken into lexemes."}>text search configuration</Term>, which sets the <Term definition={"The process of reducing a word to its root form so that variants match.\n'running'/'ran'/'runs' all stem to 'run'."}>stemming</Term> rules and the <Term definition={"A common word ('the', 'a', 'are') dropped during normalization because it carries no search signal and would match nearly every document."}>stop word</Term> list. `'english'` knows English plurals, tenses, and noise words. There's also a `'simple'` config that does no stemming and keeps every word. That one is useful when you want near-exact tokens, like searching SKUs or code identifiers where "running" should *not* collapse into "run". For a single-language SaaS, hardcode `'english'` and move on. For a multilingual one, you'd store the language per row and pass it in dynamically, which is worth knowing about but not worth drilling here.
 
 :::caution
-Because the `'english'` config stems aggressively and drops stop words, full-text search is **not** substring or exact match. A search for `running` matches a document containing "run", which is what you want. But a search for a bare stop word like `the` matches *nothing*, because that lexeme was discarded on both sides. If your product genuinely needs exact-token or identifier search, that calls for the `'simple'` config or a different strategy (`pg_trgm`, which we cover at the end). Knowing this now keeps the stemming reading as the feature it is, rather than a bug later.
+Because the `'english'` config stems aggressively and drops stop words, full-text search is **not** substring or exact match. A search for `running` matches a document containing "run", which is what you want. But a search for a bare stop word like `the` matches *nothing*, because that lexeme was discarded on both sides. If your product genuinely needs exact-token or identifier search, that calls for the `'simple'` config or a different strategy (`pg_trgm`, which we cover at the end). Expect the stemming, and it reads as the feature it is rather than a surprise later.
 :::
 
 ## A first search, computed at query time
 
-Now make it runnable. We'll write the simplest version that works first, deliberately the un-optimized one, because the optimization later only makes sense once you've felt what it fixes.
+Now make it runnable. We'll write the simplest version that works first, deliberately the unoptimized one, because the optimization later only makes sense once you've seen what it fixes.
 
 The query builds the vector right there in the `where` clause, from the two columns you want to search, `description` and `customerName`:
 
@@ -101,9 +101,9 @@ db.select()
   </AnnotatedStep>
 </AnnotatedCode>
 
-This runs, and for a demo table it's fine. But look at what it asks Postgres to do: `to_tsvector(...)` executes **once per row, on every single search**. Every time someone types in the box, Postgres re-reads and re-tokenizes the text of every invoice in the table before it can compare anything. There's no index it can use, because the thing being matched doesn't exist until the query runs. At a few dozen rows you won't notice. At a few thousand it's a sequential scan that drags; at real volume it falls over. That's the exact problem the next section fixes. The naive shape isn't wrong to write first, but it's wrong to *ship*, and seeing why is the point.
+This runs, and for a demo table it's fine. But look at what it asks Postgres to do: `to_tsvector(...)` executes **once per row, on every single search**. Every time someone types in the box, Postgres re-reads and re-tokenizes the text of every invoice in the table before it can compare anything. There's no index it can use, because the thing being matched doesn't exist until the query runs. At a few dozen rows you won't notice. At a few thousand it's a sequential scan that drags, and at real volume it stops responding. That's the exact problem the next section fixes. The naive shape is fine to write first, but you don't want to ship it.
 
-There's one more decision packed into that query worth pausing on: **which function turns user input into a `tsquery`.** There are several, and only one is safe to point at a raw search box.
+One more decision in that query is worth pausing on: **which function turns user input into a `tsquery`.** There are several, and only one is safe to point at a raw search box.
 
 <CodeVariants>
   <CodeVariant label="to_tsquery (raw input → throws)">
@@ -116,7 +116,7 @@ There's one more decision packed into that query worth pausing on: **which funct
     ```
 
     </div>
-    **`to_tsquery` expects operator syntax, not human text.** A bare space between words is a syntax error; it wanted `overdue & payment`. It also exposes raw operator characters (`&`, `|`, `!`, `:`) to whatever you pass it, so handing it a user's search box throws on the first multi-word query and leaks query-language syntax. It's for queries you build yourself from trusted parts.
+    **`to_tsquery` expects operator syntax, not human text.** A bare space between words is a syntax error; it wanted `overdue & payment`. It also exposes raw operator characters (`&`, `|`, `!`, `:`) to whatever you pass it. So pointing it at a user's search box throws on the first multi-word query and leaks query-language syntax. Use it only for queries you build yourself from trusted parts.
   </CodeVariant>
 
   <CodeVariant label="websearch_to_tsquery (raw input → safe)">
@@ -133,10 +133,10 @@ There's one more decision packed into that query worth pausing on: **which funct
   </CodeVariant>
 </CodeVariants>
 
-The rule to carry out of here: <Term definition={"Postgres function that parses a raw, human-typed search string (Google-style) into a tsquery without throwing.\nBare words are AND-ed; quoted phrases stay together; -word excludes."}>`websearch_to_tsquery`</Term> is the function you point at user input, every time. `to_tsquery` is for server-constructed queries assembled from parts you control. Mix them up and your search box throws an error the first time someone types two words. (And the `coalesce` guarding the nullable column is just <Term definition={"SQL function returning its first non-null argument.\ncoalesce(description, '') yields '' when description is null."}>`coalesce`</Term>, a one-line guard, not a topic.)
+The rule to carry out of here: <Term definition={"Postgres function that parses a raw, human-typed search string (Google-style) into a tsquery without throwing.\nBare words are AND-ed; quoted phrases stay together; -word excludes."}>`websearch_to_tsquery`</Term> is the function you point at user input, every time. `to_tsquery` is for server-constructed queries assembled from parts you control. Mix them up and your search box throws an error the first time someone types two words. The `coalesce` guarding the nullable column is just <Term definition={"SQL function returning its first non-null argument.\ncoalesce(description, '') yields '' when description is null."}>`coalesce`</Term>, a one-line guard rather than a topic of its own.
 
 <VideoCallout videoId="GRwIa-ce7RA" videoTitle="Master Postgres Full-text Search in 5 Minutes">
-  Supabase walks the same arc in under five minutes (`to_tsvector`, `websearch_to_tsquery`, the generated column with a GIN index, and `ts_rank`) for a fast end-to-end recap of this lesson.
+  Supabase walks the same arc in under five minutes, covering `to_tsvector`, `websearch_to_tsquery`, the generated column with a GIN index, and `ts_rank`. It's a fast end-to-end recap of this lesson.
 </VideoCallout>
 
 ## Moving the vector off the hot path: the generated column
@@ -199,9 +199,9 @@ One dependency to name now, even though you won't act on it here. A `tsvector` c
 (t) => [index('idx_invoices_search_vector_gin').using('gin', t.searchVector)];
 ```
 
-Recognize it, but don't worry about it here. Declaring and tuning indexes (what GIN actually does, what it costs on writes, how to verify it's used) is the job of the first lesson of the next chapter, on performance and integrity. This lesson owns getting the query *correct*; that one owns making it *fast*. They ship together: a generated `tsvector` column and its GIN index are a pair, and you'd add both in the same migration. We're just drawing the line at where this lesson stops.
+Recognize it, but don't worry about it here. Declaring and tuning indexes (what GIN actually does, what it costs on writes, how to verify it's used) is the job of the first lesson of the next chapter, on performance and integrity. This lesson gets the query *correct*; that one makes it *fast*. The two ship together in practice: a generated `tsvector` column and its GIN index are a pair, and you'd add both in the same migration. We're only drawing the line at where this lesson stops.
 
-Now the payoff. With the vector precomputed and stored, the search query's left side collapses from that whole `to_tsvector(...)` expression down to a bare column reference:
+Here's the payoff. With the vector precomputed and stored, the search query's left side collapses from that whole `to_tsvector(...)` expression down to a bare column reference:
 
 <TabbedContent>
   <TabbedItem label="Query-time vector (re-tokenizes every row)">
@@ -214,7 +214,7 @@ Now the payoff. With the vector precomputed and stored, the search query's left 
   .where(sql\`to_tsvector('english', coalesce(\${invoices.description}, '') || ' ' || coalesce(\${invoices.customerName}, '')) @@ websearch_to_tsquery('english', \${term})\`);`}
     />
 
-    **The left side is rebuilt for every row on every query.** No index can apply, because the matched value doesn't exist until the query runs. Fine for a demo, but a sequential scan at volume.
+    **The left side is rebuilt for every row on every query.** No index can apply, because the matched value doesn't exist until the query runs. It's fine for a demo, but it becomes a sequential scan at volume.
   </TabbedItem>
 
   <TabbedItem label="Generated column (@@ hits the GIN index)">
@@ -232,14 +232,14 @@ Now the payoff. With the vector precomputed and stored, the search query's left 
 </TabbedContent>
 
 :::caution
-This isn't an optimization you defer until "later, when it's slow." Building the vector at query time versus indexing a generated column is the difference between a search that scales and one that melts at a few thousand rows. At any real volume, the generated column is mandatory, not a nice-to-have.
+This isn't an optimization you defer until "later, when it's slow." Building the vector at query time versus indexing a generated column is the difference between a search that scales and one that grinds to a halt at a few thousand rows. At any real volume, the generated column is mandatory, not a nice-to-have.
 :::
 
 ## Ranking results with ts_rank and a tiebreaker
 
 A search that returns matches in arbitrary order is only half-built. When ten invoices match `consulting`, the one whose description is *about* consulting should sit above the one that merely mentions it in passing. That's ranking, and Postgres gives it to you: <Term definition={"Postgres function scoring how well a tsvector matches a tsquery, factoring term frequency, proximity, and weights.\nHigher is more relevant; order by it descending."}>`ts_rank`</Term> scores a vector against a query, where higher means more relevant, factoring in how often the terms appear and how the document is weighted. (There's also <Term definition={"Cover-density variant of ts_rank.\nRewards matched terms that appear close together in the document — better for phrase-like relevance."}>`ts_rank_cd`</Term>, the cover-density variant, which rewards matched terms that sit close together; reach for it when proximity matters.) You order by it descending.
 
-But sorting by rank alone reintroduces a bug you've already been burned by twice in this chapter. `ts_rank` produces *ties*: plenty of rows score identically, especially short ones. A list ordered only by a column with ties has no defined order *within* a tie, so the database is free to return those rows in a different sequence each time the query runs. Paginate that and rows reshuffle between pages, the same silent bug the CRUD and cursor-pagination lessons covered. The fix is the same reflex: pair the sort with the primary key to force a total order.
+But sorting by rank alone reintroduces a bug you've already met twice in this chapter. `ts_rank` produces *ties*: plenty of rows score identically, especially short ones. A list ordered only by a column with ties has no defined order *within* a tie, so the database is free to return those rows in a different sequence each time the query runs. Paginate that and rows reshuffle between pages, the same silent bug the CRUD and cursor-pagination lessons covered. The fix is the same one: pair the sort with the primary key to force a total order.
 
 ```ts
 db.select()
@@ -251,7 +251,7 @@ db.select()
   );
 ```
 
-There's a smell in that version, though: `websearch_to_tsquery('english', ${term})` now appears twice, once in the `where` and once inside `ts_rank` in the `orderBy`. Two copies of the same expression is two places to get it wrong when the term changes. Extract it to a `const`, exactly the way the aggregations lesson extracted a repeated `sql` fragment, and reference that const in both places. (The builder has no positional `ORDER BY 1` shortcut, so the const *is* the way to share the expression.) Here's the shape an experienced engineer would actually ship:
+There's a smell in that version, though: `websearch_to_tsquery('english', ${term})` now appears twice, once in the `where` and once inside `ts_rank` in the `orderBy`. Two copies of the same expression means two places to keep in sync when the term changes. Extract it to a `const`, exactly the way the aggregations lesson extracted a repeated `sql` fragment, and reference that const in both places. (The builder has no positional `ORDER BY 1` shortcut, so the const *is* the way to share the expression.) Here's the shape an experienced engineer would actually ship:
 
 <AnnotatedCode lang="ts" code={`
 const queryExpr = sql\`websearch_to_tsquery('english', \${term})\`;
@@ -314,7 +314,7 @@ The `sql<string>` claim on `snippet` is right, since `ts_headline` returns text.
 
 ## When Postgres is enough, and when to leave it
 
-Back to the question we opened with, now that you know what Postgres full-text search actually does. The decision is a *threshold*, not a verdict, and the threshold sits further out than newcomers expect.
+Now that you know what Postgres full-text search actually does, return to the question we opened with. The decision is a *threshold*, not a verdict, and the threshold sits further out than newcomers expect.
 
 **Postgres full-text search is the default, and it stays the answer when** your corpus is up to the low millions of documents, query rate is modest (a handful per second, not search-as-you-type at scale), relevance needs are "rank by match" rather than tuned boosting, and, the big one, the data already lives in Postgres. That last point is doing most of the work: no separate service to run, no second copy of your data to keep in sync, no consistency gap between "what's in the database" and "what's in the search index," and transactional correctness for free. For the great majority of SaaS apps, that's the entire story. You ship search, and you don't take on a whole extra system to do it.
 
@@ -322,7 +322,7 @@ Back to the question we opened with, now that you know what Postgres full-text s
 
 There's an in-database step before you leave, though, and it's worth knowing. <Term definition={"Postgres extension for trigram similarity matching.\nProvides similarity(a, b), the % operator, and <-> distance — handles typos and substring/partial matches that lexeme-based full-text search can't."}>`pg_trgm`</Term> does trigram similarity matching (`similarity(a, b)`, the `%` operator, `<->` distance), which handles typos and partial or substring matching, the exact thing full-text search's lexeme model can't do. If typo tolerance is your *only* gap, `pg_trgm` is the next thing to try, and it lives right next to full-text search in the same database. (Semantic or vector search over embeddings, finding documents by *meaning* rather than words, is a different tool again, `pgvector`, and it's out of scope here; the AI unit near the end of the course covers it.)
 
-Walk the decision yourself. Answer the questions in order, the way you'd ask them on a real project, scale first and then the kind of matching the product needs, and land on what you'd actually reach for:
+Walk the decision yourself. Answer the questions in order, the way you'd ask them on a real project: scale first, then the kind of matching the product needs. Each path lands on what you'd actually reach for.
 
 <StateMachineWalker title="Search: Postgres, pg_trgm, or an external engine?">
   <Question
