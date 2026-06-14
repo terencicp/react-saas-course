@@ -33,15 +33,15 @@ import { CardGrid } from '@astrojs/starlight/components';
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-The app works. Sign-in works, the invoices list paginates, the webhook books a subscription, the wizard saves its draft. So now you do the pass every junior skips before launch: you go back to the seams — the places where one part of the system trusts another — and you ask whether they hold when something breaks. Not whether they work on the happy path. Whether they fail in the *right direction* when they fail.
+The app works. Sign-in works, the invoices list paginates, the webhook books a subscription, the wizard saves its draft. Now you do the pass that most juniors skip before launch. You go back to the seams, the places where one part of the system trusts another, and you ask whether they hold when something breaks. The question is not whether they work on the happy path. It is whether they fail in the *right direction* when they fail.
 
-This first pass is about one direction in particular. Every gate that decides who gets in — an authorization check, a tenancy filter, a paywall, a webhook signature verify — has to refuse by default. And the part that actually catches people: when the *check itself* breaks — the database drops the connection mid-query, a row comes back `null` that the types swore never could — that broken check has to count as a refusal, never as a wave-through. This is the rule called **fail closed**, and it's the load-bearing commitment of this whole chapter.
+This first pass is about one direction in particular. Every gate that decides who gets in (an authorization check, a tenancy filter, a paywall, a webhook signature verify) has to refuse by default. The part that catches people is what happens when the *check itself* breaks: the database drops the connection mid-query, or a row comes back `null` that the types swore never could. A broken check has to count as a refusal, never as a wave-through. This is the rule called **fail closed**, and it is the central commitment of this whole chapter.
 
-Here's the good news, and the reason this is an audit and not a build. You've been shipping this rule for chapters already without naming it. The `requireOrgUser` you call at the top of every page, the `authedAction` wrapper your mutations pass through, the signature verify on the Stripe webhook, the `tenantDb(orgId)` that scopes every query — every one of those was quietly enforcing fail-closed. This lesson names the rule, shows you the shape that makes it hold, and hands you the one question you can ask of any gate in the codebase afterward: *if this check throws, does the user get the resource, or get refused?*
+The good news, and the reason this is an audit rather than a build, is that you have been shipping this rule for chapters already without naming it. The `requireOrgUser` you call at the top of every page, the `authedAction` wrapper your mutations pass through, the signature verify on the Stripe webhook, the `tenantDb(orgId)` that scopes every query: every one of those was quietly enforcing fail-closed. This lesson names the rule, shows you the shape that makes it hold, and hands you the one question you can ask of any gate in the codebase afterward: *if this check throws, does the user get the resource, or get refused?*
 
 ## The question every access check answers
 
-Before any definitions, sit with a concrete one. Here is a Server Action that deletes a customer. It does the three things a privileged mutation owes — resolves who's calling, checks they're allowed, then does the work:
+Before any definitions, sit with a concrete example. Here is a Server Action that deletes a customer. It does the three things a privileged mutation owes: it resolves who is calling, checks they are allowed, then does the work.
 
 ```ts
 'use server';
@@ -56,58 +56,58 @@ export const deleteCustomer = async (formData: FormData) => {
 };
 ```
 
-`requireRole('admin')` is the gate. To do its job it reads the session, queries the membership table for this user in this org, and compares the role it finds against `'admin'`. Three reads, any of which can go wrong in a way the developer never typed out: Postgres drops the connection on the membership query. The membership row that the schema says is always there comes back `null` because a migration ran half-applied. The role column holds a string that isn't in the union you thought was exhaustive. In each case, `requireRole` doesn't return a clean yes or no — it *throws*.
+`requireRole('admin')` is the gate. To do its job it reads the session, queries the membership table for this user in this org, and compares the role it finds against `'admin'`. That is three reads, and any of them can go wrong in a way the developer never typed out. Postgres drops the connection on the membership query. The membership row that the schema says is always there comes back `null` because a migration ran half-applied. The role column holds a string that is not in the union you thought was exhaustive. In each case, `requireRole` does not return a clean yes or no. It *throws*.
 
-So: the membership query throws. What happens to the delete on the next line?
+So the membership query throws. What happens to the delete on the next line?
 
-There are exactly two answers, and they are not close. This is the fork the whole lesson turns on:
+There are exactly two answers, and they are far apart. This is the fork the whole lesson turns on.
 
-- **Fail-open.** The exception bubbles up past the gate, but nothing stopped the action — execution lands wherever the error is eventually swallowed, and if that's anywhere below the delete, the delete already ran. The system never learned what the caller's role was, and it proceeded anyway. The unauthorized user gets the resource *because the system gave up on knowing.*
-- **Fail-closed.** The exception is read as one thing — *this check did not succeed* — and the request is refused. The delete never runs. The user gets an error, not the customer's data.
+- **Fail-open.** The exception bubbles up past the gate, but nothing stopped the action. Execution lands wherever the error is eventually swallowed, and if that is anywhere below the delete, the delete already ran. The system never learned the caller's role, and it proceeded anyway. The unauthorized user gets the resource *because the system gave up on knowing.*
+- **Fail-closed.** The exception is read as one thing, *this check did not succeed*, and the request is refused. The delete never runs. The user gets an error, not the customer's data.
 
-Same code, same thrown exception, opposite outcome. One ships a permission system that opens when it's confused; the other ships one that locks. And here is the thesis you'll spend the rest of the lesson earning the right to: **fail-closed is the default for every access-shaped check in the codebase.** When a gate can't be sure, the answer is no.
+Same code, same thrown exception, opposite outcome. One ships a permission system that opens when it is confused; the other ships one that locks. Here is the thesis you will spend the rest of the lesson earning the right to: **fail-closed is the default for every access-shaped check in the codebase.** When a gate cannot be sure, the answer is no.
 
-Notice what made the fork visible: there is a *third* outcome hiding in that gate. Not "allowed" and not "denied" — "the check broke." Most of the time you write a gate, you're thinking about the first two and the third never crosses your mind. That blind spot is exactly where fail-open bugs live.
+Notice what made the fork visible. There is a *third* outcome hiding in that gate: not "allowed" and not "denied" but "the check broke." Most of the time you write a gate, you are thinking about the first two, and the third never crosses your mind. That blind spot is exactly where fail-open bugs live.
 
 <Figure expandable={false}>
   <ThreeOutcomes />
   <Fragment slot="caption">
-    A gate has three outcomes, not two. Fail-closed folds the uncertain third — *the check itself broke* — into a refusal. Every doubt is a deny.
+    A gate has three outcomes, not two. Fail-closed folds the uncertain third one, *the check itself broke*, into a refusal. Every doubt is a deny.
   </Fragment>
 </Figure>
 
 ## What "fail closed" means precisely
 
-Now make it sharp. A check that gates access has exactly three legal outcomes: it can **allow**, it can **deny**, or **the check itself can fail** before it reaches either. <Term definition="A gate that refuses by default. If it cannot prove the request is allowed, it denies — including when the check itself throws.">Fail-closed</Term> is the rule that the third outcome collapses into the second. An exception thrown inside the check is treated as a refusal — not as "we don't know, let it through."
+Now make it sharp. A check that gates access has exactly three legal outcomes: it can **allow**, it can **deny**, or **the check itself can fail** before it reaches either. <Term definition="A gate that refuses by default. If it cannot prove the request is allowed, it denies — including when the check itself throws.">Fail-closed</Term> is the rule that the third outcome collapses into the second. An exception thrown inside the check is treated as a refusal, not as "we don't know, let it through."
 
 Concretely, when `requireRole` throws:
 
-- The action body never runs. The delete, the write, the side effect — none of it happens.
-- The user gets a refusal: a 403-shaped response, or a generic error page. Not the resource.
-- The operator gets the original error in the log and in Sentry — the full stack, the cause chain — so someone can fix the broken query. (You'll wire that capture in a later chapter on observability; for now, just know the error doesn't vanish.)
+- The action body never runs. The delete, the write, the side effect: none of it happens.
+- The user gets a refusal, a 403-shaped response or a generic error page, not the resource.
+- The operator gets the original error in the log and in Sentry, with the full stack and the cause chain, so someone can fix the broken query. You will wire that capture in a later chapter on observability; for now, just know the error does not vanish.
 
 <Term definition="A gate that allows by default when the check breaks. An exception inside the check escapes, execution continues, and the unauthorized request gets through.">Fail-open</Term> is the precise opposite, and it is always the bug: the exception escapes the check, the action proceeds, and the unauthorized user gets the resource because the system gave up on knowing whether they were allowed.
 
-The one-liner to carry out of this lesson is **every doubt is a deny.** And the load-bearing word in it is *prove*. A gate's job is to *prove* the request is allowed; if it can't, it refuses. That word is doing more work than it looks. A check that read stale data, or read only half of what it needed, or got a `null` for a column that's never supposed to be `null`, or hit a code path the developer never wrote a branch for — none of those *proved* anything. They are all "could not prove," and fail-closed reads every one of them as no.
+The one line to carry out of this lesson is **every doubt is a deny.** The key word in it is *prove*. A gate's job is to *prove* the request is allowed; if it cannot, it refuses. That word is doing more work than it looks. A check that read stale data, or read only half of what it needed, or got a `null` for a column that is never supposed to be `null`, or hit a code path the developer never wrote a branch for, has proved nothing. Each of those is a "could not prove," and fail-closed reads every one of them as no.
 
-This connects directly to something you learned about `catch` blocks back when you first handled errors. At the moment an exception lands in a `catch`, the binding you catch is typed `unknown` — the type system is telling you, structurally, that you don't know what happened. That `unknown` is the whole situation in miniature: the check did not run to completion, you can't prove anything about the result, so the answer is no. Fail-closed is just taking that `unknown` seriously instead of shrugging at it.
+This connects directly to something you learned about `catch` blocks when you first handled errors. At the moment an exception lands in a `catch`, the binding you catch is typed `unknown`. The type system is telling you, structurally, that you do not know what happened. That `unknown` is the whole situation in miniature: the check did not run to completion, so you cannot prove anything about the result, so the answer is no. Fail-closed is just taking that `unknown` seriously instead of shrugging at it.
 
 ## The classes of checks this rule covers
 
-You met the rule on `requireRole`, but it isn't a fact about role checks specifically. It's a fact about *gates* — anything whose job is to decide whether a request may proceed. The codebase has a handful of those, and the rule is the same one rule across every shape:
+You met the rule on `requireRole`, but it is not a fact about role checks specifically. It is a fact about *gates*: anything whose job is to decide whether a request may proceed. The codebase has a handful of those, and the same one rule covers every shape.
 
-- **Authorization gates** — `requireRole`, `requireOrgUser`, the `authedAction` and `authedRoute` wrappers: the membership lookup and the role comparison that decide *who* may act.
-- **Tenancy filters** — every query that asserts `orgId = $1` through `tenantDb(orgId)`, plus the visibility predicates like `active()` that decide *whose data* a query may see.
-- **Paywall and entitlement checks** — the plan lookup, the feature-flag read, the seat-count compare that decide whether a billing tier is allowed past a paid feature.
-- **Signature verification** — the constant-time <Term definition="Hash-based Message Authentication Code. A keyed hash that proves a message came from someone holding the shared secret and wasn't tampered with.">HMAC</Term> compare on every incoming webhook, which decides whether a request genuinely came from Stripe and not an attacker.
-- **Idempotency claims** — the `INSERT ... ON CONFLICT DO NOTHING` on the `processed_events` ledger that decides whether a webhook event is new work or a duplicate to skip.
-- **<Term definition="Cross-Site Request Forgery. An attack that tricks a logged-in user's browser into sending an unwanted authenticated request to your app.">CSRF</Term> and origin checks** — Server Actions ship this protection out of the box, so you rarely hand-roll it; but the rule still applies anywhere a hand-written origin check lands.
+- **Authorization gates**: `requireRole`, `requireOrgUser`, and the `authedAction` and `authedRoute` wrappers. These run the membership lookup and the role comparison that decide *who* may act.
+- **Tenancy filters**: every query that asserts `orgId = $1` through `tenantDb(orgId)`, plus visibility predicates like `active()` that decide *whose data* a query may see.
+- **Paywall and entitlement checks**: the plan lookup, the feature-flag read, and the seat-count compare that decide whether a billing tier is allowed past a paid feature.
+- **Signature verification**: the constant-time <Term definition="Hash-based Message Authentication Code. A keyed hash that proves a message came from someone holding the shared secret and wasn't tampered with.">HMAC</Term> compare on every incoming webhook, which decides whether a request genuinely came from Stripe and not an attacker.
+- **Idempotency claims**: the `INSERT ... ON CONFLICT DO NOTHING` on the `processed_events` ledger that decides whether a webhook event is new work or a duplicate to skip.
+- **<Term definition="Cross-Site Request Forgery. An attack that tricks a logged-in user's browser into sending an unwanted authenticated request to your app.">CSRF</Term> and origin checks**: Server Actions ship this protection out of the box, so you rarely hand-roll it, but the rule still applies anywhere a hand-written origin check lands.
 
-Each owns a different question — *who can act, whose data, which tier, is this really Stripe, have I done this already* — but they are all gates, and they all answer to the same rule. Whatever the shape, the decision question is identical:
+Each owns a different question (who can act, whose data, which tier, is this really Stripe, have I done this already) but they are all gates, and they all answer to the same rule. Whatever the shape, the decision question is identical.
 
 > If this check throws, does the user get the resource or get refused?
 
-The senior answer is always refuse. Hold that question — it's the one you'll be able to ask of any seam by the end of the chapter, and the rest of this lesson is teaching you to recognize the shapes that get the answer wrong.
+The senior answer is always refuse. Hold that question: it is the one you will be able to ask of any seam by the end of the chapter, and the rest of this lesson teaches you to recognize the shapes that get the answer wrong.
 
 <Buckets twoCol instructions="Sort each check by what it does when something throws *inside* it. A gate that refuses on a broken check fails closed; a gate that proceeds anyway fails open.">
   <Bucket name="closed" label="Fails closed" description="Refuses on a broken check" />
@@ -123,11 +123,11 @@ The senior answer is always refuse. Hold that question — it's the one you'll b
 
 ## The failure modes when fail-closed slips
 
-If you can't write the bug, you can't review for it. So here are the canonical ways fail-closed slips — named, because a named anti-pattern is something you can grep your own code for later. Each one looks reasonable in a pull request. Each one opens the gate when the check breaks.
+If you cannot write the bug, you cannot review for it. So here are the canonical ways fail-closed slips, each one named, because a named anti-pattern is something you can grep your own code for later. Each one looks reasonable in a pull request, and each one opens the gate when the check breaks.
 
 The first two are worth seeing in code, side by side with their fix.
 
-**The log-and-continue empty catch.** This is the archetype, the one every other fail-open bug is a variation of. A developer wraps the authorization check in a `try`/`catch`, the check throws, the catch logs it — and then execution just keeps going.
+**The log-and-continue empty catch.** This is the archetype, the one every other fail-open bug is a variation of. A developer wraps the authorization check in a `try`/`catch`, the check throws, the catch logs it, and then execution just keeps going.
 
 <CodeVariants>
   <CodeVariant label="Fail-open" icon="error">
@@ -167,11 +167,11 @@ The first two are worth seeing in code, side by side with their fix.
     ```
 
     </div>
-    **Don't catch it here — let it throw.** The role check lives in the wrapper now. A too-low role comes back as a returned refusal; a *broken* check throws clean past the wrapper to the framework's error boundary, which refuses. Either way nothing in this body runs unless the check passed — and there is no call-site `try`/`catch` to get wrong, because catching-and-denying isn't this layer's job. We'll come back to exactly how the wrapper does it.
+    **Don't catch it here. Let it throw.** The role check lives in the wrapper now. A too-low role comes back as a returned refusal, and a *broken* check throws clean past the wrapper to the framework's error boundary, which refuses. Either way, nothing in this body runs unless the check passed, and there is no call-site `try`/`catch` to get wrong, because catching-and-denying is not this layer's job. We will come back to exactly how the wrapper does it.
   </CodeVariant>
 </CodeVariants>
 
-**The boolean that swallows the throw.** Subtler, because there's no `catch` in sight. A `requireRole` is written to return a `boolean` — `true` for admin, `false` for not-admin — and the call site branches on it. The trap: `false` now means two different things. It means "not an admin," and it *also* means "the check threw and we defaulted to false somewhere," or worse, the throw escaped entirely and the branch never even ran.
+**The boolean that swallows the throw.** This one is subtler, because there is no `catch` in sight. A `requireRole` is written to return a `boolean`, `true` for admin and `false` for not-admin, and the call site branches on it. The trap is that `false` now means two different things. It means "not an admin," and it *also* means "the check threw and we defaulted to false somewhere," or worse, the throw escaped entirely and the branch never even ran.
 
 <CodeVariants>
   <CodeVariant label="Boolean helper" icon="error">
@@ -194,7 +194,7 @@ The first two are worth seeing in code, side by side with their fix.
     ```
 
     </div>
-    **`false` conflates "no" with "don't know".** Returning `false` on exception *looks* like fail-closed — and at this one call site, it even is. But the value has lost the distinction between a proven "not admin" and a broken check, so the next caller who reads `isAdmin()` as a plain yes/no inherits a sentinel that lies. The operator also never sees the error: the `catch` ate it.
+    **`false` conflates "no" with "don't know".** Returning `false` on exception *looks* like fail-closed, and at this one call site it even is. But the value has lost the distinction between a proven "not admin" and a broken check, so the next caller who reads `isAdmin()` as a plain yes/no inherits a sentinel that lies. The operator also never sees the error, because the `catch` ate it.
   </CodeVariant>
 
   <CodeVariant label="Read the role" icon="approve-check">
@@ -209,32 +209,32 @@ The first two are worth seeing in code, side by side with their fix.
     ```
 
     </div>
-    **No sentinel — read the role, and let a broken check throw.** There's no `catch` decaying an exception into `false`. A too-low role is an *expected* refusal the wrapper *returns*; a *broken* session read is an exception that propagates to the framework boundary, which refuses. "Denied" and "don't know" stay distinct — one is a returned `Result`, the other a thrown error — so no caller ever conflates them.
+    **No sentinel: read the role, and let a broken check throw.** There is no `catch` decaying an exception into `false`. A too-low role is an *expected* refusal the wrapper *returns*, and a *broken* session read is an exception that propagates to the framework boundary, which refuses. "Denied" and "don't know" stay distinct, one a returned `Result` and the other a thrown error, so no caller ever conflates them.
   </CodeVariant>
 </CodeVariants>
 
-Two more slip in prose, because the shape is the lesson, not the listing:
+The remaining two are easier to describe in prose, because the shape is the lesson rather than the listing.
 
-**The `||` carve-out.** A tenancy filter written as `orgId === input.orgId || isSuperAdmin(user)` — "the row matches the org, *or* you're a super-admin." It reads fine until `isSuperAdmin` reaches a misconfigured table and throws. In some short-circuit shapes the rejection resolves truthy and the `||` waves the request through; in others the throw escapes into a catch that proceeds. Either way, an exception in the super-admin path becomes an *allow*. The fix is structural: one filter, no `||` carve-outs in the predicate. The super-admin path is a different code path with its own gate — never an `or` bolted onto a tenancy check.
+**The `||` carve-out.** Picture a tenancy filter written as `orgId === input.orgId || isSuperAdmin(user)`: the row matches the org, *or* you are a super-admin. It reads fine until `isSuperAdmin` reaches a misconfigured table and throws. In some short-circuit shapes the rejection resolves truthy and the `||` waves the request through; in others the throw escapes into a catch that proceeds. Either way, an exception in the super-admin path becomes an *allow*. The fix is structural: one filter, with no `||` carve-outs in the predicate. The super-admin path is a different code path with its own gate, never an `or` bolted onto a tenancy check.
 
-**The signature verify that returns `false` on exception.** The webhook handler calls a verify function that returns `false` for a bad signature — and *also* returns `false` when the HMAC library itself throws on a malformed header. Now the handler can't tell "this request is forged" from "my own crypto code broke," and a library bug quietly turns into "we stopped verifying signatures." The fix splits the two: a real signature mismatch returns a refusal (a 401), and an exception *throws* — which the framework turns into a 500 and the provider retries. A broken verifier must never read as a passed verification.
+**The signature verify that returns `false` on exception.** The webhook handler calls a verify function that returns `false` for a bad signature, and *also* returns `false` when the HMAC library itself throws on a malformed header. Now the handler cannot tell "this request is forged" from "my own crypto code broke," and a library bug quietly turns into "we stopped verifying signatures." The fix splits the two: a real signature mismatch returns a refusal, a 401, and an exception *throws*, which the framework turns into a 500 so the provider retries. A broken verifier must never read as a passed verification.
 
 :::caution
-The thread tying all four together: **a check that returns on its own failure is fail-open with extra steps.** The empty `catch` swallows the authz error and falls through. Log-and-continue is fail-open wearing the costume of diligence — it *looks* like you handled the error. A `requireRole` that returns `null` or `false` on exception buries "the check broke" inside a value the next caller will misread. In every case the tell is the same: the gate produced a *non-throwing result* from a *broken check*. The fix is always to let the failure throw and let one place catch it.
+The thread tying all four together is that **a check which returns on its own failure is fail-open with extra steps.** The empty `catch` swallows the authz error and falls through. Log-and-continue looks like diligence: it appears that you handled the error, but the handling was an illusion. A `requireRole` that returns `null` or `false` on exception buries "the check broke" inside a value the next caller will misread. In every case the tell is the same: the gate produced a *non-throwing result* from a *broken check*. The fix is always to let the failure throw and let one place catch it.
 :::
 
 ## The structural shape that makes refusal the only path
 
-Here's the reframe that turns fail-closed from a habit into architecture — and it's the senior move of the whole lesson. If your model of fail-closed is "remember to wrap every access check in a `try`/`catch` that denies," you've already lost. That's a discipline you maintain by hand at every call site, and humans run out of diligence (usually on a Friday). The bugs above are exactly what that maintenance failing looks like.
+Here is the reframe that turns fail-closed from a habit into architecture, and it is the senior move of the whole lesson. If your model of fail-closed is "remember to wrap every access check in a `try`/`catch` that denies," you have already lost. That is a discipline you maintain by hand at every call site, and humans run out of diligence, usually on a Friday. The bugs above are exactly what that maintenance failing looks like.
 
-The senior reflex is different. Fail-closed isn't a thing you remember to do at each gate — it's a property of *two seams*, written once:
+The senior reflex is different. Fail-closed is not a thing you remember to do at each gate. It is a property of *two seams*, written once.
 
-1. **The check throws on its own failure.** `requireRole(min): Role`, `requireOrgUser(): { user, orgId, role }` — declared to *throw*, never to return a "we don't know" sentinel. A caller that receives the return value has thereby learned the check succeeded; there is no third value to misinterpret.
-2. **One wrapper turns every failure into a refusal, in one place.** `authedAction` runs the checks inside its body. An *expected* refusal — a too-low role, a bad payload — it returns as the `Result` failure branch (`{ ok: false, error: { code: 'forbidden', ... } }`, or a 401/403 for the route-handler twin). An *unexpected* throw — the membership read hit a dropped connection — it doesn't catch at all; it lets the exception fly past, where the framework's `error.tsx` catches it and refuses. (A clean signed-out state isn't a failure here at all — `requireOrgUser` `redirect`s it, and that control-flow exit also flies straight past the wrapper.) The body you write — the actual mutation — never sees a `try`, never writes the refusal. Both outcomes are decided above it.
+1. **The check throws on its own failure.** `requireRole(min): Role` and `requireOrgUser(): { user, orgId, role }` are declared to *throw*, never to return a "we don't know" sentinel. A caller that receives the return value has thereby learned the check succeeded; there is no third value to misinterpret.
+2. **One wrapper turns every failure into a refusal, in one place.** `authedAction` runs the checks inside its body. An *expected* refusal, such as a too-low role or a bad payload, it returns as the `Result` failure branch (`{ ok: false, error: { code: 'forbidden', ... } }`, or a 401/403 for the route-handler twin). An *unexpected* throw, such as the membership read hitting a dropped connection, it does not catch at all; it lets the exception fly past, where the framework's `error.tsx` catches it and refuses. A clean signed-out state is not a failure here at all: `requireOrgUser` `redirect`s it, and that control-flow exit also flies straight past the wrapper. The body you write, the actual mutation, never sees a `try` and never writes the refusal. Both outcomes are decided above it.
 
-You write neither the call-site `try`/`catch` nor the explicit refusal. That's the point. To write a fail-*open* action, you'd have to *actively reach past* the wrapper — open-code the check in your body, catch it yourself, and choose to proceed. The wrong answer stops being the easy one. This is the **one place to lint** property: every fail-closed decision in the action layer lives in a single function body (plus the framework boundary behind it), so an auditor reads one file instead of grepping every call site.
+You write neither the call-site `try`/`catch` nor the explicit refusal, and that is the point. To write a fail-*open* action, you would have to *actively reach past* the wrapper: open-code the check in your body, catch it yourself, and choose to proceed. The wrong answer stops being the easy one. This is the **one place to lint** property: every fail-closed decision in the action layer lives in a single function body (plus the framework boundary behind it), so an auditor reads one file instead of grepping every call site.
 
-You built this wrapper a few chapters back; now read it through the fail-closed lens. Walk it gate by gate — at each line, notice where a broken check lands.
+You built this wrapper a few chapters back; now read it through the fail-closed lens. Walk it gate by gate, and at each line notice where a broken check lands.
 
 <AnnotatedCode lang="ts" maxLines={18} code={`
 export const authedAction =
@@ -260,53 +260,53 @@ export const authedAction =
   };
 `}>
   <AnnotatedStep meta={`{8} "requireOrgUser"`} color="blue">
-    **Resolve, and let it exit.** `requireOrgUser()` reads the session and active org. No session means no proof of who's calling, so it `redirect`s to `/sign-in`; no active org sends the user to `/onboarding/create-org`. Those are framework control-flow exits — a navigation, not a value — and the wrapper does *nothing* to stop them. But when the *read itself breaks* — the membership query throws on a dead connection, a row comes back `null` that the types swore couldn't — that's a genuine exception, and it flies past the wrapper to the framework's `error.tsx`, which refuses the request. A broken session read fails closed by default, because nobody caught it into an allow.
+    **Resolve, and let it exit.** `requireOrgUser()` reads the session and active org. No session means no proof of who is calling, so it `redirect`s to `/sign-in`; no active org sends the user to `/onboarding/create-org`. Those are framework control-flow exits, a navigation rather than a value, and the wrapper does *nothing* to stop them. But when the *read itself breaks*, when the membership query throws on a dead connection or a row comes back `null` that the types swore could not, that is a genuine exception, and it flies past the wrapper to the framework's `error.tsx`, which refuses the request. A broken session read fails closed by default, because nobody caught it into an allow.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{10-12} "roleAtLeast"`} color="green">
-    **Authorize — proven, or refused.** `roleAtLeast` compares the caller's real role against the floor. Too low, and the wrapper *returns* a refusal — `err('forbidden', …)`, a value the form can render in place. There is no branch here that proceeds on doubt: the only way past this line is a role that cleared the bar.
+    **Authorize: proven, or refused.** `roleAtLeast` compares the caller's real role against the floor. Too low, and the wrapper *returns* a refusal, `err('forbidden', …)`, a value the form can render in place. There is no branch here that proceeds on doubt: the only way past this line is a role that cleared the bar.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{14-17} "'validation'"`} color="orange">
-    **Parse — the third gate.** Input that fails the schema returns `err('validation', …)` with the per-field messages attached. Note the code is `'validation'`, the canonical `Result` code for a bad payload. A malformed input never reaches the work below it.
+    **Parse: the third gate.** Input that fails the schema returns `err('validation', …)` with the per-field messages attached. Note the code is `'validation'`, the canonical `Result` code for a bad payload. A malformed input never reaches the work below it.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{19-20} "tenantDb(orgId)"`} color="violet">
-    **Call — only now.** Every gate above proved its piece: real user, sufficient role, valid input. The wrapper builds `ctx` (note `db: tenantDb(orgId)`, already tenant-scoped) and hands it to `fn`. The body runs *only* on the far side of three passed gates.
+    **Call, only now.** Every gate above proved its piece: real user, sufficient role, valid input. The wrapper builds `ctx` (note `db: tenantDb(orgId)`, already tenant-scoped) and hands it to `fn`. The body runs *only* on the far side of three passed gates.
   </AnnotatedStep>
 </AnnotatedCode>
 
-There's a deeper reason this wrapper is allowed to exist at all. The course is firm that you don't wrap your tools in abstraction towers — and yet here is a wrapper around every Server Action. It earns the exception precisely *because* of fail-closed: authorization at the action boundary has a real, recurring bug class (the missing or fumbled check), and a single structural seam closes that class completely. This is the sanctioned carve-out to "don't invent parallel routing," and the payoff you're collecting now is defense-in-depth: one body, one place to get fail-closed right, and every action inherits it.
+There is a deeper reason this wrapper is allowed to exist at all. The course is firm that you do not wrap your tools in abstraction towers, and yet here is a wrapper around every Server Action. It earns the exception precisely *because* of fail-closed: authorization at the action boundary has a real, recurring bug class (the missing or fumbled check), and a single structural seam closes that class completely. This is the sanctioned carve-out to "don't invent parallel routing," and the payoff you are collecting now is defense-in-depth: one body, one place to get fail-closed right, and every action inherits it.
 
-### Where the throw and the Result both land — the same outcome
+### Where the throw and the Result both land
 
-You may have noticed the wrapper handles failure in more than one way. Sometimes it lets an unexpected throw fly (the membership read blew up); sometimes it returns a `Result` (role too low, bad input). That's the throw-versus-return split you learned with the `Result` type, and it's worth seeing that **fail-closed holds across both branches — they reach the same outcome.**
+You may have noticed the wrapper handles failure in more than one way. Sometimes it lets an unexpected throw fly (the membership read blew up); sometimes it returns a `Result` (role too low, bad input). That is the throw-versus-return split you learned with the `Result` type, and it is worth seeing that **fail-closed holds across both branches: they reach the same outcome.**
 
-Throw at the framework edge for *unexpected* failures: the database is down, a programmer error fired, or the framework's own `notFound`/`redirect` control-flow exits. Return `Result` for *expected* failures the caller is meant to branch on: a refusal, a conflict, a validation error. Now watch what happens to the user in each case:
+Throw at the framework edge for *unexpected* failures: the database is down, a programmer error fired, or the framework's own `notFound`/`redirect` control-flow exits. Return `Result` for *expected* failures the caller is meant to branch on: a refusal, a conflict, a validation error. Now watch what happens to the user in each case.
 
-- An unexpected throw inside a check — the membership query that `requireOrgUser` runs blows up on a dead connection — propagates to the nearest `error.tsx`, which renders a generic error page. The user sees an error. **Not the resource.**
-- An expected refusal — `roleAtLeast` says no — returns `{ ok: false, error: { code: 'forbidden' } }`, and the form renders "You don't have permission." The user sees a refusal. **Not the resource.**
+- An unexpected throw inside a check, such as the membership query that `requireOrgUser` runs blowing up on a dead connection, propagates to the nearest `error.tsx`, which renders a generic error page. The user sees an error. **Not the resource.**
+- An expected refusal, such as `roleAtLeast` saying no, returns `{ ok: false, error: { code: 'forbidden' } }`, and the form renders "You don't have permission." The user sees a refusal. **Not the resource.**
 
-Two completely different code paths — one a thrown exception caught by the framework, the other a typed value read by the form — and they converge on the identical security outcome. That convergence is what fail-closed buys you: it doesn't matter *how* the check failed, the user does not get the resource either way. (The third exit — `requireOrgUser` `redirect`ing a signed-out user to `/sign-in` — isn't a failure at all; it's framework control flow that passes straight through `error.tsx`, and we look at it next.)
+These are two completely different code paths, one a thrown exception caught by the framework and the other a typed value read by the form, and they converge on the identical security outcome. That convergence is what fail-closed buys you: it does not matter *how* the check failed, the user does not get the resource either way. The third exit, `requireOrgUser` `redirect`ing a signed-out user to `/sign-in`, is not a failure at all; it is framework control flow that passes straight through `error.tsx`, and we look at it next.
 
-## Pages and layouts — fail-closed at the render boundary
+## Pages and layouts: fail-closed at the render boundary
 
-Server Actions aren't the only seam. Pages and layouts gate access too, and they do it with the same helper: a protected page calls `requireOrgUser()` near the top. On a missing session it `redirect`s the visitor to `/sign-in`; on a missing active org, to `/onboarding/create-org` — framework control-flow exits that bounce the user *before* the page body runs, not error pages. But when the check *breaks* — the session read throws on a dead connection, the membership row is `null` against its own type — that genuine exception flies to the framework's `error.tsx`, which renders the fallback. Either way the user never reaches the page body. Fail-closed, by the same mechanism: a redirect or a throw, but never a path that converts the failure into an allow.
+Server Actions are not the only seam. Pages and layouts gate access too, and they do it with the same helper: a protected page calls `requireOrgUser()` near the top. On a missing session it `redirect`s the visitor to `/sign-in`; on a missing active org, to `/onboarding/create-org`. Those are framework control-flow exits that bounce the user *before* the page body runs, not error pages. But when the check *breaks*, when the session read throws on a dead connection or the membership row is `null` against its own type, that genuine exception flies to the framework's `error.tsx`, which renders the fallback. Either way the user never reaches the page body. This is fail-closed by the same mechanism: a redirect or a throw, but never a path that converts the failure into an allow.
 
-But this boundary hides a trap that catches juniors constantly, and it's worth slowing down for. **`notFound()` and `redirect()` are not errors.** They are control-flow primitives the framework owns. When you call `notFound()` in a Server Component, the framework *uses* a thrown value under the hood to unwind the render — but it's plumbing, not a failure. It routes to `not-found.tsx`, not to `error.tsx`.
+This boundary hides a trap that catches juniors constantly, so it is worth slowing down for. **`notFound()` and `redirect()` are not errors.** They are control-flow primitives the framework owns. When you call `notFound()` in a Server Component, the framework *uses* a thrown value under the hood to unwind the render, but that is plumbing, not a failure. It routes to `not-found.tsx`, not to `error.tsx`.
 
-So the boundary has two completely different kinds of "thrown thing" flowing through it:
+So the boundary has two completely different kinds of thrown thing flowing through it.
 
-- A thrown `Error` (the DB blew up, `requireOrgUser`'s membership query threw on a dropped connection) — this is a genuine failure. `error.tsx` catches it. Fail-closed: the user gets the error boundary, not the page.
-- A thrown `notFound()` or `redirect()` — this is framework control flow, and it's how `requireOrgUser` bounces a signed-out or org-less user. `error.tsx` does *not* catch it; the framework's own routing handles it. The fail-closed rule passes straight through these, because they aren't the kind of failure the rule is about.
+- A thrown `Error` (the DB blew up, or `requireOrgUser`'s membership query threw on a dropped connection) is a genuine failure. `error.tsx` catches it. This is fail-closed: the user gets the error boundary, not the page.
+- A thrown `notFound()` or `redirect()` is framework control flow, and it is how `requireOrgUser` bounces a signed-out or org-less user. `error.tsx` does *not* catch it; the framework's own routing handles it. The fail-closed rule passes straight through these, because they are not the kind of failure the rule is about.
 
 The fail-closed rule applies to genuine exceptions. The `notFound`/`redirect` primitives are framework-blessed control flow that the rule lets through untouched.
 
 :::caution
-Treating `notFound()` as an error to catch is a category error. If you wrap a render in a `try`/`catch` and swallow a `notFound()`, you've broken the framework's 404 routing — the page renders *something* instead of the not-found boundary. If you must catch around code that can call `notFound()` or `redirect()`, re-throw those primitives; never swallow them.
+Treating `notFound()` as an error to catch is a category error. If you wrap a render in a `try`/`catch` and swallow a `notFound()`, you have broken the framework's 404 routing: the page renders *something* instead of the not-found boundary. If you must catch around code that can call `notFound()` or `redirect()`, re-throw those primitives; never swallow them.
 :::
 
-Make sure the line between the two is bright in your head:
+Make sure the line between the two is clear in your head.
 
 <MultipleChoice>
   A protected layout runs several lines near the top. Which of these should the framework's `error.tsx` boundary catch and turn into a generic error page?
@@ -319,25 +319,25 @@ Make sure the line between the two is bright in your head:
   <McqWhy>`error.tsx` is for genuine failures — a thrown `Error` from a session row deleted mid-request or a dropped connection. Both of those fail closed: the user gets the boundary, not the data. `notFound()` and `redirect()` are framework control-flow primitives routed by `not-found.tsx` and the redirect handler respectively — `error.tsx` never sees them, and they aren't failures to catch. (A *clean* signed-out state isn't here either: `requireOrgUser` `redirect`s it to `/sign-in`, which also passes through `error.tsx`.)</McqWhy>
 </MultipleChoice>
 
-## The webhook seam — refuse aggressively, retry safely
+## The webhook seam: refuse aggressively, retry safely
 
-The webhook receiver is the seam where fail-closed earns its keep most visibly, because the "user" on the other side is a machine that *retries.* When the Stripe webhook arrives, the receiver runs three layers, and every one of them is a gate that fails closed — but each refuses with a different status code, because the provider reads the status to decide what to do next.
+The webhook receiver is the seam where fail-closed earns its keep most visibly, because the "user" on the other side is a machine that *retries.* When the Stripe webhook arrives, the receiver runs three layers, and every one of them is a gate that fails closed. Each refuses with a different status code, because the provider reads the status to decide what to do next.
 
-Walk an event through it:
+Walk an event through it.
 
 <WebhookSeam />
 
-Read the status codes as the receiver's refusals: a forged or malformed request gets a 400 or 401, a transient failure gets a 500, and only genuine success — including the already-processed case — gets a 200. The whole receiver fails closed: when anything is uncertain, it refuses.
+Read the status codes as the receiver's refusals: a forged or malformed request gets a 400 or 401, a transient failure gets a 500, and only genuine success (including the already-processed case) gets a 200. The whole receiver fails closed: when anything is uncertain, it refuses.
 
-Now the part that makes fail-closed *safe* here, and it's a beautiful pairing. On a transient database error, the receiver throws and refuses the work — it returns a 500 and does nothing. Isn't refusing the work dangerous? Didn't the subscription change just get dropped? No — because **fail-closed and idempotency are paired primitives.** The provider sees the 500 and retries the event. The retry re-runs the receiver. The dedup ledger catches the duplicate if the work had partially landed, and the transaction guarantees the business work runs exactly once across all the retries. Refuse aggressively; retry safely. Fail-closed is only comfortable here *because* the retry is idempotent — the two were designed to lean on each other.
+Now consider the part that makes fail-closed *safe* here. On a transient database error, the receiver throws and refuses the work: it returns a 500 and does nothing. Is refusing the work dangerous? Did the subscription change just get dropped? No, because **fail-closed and idempotency are paired primitives.** The provider sees the 500 and retries the event, which re-runs the receiver. The dedup ledger catches the duplicate if the work had partially landed, and the transaction guarantees the business work runs exactly once across all the retries. You refuse aggressively and retry safely. Fail-closed is only comfortable here *because* the retry is idempotent; the two were designed to lean on each other.
 
-## The rate limiter — the one deliberate exception
+## The rate limiter: the one deliberate exception
 
-Everything so far has pushed one direction: refuse when in doubt. So now the move that separates a thoughtful engineer from a dogmatic one — the place the course deliberately fails *open*, and why.
+Everything so far has pushed one direction: refuse when in doubt. Now comes the move that separates a thoughtful engineer from a dogmatic one, the place the course deliberately fails *open*, and the reason why.
 
-The rate limiter on the authentication path is fail-open. When the limiter calls Redis to check whether this IP has tried to sign in too many times, and Redis is *down*, the limiter does not refuse the sign-in. It allows it. Think through the alternative: if the limiter failed closed, a Redis outage would lock *every user on the platform* out of their own account until Redis came back. That's a self-inflicted, total outage triggered by a dependency hiccup — and it's strictly worse than the thing the limiter exists to prevent, which is a brief window where an attacker gets a few extra password guesses. Between "nobody can sign in" and "the brute-force window is briefly wider," the senior call is the second one.
+The rate limiter on the authentication path is fail-open. When the limiter calls Redis to check whether this IP has tried to sign in too many times, and Redis is *down*, the limiter does not refuse the sign-in. It allows it. Think through the alternative. If the limiter failed closed, a Redis outage would lock *every user on the platform* out of their own account until Redis came back. That is a self-inflicted, total outage triggered by a dependency hiccup, and it is strictly worse than the thing the limiter exists to prevent, which is a brief window where an attacker gets a few extra password guesses. Between "nobody can sign in" and "the brute-force window is briefly wider," the senior call is the second one.
 
-The decision isn't scattered. It lives in exactly one helper, `safeLimit`, so that "fail-open on the auth path" is one auditable piece of code rather than a convention you hope everyone remembers:
+The decision is not scattered. It lives in exactly one helper, `safeLimit`, so that "fail-open on the auth path" is one auditable piece of code rather than a convention you hope everyone remembers.
 
 <CodeTooltips tooltips={{
   'limiter.limit': "Asks Upstash whether this key is over its budget. Talks to Redis over the network — so it can throw if Redis is unreachable.",
@@ -357,22 +357,22 @@ export const safeLimit = async (limiter: Ratelimit, key: string) => {
 ```
 </CodeTooltips>
 
-The catch logs the outage at error level — so an operator gets paged that the limiter is degraded — and returns `{ success: true }`, the verdict that lets the request through. Flipping this one gate to fail-closed is a one-line change in this one function: return `{ success: false }` instead.
+The catch logs the outage at error level, so an operator gets paged that the limiter is degraded, and returns `{ success: true }`, the verdict that lets the request through. Flipping this one gate to fail-closed is a one-line change in this one function: return `{ success: false }` instead.
 
-That's the senior framing, and it's the real payoff of the lesson: **fail-closed is the default discipline; fail-open is a deliberate carve-out with a written reason, in one place.** The reason matters as much as the carve-out — "a Redis outage shouldn't lock everyone out" is the justification that makes this engineering rather than laziness. And the *default* can flip the other way for a different gate: a rate limiter in front of a destructive admin action, or a billing webhook the customer can't retry, might be configured to fail *closed* — because there, the cost of wrongly allowing is higher than the cost of wrongly refusing. The point isn't "always open" or "always closed." The point is: have a default, justify every exception, and keep the policy in one helper instead of scattered across call sites.
+That is the senior framing, and the real payoff of the lesson: **fail-closed is the default discipline; fail-open is a deliberate carve-out with a written reason, in one place.** The reason matters as much as the carve-out. "A Redis outage shouldn't lock everyone out" is the justification that makes this engineering rather than laziness. The *default* can flip the other way for a different gate: a rate limiter in front of a destructive admin action, or a billing webhook the customer cannot retry, might be configured to fail *closed*, because there the cost of wrongly allowing is higher than the cost of wrongly refusing. The point is not "always open" or "always closed." The point is to have a default, justify every exception, and keep the policy in one helper instead of scattered across call sites.
 
-## What does *not* fail closed — staying inside the boundary
+## What does *not* fail closed: staying inside the boundary
 
-A junior who just learned fail-closed will reach for it everywhere — and over-apply it to decisions that have nothing to do with access. So draw the boundary precisely, because knowing where the rule *stops* is as senior as knowing where it holds.
+A junior who has just learned fail-closed will reach for it everywhere and over-apply it to decisions that have nothing to do with access. So draw the boundary precisely, because knowing where the rule *stops* is as senior as knowing where it holds.
 
-Compare two reads that both default to something on failure:
+Compare two reads that both default to something on failure.
 
-- A **feature-flag** check that defaults to `off` when Redis is unreachable **is fail-closed.** The flag gates a feature — it's an access decision — and `off` is the safe side of it. The feature stays disabled until you can prove it should be on.
+- A **feature-flag** check that defaults to `off` when Redis is unreachable **is fail-closed.** The flag gates a feature, so it is an access decision, and `off` is the safe side of it. The feature stays disabled until you can prove it should be on.
 - A **theme preference** that defaults to `'system'` when its read fails is **neither fail-open nor fail-closed.** There is no security boundary here. Whether the UI renders light or dark when a preference read hiccups is a product call, not an access decision. `'system'` is just a sensible default.
 
-The rule applies to **access decisions** — who can read, who can write, what tenancy enforces, which tier is allowed past a gate. Outside that boundary, "what should this default to on failure?" is a normal product question, and answering it isn't fail-closed or fail-open; it's just a default. Don't strain to fit a theme toggle into a security frame. The discipline is precise about its own scope.
+The rule applies to **access decisions**: who can read, who can write, what tenancy enforces, which tier is allowed past a gate. Outside that boundary, "what should this default to on failure?" is a normal product question, and answering it is neither fail-closed nor fail-open; it is just a default. Do not strain to fit a theme toggle into a security frame. The discipline is precise about its own scope.
 
-Here is the funnel, the way an experienced engineer runs it. Take any check and walk it:
+Here is the funnel, the way an experienced engineer runs it. Take any check and walk it.
 
 <StateMachineWalker title="Does this check need to fail closed?">
   <Question id="boundary" prompt="Is this an access decision?" description="A gate on who can read, who can write, what tenancy enforces, or which tier is allowed past a feature.">
@@ -391,43 +391,43 @@ Here is the funnel, the way an experienced engineer runs it. Take any check and 
   </Question>
 
   <Leaf id="leaf-closed" verdict="Fails closed — correct">
-    The check proves the request is allowed or throws; one wrapper catches the throw and refuses. The user gets an error or a 403, never the resource. This is the shape you want at every access seam.
+    The check proves the request is allowed or it throws; one wrapper catches the throw and refuses. The user gets an error or a 403, never the resource. This is the shape you want at every access seam.
   </Leaf>
 
   <Leaf id="leaf-sentinel" verdict="Fix it — fail-open with extra steps">
-    A check that returns `false` or `null` on its own failure has buried "the check broke" inside a value the next caller will misread as "no." Make it throw instead, and let the wrapper catch it. One value can't safely mean both "denied" and "don't know."
+    A check that returns `false` or `null` on its own failure has buried "the check broke" inside a value the next caller will misread as "no." Make it throw instead, and let the wrapper catch it. One value cannot safely mean both "denied" and "don't know."
   </Leaf>
 
   <Leaf id="leaf-open" verdict="Bug — fails open">
-    A call-site `try`/`catch` that logs and proceeds turns a broken check into an allow. Logging is not denying. Remove the catch, let the check throw to the wrapper that refuses in one place.
+    A call-site `try`/`catch` that logs and proceeds turns a broken check into an allow. Logging is not denying. Remove the catch, and let the check throw to the wrapper that refuses in one place.
   </Leaf>
 
   <Leaf id="leaf-product" verdict="Neither — just a sensible default">
-    No security boundary, no fail-closed obligation. Pick the default that makes the best product sense (`'system'` for a theme, an empty list for a failed non-sensitive read). Don't strain to fit it into the access frame.
+    No security boundary means no fail-closed obligation. Pick the default that makes the best product sense (`'system'` for a theme, an empty list for a failed non-sensitive read). Do not strain to fit it into the access frame.
   </Leaf>
 </StateMachineWalker>
 
 ## Trust the wrapper, don't bypass it
 
-One last thing turns this rule from an idea into something you can *audit*, and it's the catch hiding under the whole architecture: the structural guarantee only holds **when the wrappers actually run.** `authedAction` makes fail-closed the only path — for every action that goes through it. A Server Action that skips it has no gate at all, and no amount of "the wrapper handles fail-closed" helps an action the wrapper never touched.
+One last thing turns this rule from an idea into something you can *audit*, and it is the catch hiding under the whole architecture: the structural guarantee only holds **when the wrappers actually run.** `authedAction` makes fail-closed the only path for every action that goes through it. A Server Action that skips it has no gate at all, and no amount of "the wrapper handles fail-closed" helps an action the wrapper never touched.
 
-So the two bypasses are the two bugs:
+So the two bypasses are the two bugs.
 
-- A Server Action that doesn't go through `authedAction`.
-- A route handler that doesn't go through `authedRoute`.
+- A Server Action that does not go through `authedAction`.
+- A route handler that does not go through `authedRoute`.
 
-And the audit move — this is a genuine 2026 reflex, grepping your own surface for holes — is concrete:
+The audit move, a genuine 2026 reflex of grepping your own surface for holes, is concrete.
 
-- Search for `'use server'` in files that don't import `authedAction`.
-- Search for exported `GET`/`POST`/`PUT`/`PATCH`/`DELETE` in `route.ts` files that don't import `authedRoute`.
+- Search for `'use server'` in files that do not import `authedAction`.
+- Search for exported `GET`/`POST`/`PUT`/`PATCH`/`DELETE` in `route.ts` files that do not import `authedRoute`.
 
-Every hit is reviewed. Some are *legitimate* exceptions, and those get named and documented — the public sign-up action that can't require a session because there isn't one yet, the webhook receiver that gates with its own signature verify instead. The rest are holes, and they get migrated onto the wrapper. The rule is structural: when the wrappers run, fail-closed is the only path; a bypass is a gap in the wall.
+Every hit is reviewed. Some are *legitimate* exceptions, and those get named and documented: the public sign-up action that cannot require a session because there is not one yet, or the webhook receiver that gates with its own signature verify instead. The rest are holes, and they get migrated onto the wrapper. The rule is structural: when the wrappers run, fail-closed is the only path, and a bypass is a gap in the wall.
 
 :::caution
-Copy-pasting `authedAction` into a "lighter" wrapper for one special case is how the audit gets quietly defeated. The fork looks identical today, drifts tomorrow, and your grep for `authedAction` never finds the copy — so the one place to lint silently becomes two, then three. *Extend* the wrapper when a real need appears; never fork it.
+Copy-pasting `authedAction` into a "lighter" wrapper for one special case is how the audit gets quietly defeated. The fork looks identical today, drifts tomorrow, and your grep for `authedAction` never finds the copy, so the one place to lint silently becomes two, then three. *Extend* the wrapper when a real need appears; never fork it.
 :::
 
-You can now ask the question this lesson promised, of any seam in the codebase: *if this check throws, does the user get the resource, or get refused?* That single question is the whole audit, and you can run it on a page, an action, a webhook, or a rate limiter without looking anything up. The next lesson takes the *other* half of the catch site — not whether the request is refused, but what the user is told versus what the operator records when it is — and the lesson after walks all six error seams end to end.
+You can now ask the question this lesson promised, of any seam in the codebase: *if this check throws, does the user get the resource, or get refused?* That single question is the whole audit, and you can run it on a page, an action, a webhook, or a rate limiter without looking anything up. The next lesson takes the *other* half of the catch site: not whether the request is refused, but what the user is told versus what the operator records when it is. The lesson after that walks all six error seams end to end.
 
 ## External resources
 
