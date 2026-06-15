@@ -1,6 +1,6 @@
 # A personalized course built using agentic workflows
 
-![A Claude prompt that reads "Create a course: How to build a React SaaS app in 2026"](readme-question.png)
+![A Claude prompt that reads "Create a course: How to build a React SaaS app in 2026"](documentation/readme-question.png)
 
 Imagine an AI could take that one sentence, break it into a month of work, and actually do it — design the curriculum, write every lesson, build the interactive exercises, ship a working codebase for each project. This repository is that answer, run for real. Not a chatbot reply you read in thirty seconds, but the full thing an agent fleet produces when it's allowed to decompose the problem and grind on it chapter after chapter.
 
