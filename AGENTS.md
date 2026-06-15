@@ -28,19 +28,7 @@ Read project files only if essential to your current task. Read only the relevan
 
 ### Documentation
 
-- `documentation/content/overview/Table of contents.md` — list of Units, Chapters, Lessons and a brief description of lesson content. Extensive document, read only the relevant sections.
-- `documentation/content/overview/Units.md` — brief high-level overview of the course's units, the topics each covers, and the project chapters.
-- `documentation/content/overview/Project dependencies.md` — for each chapter-end project, which earlier project's codebase it continues from. Some projects are independent and not listed here.
-- `documentation/content/chapter outlines/` — one file per chapter, defining the scope of each lesson.
-- `documentation/pedagogical approach/Pedagogical guidelines.md` — Course teaching style.
-- `documentation/code standards/Code conventions.md` — canonical code conventions for project repos and lesson MDX code blocks. Extensive document, read only the relevant sections.
+- `documentation/Table of contents.md` — list of Units, Chapters, Lessons and a brief description of lesson content. Extensive document, read only the relevant sections.
+- `documentation/Units.md` — brief high-level overview of the course's units, the topics each covers, and the project chapters.
 - `documentation/components/INDEX.md` — API for the pre-built astro components.
 - `documentation/diagrams/INDEX.md` — How to pick the best diagram engine for each use case.
-
-### Authoring pipelines
-
-Chapters are built by an orchestrator that routes each chapter to one of two pipelines, run sequentially by a fleet of single-purpose subagents.
-
-- `.claude/prompts/chapter authoring/Orchestrator.md` — finds the next unwritten chapter, classifies it as teaching or project, and routes it to the matching pipeline.
-- Teaching chapters — `.claude/prompts/chapter authoring/Teaching lessons.md` defines the pipeline; its subagents live in `.claude/agents/lesson/`.
-- Project chapters — `.claude/prompts/chapter authoring/Project lessons.md` defines the pipeline; its subagents live in `.claude/agents/project/`.
