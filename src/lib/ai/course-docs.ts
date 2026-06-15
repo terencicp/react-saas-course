@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const overviewUrl = (file: string) =>
-	fileURLToPath(new URL(`../../../documentation/content/overview/${file}`, import.meta.url));
+	fileURLToPath(new URL(`../../../documentation/${file}`, import.meta.url));
 
 let unitsOverview: string | null = null;
 
