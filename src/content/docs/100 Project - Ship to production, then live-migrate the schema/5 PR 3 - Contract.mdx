@@ -1,0 +1,223 @@
+---
+title: "PR 3 (Contract): drop the old column, promote the new pair"
+chapter-id: 100
+course-progress: 0.00005
+sidebar:
+  order: 5
+  label: PR 3 — Contract
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Two PRs in, production is running on a schema that carries three money columns: the old `total`, plus the `subtotal` and `tax` pair that PR 2 backfilled to 100% coverage and promoted to `NOT NULL`. Every write fills all three; every read still falls through `coalesce` to `total` for any row the backfill might have missed. That belt-and-suspenders state was the whole point — it is what let you ship the consequential change in two safe, fully-reversible steps. This lesson you cash it in. You drop `total`, strip the transitional scaffolding from the app, and land production on the target shape: two money columns, no legacy.
+
+When it lands, nothing about the surface looks different — the table and the edit form already render the pair, since PR 2 did that work. What changes is underneath. The list and detail reads pull `subtotal` and `tax` straight from their now-`NOT NULL` columns with no fall-through; the create and edit paths persist only the pair; and the `total` column is gone from the database. On the inspector, the schema-state probe shows `subtotal NOT NULL` and `tax NOT NULL` with no `total` row, split-coverage holds at 100%, the data-integrity diff reads `n/a — total dropped` because there is no longer a `total` to diff against, and Sentry stays quiet through the deploy. There is no screenshot to show here — the proof is in those panels, not in the UI.
+
+## Your mission
+
+Your job is to finish the cadence: remove the legacy `total` column, strip every reference to it from the app, and settle production on the `subtotal` + `tax` shape. This is the cadence's payoff, and it is also its one irreversible move — once the column is dropped, the data it held is gone. The striking thing is that it is by far the *smallest* of the three PRs. PR 2 did the heavy lifting: it promoted the pair to `NOT NULL` and taught every write and read to handle both shapes, so by the time you arrive here the schema change is a single `DROP COLUMN total` and the app work is mechanical deletion. Keeping the consequential PR to that one statement is deliberate — the most dangerous change in the chapter should also be the easiest to review, because a reviewer can hold the entire diff in their head.
+
+Two safety nets prove that no reader survives the drop, and they cover different ground. The first is the type checker, and it works for free: Drizzle's typed query builder no longer exposes `invoices.total` once you remove it from the schema, so any surviving typed reference becomes a build error the moment you run `tsc`. The second is a single **scoped** grep — for `invoices.total` and `invoiceTotal`, not the bare English word `total`, which appears in a hundred innocent places. You need the grep because raw SQL strings and any code outside the typed builder slip past the type system entirely. The combined amount, wherever a surface still wants to show it, is computed at the app layer as `subtotal + tax` through the `combinedAmount` helper from PR 2 — never read from a column, because there is no column.
+
+There is a senior risk here worth naming even though it does not bite in this project: any reader of the table that is *not* this app — a nightly report script, an analytics pipeline reading the raw column, a downstream service — breaks the instant `total` disappears, and the type checker knows nothing about them. A real production contract PR is gated on a sweep of every reader of the table, not just the application. This project has no external readers, so the type check plus the scoped grep are sufficient; in a real system they would be the floor, not the ceiling. One more thing to hold onto for next time: this is the single PR in the cadence whose schema move an alias rollback cannot undo. Re-pointing the production alias to the previous deployment rolls back your *code* instantly, but the dropped column stays dropped — the rollback rehearsal lesson makes exactly that point concrete against this deployment. Out of scope here: that rollback rehearsal, and any new feature work. Drop the column, delete the scaffolding, ship it.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">The contract migration is a single `DROP COLUMN total` and contains nothing destructive beyond it.</ChecklistItem>
+  <ChecklistItem chip="tested">Create and edit accept and persist only `subtotal` and `tax`; the transitional combined-amount write and the legacy-amount fallback are both gone.</ChecklistItem>
+  <ChecklistItem chip="tested">The list and detail reads return `subtotal` and `tax` directly, with no `coalesce` fall-through to `total`.</ChecklistItem>
+  <ChecklistItem chip="tested">Any surface that shows the combined amount computes it via `combinedAmount` rather than reading it from a column.</ChecklistItem>
+  <ChecklistItem chip="untested">No reference to the old column survives anywhere — the type check is green and a scoped grep for `invoices.total` / `invoiceTotal` returns nothing.</ChecklistItem>
+  <ChecklistItem chip="untested">On the preview, the schema-state probe shows `subtotal NOT NULL`, `tax NOT NULL`, and no `total`; the list and every mutation work against the new shape; a `SELECT total` errors with column-does-not-exist.</ChecklistItem>
+  <ChecklistItem chip="untested">The PR merges green across CI and `vercel-build`, producing a production deployment whose commit SHA matches the merge commit.</ChecklistItem>
+  <ChecklistItem chip="untested">After merge, production keeps working on the target schema: the list renders, mutations succeed, the inspector shows the target shape with split-coverage 100% and a data-integrity diff that reads "n/a — total dropped", and Sentry logs zero new errors.</ChecklistItem>
+  <ChecklistItem chip="untested">The migration runbook carries the closing entry recording the completed cadence.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement against the brief and the lesson's tests, rehearse the result on a preview branch, then open and merge the PR. Read the reference solution below only after you have attempted it. The tests for this lesson can't import the mutation and read modules — `actions.ts`, `queries.ts`, and `schema.ts` all pull in `server-only` plus the env boundary and a live Postgres client, which throw the instant a Node test touches them — so they read your source and prove it carries the settled shape, with one exception: the pure `combinedAmount` helper has no server dependencies, so the gate exercises it for real. A source-shape gate confirms the *shape*; only the preview rehearsal proves the column is actually gone and the app still serves.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The work lives on a branch named `contract/drop-total`, and it is four files of deletion plus a generated migration. Start at the schema, because everything downstream is a consequence of the column leaving it.
+
+**`src/db/schema.ts`** — remove the `total` column and its `TODO(L5)` marker. The pair is already `.notNull()` from PR 2, so the money block settles to two lines:
+
+```ts title="src/db/schema.ts" frame="none"
+    subtotal: numeric('subtotal', { precision: 12, scale: 2 }).notNull(),
+    tax: numeric('tax', { precision: 12, scale: 2 }).notNull(),
+```
+
+That deletion is the entire schema change, and it is worth pausing on *why* it is safe to ship to live production in one statement. `DROP COLUMN` in Postgres is metadata-only: it marks the column dead in the catalog and returns almost instantly, even on a table with millions of rows — the on-disk space is reclaimed later by a background `VACUUM`, not during the migration. So there is no table scan, no long lock, and no `--> statement-breakpoint` to split anything across. That is the opposite of PR 2's `SET NOT NULL`, which had to scan every row to verify no nulls remained — the trade-off the [expand-migrate-contract lesson](/099-migrating-a-live-schema-without-an-outage/1-expand-migrate-contract/) walks through. Drop is cheap and fast; what makes it the move you ship *last* is that it cannot be reversed — the bytes the column held are gone the instant it lands.
+
+**`drizzle/0007_contract_total.sql`** — generated by `pnpm db:generate` after you edit the schema. The whole migration is one statement:
+
+```sql title="drizzle/0007_contract_total.sql" frame="none"
+ALTER TABLE "invoices" DROP COLUMN "total";
+```
+
+No breakpoint, no second statement. If `db:generate` produces anything more than this, you changed more than the one column — back out the extra change and regenerate.
+
+**`src/lib/invoices/actions.ts`** — this is the file where "what comes out" is least obvious, because the transitional dual-write threaded `total` through three places. Three deletions retire it: the `total` field leaves both Zod schemas, the `total: combinedAmount(...)` line leaves both the `.values({...})` insert and the `.set({...})` update, and the legacy-amount fallback goes with it. The settled `createInvoice` write carries only the pair:
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const createInvoiceSchema = z.strictObject({
+  number: z.string().min(1),
+  customerName: z.string().min(1),
+  status: z.enum(STATUS_VALUES).default('draft'),
+  subtotal: z.string().min(1),
+  tax: z.string().min(1),
+  currency: z.string().min(1).default('USD'),
+});
+
+export const createInvoice = authedAction(
+  'member',
+  createInvoiceSchema,
+  async (input, ctx): Promise<Result<InvoiceRow>> =>
+    withTenant(ctx.orgId, async (tx) => {
+      const [row] = await tx
+        .insert(invoices)
+        .values({
+          organizationId: ctx.orgId,
+          number: input.number,
+          customerName: input.customerName,
+          status: input.status,
+          subtotal: input.subtotal,
+          tax: input.tax,
+          currency: input.currency,
+        })
+        .returning();
+`}>
+  <AnnotatedStep meta={`{5-6}`} color="green">
+    The schema now accepts only the pair. The `total: z.string().min(1)` field that PR 2's dual-write carried is deleted — a posted `total` is simply ignored by `z.strictObject`, but better, the form no longer sends one.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{22-23}`} color="green">
+    The insert writes the two columns and nothing else. The transitional `total: combinedAmount({ subtotal: input.subtotal, tax: input.tax })` line is gone — there is no column to write it to — and so is the `combinedAmount` import in this file. The same three deletions apply verbatim to `updateInvoice`'s schema and its `.set({...})` update.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The `updateInvoice` write changes identically — its schema drops `total`, its `.set({...})` drops the `total` line, and the legacy fallback goes. Note that the lifecycle actions — `archiveInvoice`, `restoreInvoice`, `softDeleteInvoice` — touch no money column at all, so the cadence leaves them untouched. And because nothing writes `total` anymore, `combinedAmount` has no place in this file; its import comes out too, which the lesson test checks for explicitly.
+
+**`src/lib/invoices/queries.ts`** — this is the clearest illustration of the dual-read coming out. PR 2 taught the reads to surface the pair through `coalesce(subtotal, total)` and `coalesce(tax, 0)`, so a not-yet-backfilled row still produced sensible numbers, and it kept a `total` field on `InvoiceRow` for any caller that still read it. The contract step removes both: the reads select the columns directly, and the sort — which can no longer order on a dropped `total` column — orders on the derived expression instead.
+
+<CodeVariants>
+  <CodeVariant label="Before — PR 2 dual-read">
+    <div data-mark-color="orange">
+
+    ```ts title="src/lib/invoices/queries.ts"
+    const subtotalExpr = sql<string>`coalesce(${invoices.subtotal}, ${invoices.total})`;
+    const taxExpr = sql<string>`coalesce(${invoices.tax}, 0)`;
+    const amountExpr = sql`(${subtotalExpr} + ${taxExpr})`;
+    // InvoiceRow carried `total: string` alongside the pair, and the select read:
+    //   subtotal: subtotalExpr,
+    //   tax: taxExpr,
+    //   total: invoices.total,
+    ```
+
+    </div>
+    **The `coalesce` fall-through and the `total` field** — what PR 2 shipped so a not-yet-backfilled row still read sensibly.
+  </CodeVariant>
+
+  <CodeVariant label="After — direct pair">
+    <div data-mark-color="green">
+
+    ```ts title="src/lib/invoices/queries.ts"
+    // InvoiceRow exposes subtotal: string and tax: string, no total field.
+    const amountExpr = sql`(${invoices.subtotal} + ${invoices.tax})`;
+    // and the select reads the columns directly:
+          subtotal: invoices.subtotal,
+          tax: invoices.tax,
+    ```
+
+    </div>
+    **`subtotal` and `tax` read straight from their `NOT NULL` columns;** the sort orders on `(subtotal + tax)` since there is no `total` column left.
+  </CodeVariant>
+</CodeVariants>
+
+Both `listInvoices` and `getInvoiceDetail` make the same change — select `invoices.subtotal` and `invoices.tax` directly, drop the `total` field from the returned shape. The `-total` and `total` sort cases keep their names (the URL parameter is part of the carried-in surface and does not change), but they now order on `amountExpr`, which is the live computation `(subtotal + tax)` rather than a stored value.
+
+**`src/app/(protected)/invoices/[id]/edit/edit-form.tsx`** — all that remains here is clearing the `TODO(L5)` marker. The split `subtotal` and `tax` inputs landed in PR 2, and the `combinedAmount(...)` reads in `table.tsx` and `conflict-banner.tsx` landed with them, so there is no combined-amount affordance left to retire — the marker was a reminder to confirm that, nothing more. The split-input form work belongs to the migrate PR; don't re-do it here.
+
+A few decisions worth saying out loud:
+
+- **Why the migration is the drop only.** Bundling anything else — an index change, a rename, a second drop — into the contract PR would defeat the reason it is small. The cadence's one irreversible step should carry exactly the irreversible change and nothing a reviewer has to reason about separately. The lesson test enforces this: it counts drop statements in the generated SQL and fails on more than one.
+- **Why the scoped grep, given the type checker.** Drizzle's typed builder catches every reference that goes *through* it, which is most of the app. But the inspector reads the schema with raw `db.execute(sql\`...\`)` probes that name columns by SQL literal — `SELECT column_name FROM information_schema.columns WHERE table_name = 'invoices'` — and a SQL string is opaque to the type system. That is by design: it is what lets the inspector's `_data.ts` compile unchanged against both the old and the new schema. The grep for `invoices.total` and `invoiceTotal` (the typed-reference spellings) covers the gap the type system can't see, and it comes back empty because the inspector never names `total` as a typed property.
+
+To finish, rehearse and ship:
+
+1. Run `pnpm verify` (Biome + `tsc` + `next build`) and `pnpm test` locally until both are green. The `tsc` step is your first net — if any typed `invoices.total` survived, the build fails here.
+2. Run the scoped grep — `rg 'invoices\.total|invoiceTotal' src scripts` — and confirm it returns nothing.
+3. Open the PR titled `contract: drop total, finalize subtotal + tax`. Its preview deploys on a fresh Neon branch; the build runs `pnpm db:migrate` to apply `0007` against that branch before booting, so the preview URL exercises the new code against the dropped-column shape. Walk the rehearsal checklist on it.
+4. Merge once CI and `vercel-build` are green. Production rebuilds, `0007` applies against the Neon `main` branch, and the column is gone.
+
+:::tip
+The transitional bridge you built in PR 2 — the dual-write to `total`, the `coalesce` fall-through, the legacy-amount tolerance — is the entire reason this PR is four files of deletion instead of a schema change tangled up with a form-flow refactor. Had PR 2 not kept `total` populated and readable, contract would have had to land the column drop *and* re-teach every read and write at the same time, on the one PR you least want to be large. The bridge was born to die here, on schedule.
+:::
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="ALTER TABLE — DROP COLUMN"
+    href="https://www.postgresql.org/docs/current/sql-altertable.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The Postgres reference confirming DROP COLUMN is metadata-only — quick, no rewrite, space reclaimed later by VACUUM."
+  />
+  <ExternalResource
+    title="Drizzle migrations"
+    href="https://orm.drizzle.team/docs/migrations"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="How db:generate diffs your schema into a SQL file and db:migrate applies it — the step that produces 0007."
+  />
+  <ExternalResource
+    title="Neon branching"
+    href="https://neon.com/docs/guides/branching-intro"
+    icon="simple-icons:neon"
+    iconColor="#00E599"
+    description="Copy-on-write branches per preview deploy, so 0007 runs against a throwaway branch before it touches production."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's gate:
+
+```bash frame="none"
+pnpm test:lesson 5
+```
+
+The gate reads your source and confirms the cadence landed: that the generated `0007` migration is a single `DROP COLUMN total` with nothing destructive beyond it, that `schema.ts` carries the `subtotal` + `tax` pair (both `NOT NULL`) and no `total`, that the create and update schemas accept and persist only the pair with the transitional `total` write and the `combinedAmount` import both gone, that the reads expose the pair directly with no `coalesce` and no `invoices.total` left to sort on, and that `combinedAmount` still adds the pair in exact integer cents. A clean pass looks like this:
+
+```text frame="none"
+ ✓ Lesson 5 — req 1: the contract migration is a single DROP COLUMN total (2)
+ ✓ Lesson 5 — req 2: schema and mutations settle on subtotal + tax only (4)
+ ✓ Lesson 5 — req 3: reads return subtotal + tax directly, no coalesce fall-through (3)
+ ✓ Lesson 5 — req 4: the combined amount is computed, never read from a column (1)
+
+ Test Files  1 passed (1)
+      Tests  10 passed (10)
+```
+
+What the gate can't reach is everything that happens off your local machine — the preview, the deploy, and the live production check. Tick these off by hand as you go:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">A scoped grep for `invoices.total` / `invoiceTotal` across `src` and `scripts` returns nothing.</ChecklistItem>
+  <ChecklistItem chip="untested">On the preview, the inspector schema-state panel shows `subtotal NOT NULL`, `tax NOT NULL`, and no `total` row; running `SELECT total FROM invoices` in Drizzle Studio errors with `column "total" does not exist`.</ChecklistItem>
+  <ChecklistItem chip="untested">On the preview, the list renders from the pair and create / edit / archive all succeed against the new shape.</ChecklistItem>
+  <ChecklistItem chip="untested">After merge, production `/invoices` renders, mutations succeed, and the inspector shows the target shape — split-coverage 100% and a data-integrity diff reading "n/a — total dropped" — with Sentry logging zero new errors.</ChecklistItem>
+  <ChecklistItem chip="untested">`docs/runbooks/migration-subtotal-tax.md` carries the closing PR 3 entry: the `0007` `DROP COLUMN`, the legacy-reference cleanup, and the type-checker + scoped-grep nets that proved no reader survived.</ChecklistItem>
+</Checklist>
