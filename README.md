@@ -215,8 +215,9 @@ documentation/       the "authoring brain"
 .claude/
   prompts/chapter authoring/      the orchestrator + the two pipeline definitions
   agents/                         the 32 authoring subagents (lesson/ and project/)
-projects/            per-chapter project codebases (start/ + solution/)
 ```
+
+The per-chapter project codebases — each chapter's `start/` and `solution/` — live in a companion repo: [`react-saas-course-projects`](https://github.com/terencicp/react-saas-course-projects).
 
 ## Run it locally
 
