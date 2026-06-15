@@ -175,5 +175,3 @@ The full six-phase trace with cache markers covering dynamic-by-default, PPR sta
   </TraceNode>
 </RequestTrace>
 ```
-
-The three §13 spec examples plus this six-phase trace live in [the demo page](../../../src/content/docs/0%20Demos/figures/request-trace-demo.mdx).

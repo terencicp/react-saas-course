@@ -2,7 +2,7 @@
 
 > _This document distills lessons learned from diagrams already built in this course. Treat it as a kick-starter for new diagrams, not a strict guide._
 
-`astro-mermaid` is wired in [astro.config.mjs](../../astro.config.mjs) with `autoTheme: true` (light/dark follows Starlight). Author Mermaid in fenced ` ```mermaid ` blocks inside MDX — each block is replaced with `<pre class="mermaid">` at build time and rendered to SVG client-side. Live reference: [`src/content/docs/0 Demos/diagrams/mermaid-demo.mdx`](../../src/content/docs/0%20Demos/diagrams/mermaid-demo.mdx).
+`astro-mermaid` is wired in [astro.config.mjs](../../astro.config.mjs) with `autoTheme: true` (light/dark follows Starlight). Author Mermaid in fenced ` ```mermaid ` blocks inside MDX — each block is replaced with `<pre class="mermaid">` at build time and rendered to SVG client-side.
 
 ## Boilerplate
 

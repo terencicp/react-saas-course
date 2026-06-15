@@ -269,8 +269,6 @@ Set `label` to render a small badge near the midpoint between the two sockets. N
 
 ## Example
 
-A live, multi-figure showcase (discriminated-union → switch arms, Server Action ↔ form, page-layout → file mapping, Drizzle schema → query) is in [`src/content/docs/0 Demos/diagrams/arrow-diagram-demo.mdx`](../../../src/content/docs/0%20Demos/diagrams/arrow-diagram-demo.mdx). It exercises all three anchor patterns and the brace-escape rules.
-
 A minimal example — three boxes representing the JavaScript event loop, three arrows with explicit sockets, gravity, and label offsets:
 
 ````mdx

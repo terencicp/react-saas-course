@@ -108,7 +108,7 @@ Switching tabs resets all badge counts to zero. A reset affordance in the top-ri
 - A lesson explains *what causes a render* (state update here, in a parent, via context, via a store update) and the misconception lives in **which boxes light up** — not in a paragraph of prose.
 - A lesson compares two implementations of the same external surface (with `memo` / without; slice selector / atomic selector; object state / split state). The toggle reveals the render asymmetry; the rest is reading the badges.
 - The decision is local and small (a 2–6 box tree). For longer event sequences or multi-track timelines, reach for `DiagramSequence` or a `ScrubbableTimeline`-style component.
-- The lesson is in Unit 4 (React mechanics) or Unit 16 (Zustand selectors). Those are the units this component was designed against — ≈10 chapter-specific proposals fold into it. See [`Component proposals.md` § 4](../../Pedagogical%20approach/Component%20proposals.md) for the proposal list and v1 scope decisions.
+- The lesson is in Unit 4 (React mechanics) or Unit 16 (Zustand selectors). Those are the units this component was designed against — ≈10 chapter-specific proposals fold into it.
 
 ## Example
 
@@ -135,5 +135,3 @@ Selector-contract comparison from Chapter 082 / 083 — slice selector returns a
   </Implementation>
 </RenderTracking>
 ```
-
-Three more demos (baseline flash, the three triggers, object vs split state) live in [the demo page](../../../src/content/docs/0%20Demos/figures/render-tracking-demo.mdx).

@@ -127,5 +127,3 @@ A box-model sizer that exercises slider + select + computed `expr` readouts:
   />
 </ParamPlayground>
 ```
-
-Two more demos (token console with a live WCAG contrast chip, OKLCH color lab) live in [the playground demo page](../../../src/content/docs/0%20Demos/figures/param-playground-demo.mdx).

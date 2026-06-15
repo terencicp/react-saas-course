@@ -157,7 +157,3 @@ stateDiagram-v2
   </Question>
 </StateMachineWalker>
 ````
-
-## Example
-
-Three full variations — decision tree, diagnostic funnel, and a synced state machine — live in [the walker demo page](../../../src/content/docs/0%20Demos/figures/state-machine-walker-demo.mdx).

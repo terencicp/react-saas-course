@@ -2,9 +2,7 @@
 
 Starlight renders every fenced code block through **Expressive Code** (EC) — no imports, just a triple-backtick fence with a language and optional fence-meta directives.
 
-EC plugins enabled in [astro.config.mjs](astro.config.mjs): built-in syntax highlighting, frames, text markers, word wrap; `plugin-line-numbers` (opt-in per block, off site-wide); `plugin-collapsible-sections` (opt-in per block).
-
-Live reference for every feature: [`0 Demos/code/code-blocks-demo`](src/content/docs/0%20Demos/code/code-blocks-demo.mdx).
+EC plugins enabled in [astro.config.mjs](../../../astro.config.mjs): built-in syntax highlighting, frames, text markers, word wrap; `plugin-line-numbers` (opt-in per block, off site-wide); `plugin-collapsible-sections` (opt-in per block).
 
 ## Basic fence
 
