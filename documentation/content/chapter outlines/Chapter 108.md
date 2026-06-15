@@ -38,7 +38,7 @@ The finished surface satisfies these goals; each one is owned by the lesson that
 
 ### Starting file tree
 
-The `start/` directory ships only `package.json` (identical to the solution) and installed `node_modules` — there is **no `src/`**. The whole codebase is student-authored against the lesson exercises, with `solution/` as the reference. The tree below is the *solution* shape; this chapter's new build slices are the eight LLM-specific files (the four under `src/lib/llm/` that are not `models.ts`, plus `with-llm-quota.ts`, the two route handlers, and the three `invoices/` chat components). Everything else is the chapter-062 surface the student is assumed to be able to reproduce.
+The `start/` directory carries the full chapter-062 surface byte-identical to `solution/`, with exactly nine files reverted to a `TODO(L<n>)` stub — the LLM feature the student writes. The tree below is the *solution* shape; the nine new build slices are the four under `src/lib/llm/` that are not `models.ts` (`prompts.ts`, `tools.ts`, `quota.ts`, `audit.ts`), the two route handlers (`api/chat/route.ts`, `api/usage/route.ts`), and the three `invoices/` chat components (`invoice-chat.tsx`, `invoice-stats-card.tsx`, `token-usage-panel.tsx`). `src/lib/llm/with-llm-quota.ts` and `src/lib/authed-route.ts` ship complete as provided seams. Everything else is the chapter-062 surface the student is assumed to be able to reproduce, present in `start/` already.
 
 ```
 next.config.ts                    # cacheComponents, typedRoutes, reactCompiler
