@@ -28,7 +28,11 @@ const sidebarGroups = readdirSync(docsDir, { withFileTypes: true })
     .map((entry) => entry.name)
     .sort()
     .map((name) => ({
-        label: name.replace(/^\d+\s+/, ''),
+        // Strip the 3-digit chapter prefix, then restore the colon the
+        // filesystem can't store: project chapters are foldered as
+        // "Project - …" because ":" is illegal in a path, so show them as
+        // "Project: …".
+        label: name.replace(/^\d+\s+/, '').replace(/^Project - /, 'Project: '),
         items: [{ autogenerate: { directory: name } }],
     }));
 // Expressive Code options live in ./ec.config.mjs so the standalone
