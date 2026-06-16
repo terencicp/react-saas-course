@@ -18,6 +18,8 @@ Read project files only if essential to your current task. Read only the relevan
 
 - `src/components/` — astro pre-built components organized by topic. Lesson-specific components at `src/components/lessons/<lesson id>/<name>.astro`.
 
+The site has a BYOK OpenRouter AI tutor: a lazy React panel in `src/components/ai-chat/` (`mount.tsx`) loaded from the Footer override, with per-lesson context at `/api/ai/lesson/<slug>.json`.
+
 ### Lessons
 
 - `src/content/docs/` — lessons MDX
@@ -32,3 +34,7 @@ Read project files only if essential to your current task. Read only the relevan
 - `documentation/Units.md` — brief high-level overview of the course's units, the topics each covers, and the project chapters.
 - `documentation/components/INDEX.md` — API for the pre-built astro components.
 - `documentation/diagrams/INDEX.md` — How to pick the best diagram engine for each use case.
+
+## Deployment
+
+Deploys as a static Astro build on Cloudflare Pages.
