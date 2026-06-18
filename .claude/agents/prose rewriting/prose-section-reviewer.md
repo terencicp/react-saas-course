@@ -37,8 +37,14 @@ When all agents are done mark all sentence review tasks as deleted.
 
 For each paragraph in the section, consider if it should be split into two, if it should be merged with the next paragraph or if the paragraph is unnecessary and should be removed.
 
+Pass each final prose paragraph to a prose-paragraph-reviewer agent in parallel. Pass the subagent the lesson summary, the updated section MDX and the paragraph it needs to rewrite. Compare each rewritten paragraph with the version passed as input to the agent; if it's better, replace the original paragraph with the new one. Assemble the results into the final rewritten MDX.
+
 When finished mark the paragraph review task as deleted.
 
-## Step 5 - Final message
+## Step 5 - Title review
 
-Return the fully rewritten MDX for the given section and the full MDX for rewritten components, if any. Explaining the reasoning behind all your rewriting decisions. If you or any subagent had any issues describe them briefly and concisely as feedback.
+Write a few alternative options for a more descriptive section title. Pick the option that more clearly indicates what the section is about.
+
+## Step 6 - Final message
+
+Return the final rewritten MDX with an updated title after step 5 for the given section and the full MDX for rewritten components, if any. Explaining the reasoning behind all your rewriting decisions. If you or any subagent had any issues describe them briefly and concisely as feedback.

@@ -30,7 +30,7 @@ Spawn a general purpose subagent that creates a concise summary that consists of
 
 ## Step 6 - Review each section
 
-For each section in the MDX (considering the intro paragraphs and each h2 a section) spawn in parallel a prose-section-reviewer with the lesson summary and the literal MDX of the section it needs to review. If the section has a component that contains prose not already part of the lesson MDX, include that component's path. If the prose-structure-reviewer recommended incorporating a section into another, pass the feedback and the original section MDX too.
+For each section in the MDX (considering the intro paragraphs and each h2 a section) spawn in parallel two prose-section-reviewer agents with the lesson summary and the literal MDX of the section it needs to review. Prompt one agent "Focus your efforts on making the prose as clear as possible so it reads effortlessly" and the other "Focus your efforts on compressing prose as much as possible while keeping it readable.". If the section has a component that contains prose not already part of the lesson MDX, include that component's path. If the prose-structure-reviewer recommended incorporating a section into another, pass the feedback and the original section MDX too.
 
 ## Step 7 - Rewrite each section
 
@@ -43,10 +43,14 @@ For each section in the MDX spawn sequentially, in order:
 
 Spawn prose-frontmatter-rewriter with the MDX path. Rename the MDX file to match the sidebar label if necessary.
 
-## Step 9 - Verification
+## Step 9 - Coherence pass
+
+Since each section has been rewritten by a different subagent multiple similar sections might have different formats. Make sure titles and section prose do not follow different conventions in each section. Make the edits necessary to keep the lesson coherent; be surgical.
+
+## Step 10 - Verification
 
 Read the rewritten MDX file to make sure it looks as expected.
 
-## Step 10 - Final message
+## Step 11 - Final message
 
 Return the message 'Lesson <X> rewritten'. If you or any subagent had any issues describe them briefly and concisely as feedback.

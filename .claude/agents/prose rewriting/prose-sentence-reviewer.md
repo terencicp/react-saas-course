@@ -18,7 +18,9 @@ Read documentation/rewriting/guidelines.md to understand what's expected from a 
 
 ## Step 3 - Consider cutting it
 
-Recommend cutting the group if it meets the guidelines criteria to be cut. Skip the next two sections if cutting is the only option you'd recommend.
+Recommend cutting the group if it meets the guidelines criteria to be cut but also ask yourself the following question: does removing this sentence make a significant difference? If the answer is no, the sentence should be cut.
+
+Skip the next two sections if cutting is the only option you'd recommend.
 
 ## Step 4 - Consider merging it or moving it
 
@@ -26,7 +28,7 @@ Consider if the given sentences should be merged with other sentences in the pro
 
 ## Step 5 - Alternative rewrites
 
-Considering the rewriting guidelines, write a few alternatives each considering a different angle.
+Considering the rewriting guidelines, write a few alternatives each considering a different angle. Always remove parts of a sentence that represent unnecessary commentary or contain little information such as "That’s the whole technique.".
 
 ## Step 6 - Final message
 
