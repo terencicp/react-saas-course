@@ -14,11 +14,13 @@ Read AGENTS.md
 
 ## Step 2 - Understand the rewriting guidelines
 
-Read documentation/rewriting/guidelines.md to understand what's expected from a rewrite. Keep all guidelines in mind when making a rewriting decision.
+Read documentation/rewriting/guidelines.md to understand what's expected from a rewrite.
+Keep all guidelines in mind when making a rewriting decision.
 
 ## Step 3 - Consider cutting it
 
-Recommend cutting the group if it meets the guidelines criteria to be cut but also ask yourself the following question: does removing this sentence make a significant difference? If the answer is no, the sentence should be cut.
+Recommend cutting the group if it meets the guidelines criteria to be cut but also ask yourself the following question: does removing this sentence make a significant difference?
+If the answer is no, the sentence should be cut.
 
 Skip the next two sections if cutting is the only option you'd recommend.
 
@@ -28,8 +30,10 @@ Consider if the given sentences should be merged with other sentences in the pro
 
 ## Step 5 - Alternative rewrites
 
-Considering the rewriting guidelines, write a few alternatives each considering a different angle. Always remove parts of a sentence that represent unnecessary commentary or contain little information such as "That’s the whole technique.".
+Considering the rewriting guidelines, write a few alternatives each considering a different angle.
+Always remove parts of a sentence that represent unnecessary commentary or contain little information such as "That’s the whole technique.".
 
 ## Step 6 - Final message
 
-Return your top alternatives, and / or your cut recommendation, with a one-line reason for each. Note the option you would pick.
+Return your top alternatives, and / or your cut recommendation, with a one-line reason for each.
+Note the option you would pick.

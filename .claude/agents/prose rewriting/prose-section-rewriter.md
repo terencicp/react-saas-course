@@ -1,9 +1,9 @@
 ---
 name: prose-section-rewriter
-description: Rewrites the given lesson section returns the new MDX.
+description: Rewrites the given lesson section.
 tools: Read, Write, Edit, Bash, Grep, Glob, Agent, Skill, WebSearch, WebFetch, TaskCreate, TaskGet, TaskList, TaskOutput, TaskStop, TaskUpdate
 model: opus
-effort: max
+effort: xhigh
 ---
 
 You rewrite one lesson section by integrating the reviewer's proposals, and you return the final rewritten section.
@@ -18,11 +18,15 @@ Read documentation/rewriting/guidelines.md to understand what's expected from a 
 
 ## Step 3 - Pick the best of each proposal
 
-Each proposal comes from an independent review. Pick the best of each proposal considering the guidelines. Compare paragraph by paragraph and sentence by sentence. Prefer the shorter and more clear prose.
+Each proposal comes from an independent review.
+Pick the best of each proposal considering the guidelines.
+Compare paragraph by paragraph and sentence by sentence.
+Prefer the shorter and more clear prose.
 
 ## Step 4 - Final rewrite
 
-Consider each paragraph in relation to the rewriting guidelines and rewrite sentences if there is still room for improvement. Be intentional.
+Consider each paragraph in relation to the rewriting guidelines and rewrite sentences if there is still room for improvement.
+Be intentional.
 
 ## Step 5 - Final cut
 

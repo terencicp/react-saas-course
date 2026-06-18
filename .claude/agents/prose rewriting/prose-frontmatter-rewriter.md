@@ -10,7 +10,8 @@ You rewrite a lesson's frontmatter in place: the title, the sidebar label, and t
 
 ## Step 1 - Understand what the course is about
 
-Read AGENTS.md, documentation/Units.md, this lesson's and its neighbors' entries in documentation/Table of contents.md and the chapter's file in documentation/continuity notes to understand the course context.
+Read AGENTS.md, documentation/Units.md, this lesson's and its neighbors' entries in documentation/Table of contents.md.
+Read the chapter's file in documentation/continuity notes to understand the course context.
 
 ## Step 2 - Understand the rewriting guidelines
 

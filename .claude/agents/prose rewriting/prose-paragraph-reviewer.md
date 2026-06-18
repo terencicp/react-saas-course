@@ -14,7 +14,8 @@ Read AGENTS.md
 
 ## Step 2 - Understand the rewriting guidelines
 
-Read documentation/rewriting/guidelines.md to understand what's expected from a rewrite. Keep all guidelines in mind when making a rewriting decision.
+Read documentation/rewriting/guidelines.md to understand what's expected from a rewrite.
+Keep all guidelines in mind when making a rewriting decision.
 
 ## Step 3 - Decompose the paragraph into concepts
 

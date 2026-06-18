@@ -6,15 +6,20 @@ model: opus
 effort: xhigh
 ---
 
-You run a lesson's prose rewrite as a multi-agent pipeline. The original prose was AI generated so it's excessively verbose and unclear. The goal is to rewrite it so it's ready to publish it.
+You run a lesson's prose rewrite as a multi-agent pipeline.
+The original prose was AI generated so it's excessively verbose and unclear.
+The goal is to rewrite it so it's ready to publish it.
 
 ## Step 1 - Understand what the course is about
 
-Read AGENTS.md, documentation/Units.md, this lesson's and its neighbors' entries in documentation/Table of contents.md and the chapter's file in documentation/continuity notes to understand the course context.
+Read AGENTS.md, documentation/Units.md, this lesson's and its neighbors' entries in documentation/Table of contents.md.
+Read the chapter's file in documentation/continuity notes to understand the course context.
 
 ## Step 2 - Read the original lesson prose
 
-Read the lesson. Read every referenced component that might contain prose not visible in the component props. Create a folder in the tmp folder with a backup of the original MDX and components for future reference.
+Read the lesson.
+Read every referenced component that might contain prose not visible in the component props.
+Create a folder in the tmp folder with a backup of the original MDX and components for future reference.
 
 ## Step 3 - Understand the rewriting guidelines
 
@@ -22,30 +27,43 @@ Read documentation/rewriting/guidelines.md to understand what's expected from a 
 
 ## Step 4 - Review the structure
 
-Spawn prose-structure-reviewer with the MDX path. If the reviewer recommends cutting a section remove it from the MDX.
+Spawn prose-structure-reviewer with the MDX path.
+If the reviewer recommends cutting a section remove it from the MDX.
 
 ## Step 5 - Summarizing the lesson
 
-Spawn a general purpose subagent that creates a concise summary that consists of a one line summary for the lesson intro, each h2 section title and a single line summarizing the section. Pass the MDX path to this agent.
+Spawn a general purpose subagent that creates a concise summary that consists of a one line summary
+for the lesson intro, each h2 section title and a single line summarizing the section.
+Pass the MDX path to this agent.
 
 ## Step 6 - Review each section
 
-For each section in the MDX (considering the intro paragraphs and each h2 a section) spawn in parallel two prose-section-reviewer agents with the lesson summary and the literal MDX of the section it needs to review. Prompt one agent "Focus your efforts on making the prose as clear as possible so it reads effortlessly" and the other "Focus your efforts on compressing prose as much as possible while keeping it readable.". If the section has a component that contains prose not already part of the lesson MDX, include that component's path. If the prose-structure-reviewer recommended incorporating a section into another, pass the feedback and the original section MDX too.
+For each section in the MDX (considering the intro paragraphs and each h2 a section) spawn in parallel
+two prose-section-reviewer agents with the lesson summary and the literal MDX of the section it needs to review.
+Prompt one agent "Focus your efforts on making the prose as clear as possible so it reads effortlessly"
+and the other "Focus your efforts on compressing prose as much as possible while keeping it readable.".
+If the section has a component that contains prose not already part of the lesson MDX, include that component's path.
+If the prose-structure-reviewer recommended incorporating a section into another, pass the feedback and the original section MDX too.
 
 ## Step 7 - Rewrite each section
 
 For each section in the MDX spawn sequentially, in order:
-  1 prose-rewriter with the lesson summary, the original MDX to rewrite, the output from each of the prose-section-reviewer, and the file path of any component in the section that contains prose that needs an edit.
+  1 prose-rewriter with the lesson summary, the original MDX to rewrite, the output from each of the prose-section-reviewer,
+    and the file path of any component in the section that contains prose that needs an edit.
   2 prose-section-verifier with the lesson summary, the original MDX and the prose-rewriter output.
-  3 If the prose-section-verifier does not approve the rewrite, fire the rewriter again with feedback (only once). Apply the rewriter changes to the MDX file.
+  3 If the prose-section-verifier does not approve the rewrite, fire the rewriter again with feedback (only once).
+    Apply the rewriter changes to the MDX file.
 
 ## Step 8 - Rewrite the frontmatter
 
-Spawn prose-frontmatter-rewriter with the MDX path. When it has finished, rename the MDX file to match the sidebar label if necessary.
+Spawn prose-frontmatter-rewriter with the MDX path.
+When it has finished, rename the MDX file to match the sidebar label if necessary.
 
 ## Step 9 - Coherence pass
 
-Since each section has been rewritten by a different subagent multiple similar sections might have different formats. Make sure titles and section prose do not follow different conventions in each section. Make the edits necessary to keep the lesson coherent; be surgical.
+Since each section has been rewritten by a different subagent multiple similar sections might have different formats.
+Make sure titles and section prose do not follow different conventions in each section.
+Make the edits necessary to keep the lesson coherent; be surgical.
 
 ## Step 10 - Verification
 
@@ -53,4 +71,5 @@ Read the rewritten MDX file to make sure it looks as expected.
 
 ## Step 11 - Final message
 
-Return the message 'Lesson <X> rewritten'. If you or any subagent had any issues describe them briefly and concisely as feedback.
+Return the message 'Lesson <X> rewritten'.
+If you or any subagent had any issues describe them briefly and concisely as feedback.

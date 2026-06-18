@@ -28,4 +28,5 @@ Commit changes made only to files in your chapter, with the message `Prose rewri
 
 ## Step 6 — Final message
 
-Return the message 'Chapter <X> rewritten'. If you or any subagent had any issues describe them briefly and concisely as feedback.
+Return the message 'Chapter <X> rewritten'.
+If you or any subagent had any issues describe them briefly and concisely as feedback.
