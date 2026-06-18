@@ -37,11 +37,11 @@ For each section in the MDX (considering the intro paragraphs and each h2 a sect
 For each section in the MDX spawn sequentially, in order:
   1 prose-rewriter with the lesson summary, the original MDX to rewrite, the output from each of the prose-section-reviewer, and the file path of any component in the section that contains prose that needs an edit.
   2 prose-section-verifier with the lesson summary, the original MDX and the prose-rewriter output.
-  3 If the prose-section-verifier does not approve the rewrite, fire the rewriter again with feedback (only once). Apply the rewriter changes to the MDX.
+  3 If the prose-section-verifier does not approve the rewrite, fire the rewriter again with feedback (only once). Apply the rewriter changes to the MDX file.
 
 ## Step 8 - Rewrite the frontmatter
 
-Spawn prose-frontmatter-rewriter with the MDX path. Rename the MDX file to match the sidebar label if necessary.
+Spawn prose-frontmatter-rewriter with the MDX path. When it has finished, rename the MDX file to match the sidebar label if necessary.
 
 ## Step 9 - Coherence pass
 
