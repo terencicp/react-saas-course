@@ -1,5 +1,5 @@
 ---
-name: prose-rewrite-orchestrator
+name: prose-lesson-rewrite-orchestrator
 description: Runs the lesson prose rewriting pipeline. Input: MDX path.
 tools: Read, Write, Edit, Bash, Grep, Glob, Agent, Skill, WebSearch, WebFetch, TaskCreate, TaskGet, TaskList, TaskOutput, TaskStop, TaskUpdate
 model: opus
@@ -30,12 +30,12 @@ Spawn a general purpose subagent that creates a concise summary that consists of
 
 ## Step 6 - Review each section
 
-For each section in the MDX (considering the intro paragraphs and each h2 a section) spawn in parallel a prose-section-reviewer with the lesson summary and the literal MDX of the section it needs to review. If the prose-structure-reviewer recommended incorporating a section into another, pass the feedback and the original section MDX too.
+For each section in the MDX (considering the intro paragraphs and each h2 a section) spawn in parallel a prose-section-reviewer with the lesson summary and the literal MDX of the section it needs to review. If the section has a component that contains prose not already part of the lesson MDX, include that component's path. If the prose-structure-reviewer recommended incorporating a section into another, pass the feedback and the original section MDX too.
 
 ## Step 7 - Rewrite each section
 
 For each section in the MDX spawn sequentially, in order:
-  1 prose-rewriter with the lesson summary, the original MDX to rewrite and the output from the prose-section-reviewer.
+  1 prose-rewriter with the lesson summary, the original MDX to rewrite, the output from the prose-section-reviewer, and the file path of any component in the section that contains prose that needs an edit.
   2 prose-section-verifier with the original MDX and the prose-rewriter output.
   3 If the prose-section-verifier does not approve the rewrite, fire the rewriter again with feedback (only once). Apply the rewriter changes to the MDX.
 
@@ -49,4 +49,4 @@ Read the rewritten MDX file to make sure it looks as expected.
 
 ## Step 10 - Final message
 
-Return the message 'Lesson <X> rewritten'. If you had any issues describe them briefly and concisely as feedback.
+Return the message 'Lesson <X> rewritten'. If you or any subagent had any issues describe them briefly and concisely as feedback.
