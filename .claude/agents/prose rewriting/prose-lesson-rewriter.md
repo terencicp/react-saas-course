@@ -54,6 +54,7 @@ Pass the MDX path to this agent.
 For each section in the MDX (considering all intro paragraphs a section and each h2 section) spawn in parallel
 one prose-section-reviewer agent with the lesson summary and the literal MDX of the section it needs to review.
 If the section has a component that contains prose not already part of the lesson MDX, include that component's path.
+For a section you decided in step 4 to fold another into, instruct its reviewer to incorporate that section (and the level of detail required) and pass its literal MDX.
 
 ## Step 7 - Rewrite each section
 
@@ -75,13 +76,15 @@ Make the edits necessary to keep the lesson coherent; be surgical.
 
 ## Step 10 - Terminology pass
 
-Spawn one prose-terminologist agent and pass it the lesson MDX path.
+Spawn one prose-terminologist agent and pass it the current lesson MDX path.
+If the agent fails, release the glossary lock it may have left: `rmdir documentation/rewriting/.glossary.lock` (ignore errors).
 
 ## Step 11 - Verification
 
 Read the final MDX file to make sure it looks as expected.
+Delete the tmp backup folder you created in step 2.
 
 ## Step 12 - Final message
 
-Return the message 'Lesson <X> rewritten'.
+Return the message 'Lesson <X> rewritten' and the lesson's final path if you renamed the file.
 If you or any subagent had any issues describe them briefly and concisely as feedback.
