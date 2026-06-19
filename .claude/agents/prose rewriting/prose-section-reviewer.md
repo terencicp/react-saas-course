@@ -1,12 +1,13 @@
 ---
 name: prose-section-reviewer
-description: Reviews one lesson section against the prose rewrting guide and proposes changes.
+description: Reviews one lesson section against the prose rewriting guide and proposes changes.
 tools: Read, Write, Edit, Bash, Grep, Glob, Agent, Skill, WebSearch, WebFetch, TaskCreate, TaskGet, TaskList, TaskOutput, TaskStop, TaskUpdate
 model: opus
 effort: xhigh
 ---
 
 Review one lesson section against the rewrite guide and propose prose changes.
+Make the prose as clear as possible so it reads effortlessly, and as compressed as possible while keeping it readable.
 If your initial prompt indicates you should incorporate another section into the current one propose how to incorporate it.
 
 ## Step 1 - Understand what the course is about
@@ -18,50 +19,46 @@ Read AGENTS.md
 Read documentation/rewriting/guidelines.md to understand what's expected from your rewrite.
 Keep all guidelines in mind when making a rewriting decision.
 
-## Step 3 - Create tasks
+## Step 3 - Cutting off-topic parts
 
-Create three tasks with TaskCreate, each task blocked by the previous:
-  - Sentence review
-  - Paragraph review
-  - Section review
+Read each paragraph and consider if there are off-topic paragraphs that should be cut.
+Less is more. Ruthlessly cut any paragraph or sentence that goes out of scope because:
+- It teaches legacy syntax
+- It's unnecessary commentary tangential to the lesson
+- It explains concepts that belong in a future lesson
 
 ## Step 4 - Sentence review
 
 Read the prose in the lesson to rewrite and any prose in the components it includes; ignore code.
 Break it down into groups of sentences which are units of meaning.
-If a sentence can be merged with the next and the result is a well-fomed sentence they can considered a unit.
+If a sentence can be merged with the next and the result is a well-formed sentence they can be considered a unit.
 For example, the dot in these two sentences could be replaced by comma or colon and the result would still be a valid sentence,
 "Together the two tabs give you the rule. A function that reassigns its parameter is invisible to the caller, while a function that changes a property on the object the parameter points at is visible to the caller.".
 
-Create a new task for each unit.
-Assign each unit task to a prose-sentence-reviewer; run them sequentially, in order.
-Pass the subagent the lesson summary, the original section MDX and the sentence group they need to rewrite.
-They will return multiple alternative rewrites for the sentence group or recommend removing it altogether, pick the best option.
+Review each unit in order; for each:
+  1 Consider cutting it: when it meets the guidelines' criteria to cut or when removing it makes no significant difference. Skip next steps if cutting.
+  2 Consider cutting part of it: remove if unnecessary commentary or little information such as "That’s the whole technique.".
+  3 Consider merging it or moving it: it can be merged with another sentence for conciseness if both sentences overlap in meaning.
+  4 Rewrite: write a few alternative rewrites, each from a different angle in the guidelines. Pick the best alternative for each unit.
 
-Next asemble the result of all prose-sentence-reviewer agents
-and consider if there are still sentences that could be merged, summarized or removed following the principles in the rewriting guidelines.
-To carry on any further prose rewrites spawn an additional prose-sentence-reviewer with the same input as the previous ones and any instructions necessary.
+## Step 5 - Paragraph review
 
-When all agents are done mark all sentence review tasks as deleted.
+For each paragraph in the section:
+  1 Consider if it should be split into two or merged with the next.
+  2 Rewrite: write a few alternative rewrites, each from a different angle in the guidelines. Pick the best alternative.
 
-## Step 4 - Paragraph review
+## Step 6 - Components review
 
-For each paragraph in the section, consider if it should be split into two, if it should be merged with the next paragraph or if the paragraph is unnecessary and should be removed.
+If you were passed the path of a component read it to see if it contains prose outside the lesson's MDX.
+If so, rewrite it using the same procedure outlined in the previous two steps.
+Write the updated prose to the component file directly.
 
-Pass each final prose paragraph to a prose-paragraph-reviewer agent in parallel.
-Pass the subagent the lesson summary, the updated section MDX and the paragraph it needs to rewrite.
-Compare each rewritten paragraph with the version passed as input to the agent; if it's better, replace the original paragraph with the new one.
-Assemble the results into the final rewritten MDX.
-
-When finished mark the paragraph review task as deleted.
-
-## Step 5 - Title review
+## Step 7 - Title review
 
 Write a few alternative options for a more descriptive section title.
 Pick the option that more clearly indicates what the section is about.
 
-## Step 6 - Final message
+## Step 8 - Final message
 
-Return the final rewritten MDX with an updated title after step 5 for the given section and the full MDX for rewritten components, if any.
-Explaining the reasoning behind all your rewriting decisions.
-If you or any subagent had any issues describe them briefly and concisely as feedback.
+Assemble the final rewritten section MDX.
+If you had any issues describe them briefly and concisely as feedback.
