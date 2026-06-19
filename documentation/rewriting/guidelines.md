@@ -16,7 +16,7 @@ Set the reader's expectation before the body.
 
 - **Title:** plain and descriptive. Draft a few options, pick the most descriptive. No teasers, slogans, metaphors, personification, or hype. (`Bindings, not boxes` → `Values, references, and copies`.)
 - **Sidebar label:** match the title, or shorten if the title exceeds ~36 chars.
-- **Tagline:** one short line placing the lesson in the course. Cut what's obvious from lesson order.
+- **Tagline:** one short line framing the lesson in the course at a high level, naming the technologies it teaches. 
 
 ## Prose principles
 
