@@ -76,8 +76,7 @@ Make the edits necessary to keep the lesson coherent; be surgical.
 
 ## Step 10 - Terminology pass
 
-Spawn one prose-terminologist agent and pass it the current lesson MDX path.
-If the agent fails, release the glossary lock it may have left: `rmdir documentation/rewriting/.glossary.lock` (ignore errors).
+Spawn one prose-terminologist agent and pass it the current lesson MDX path, chapter number and lesson number.
 
 ## Step 11 - Verification
 

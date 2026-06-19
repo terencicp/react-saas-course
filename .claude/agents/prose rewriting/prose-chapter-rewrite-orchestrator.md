@@ -32,6 +32,5 @@ Commit changes to files in your chapter plus any `documentation/rewriting/glossa
 
 ## Step 6 — Final message
 
-Release any glossary lock a failed subagent may have left: `rmdir documentation/rewriting/.glossary.lock` (ignore errors).
 Return the message 'Chapter <X> rewritten'.
 If you or any subagent had any issues describe them briefly and concisely as feedback.

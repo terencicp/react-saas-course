@@ -44,10 +44,9 @@ Change prose only; leave code, output comments, exercises, links, diagrams, and 
 
 ## Step 6 - Update the glossary
 
-Add every term you defined that is new to the glossary, plus any other term this lesson is the first to define.
-Follow the file's format: one alphabetical line per term, `term | synonyms | one-line definition | first defined: Chapter <NNN> L<N>`.
-Other lessons may write the glossary at the same time, so guard the read-modify-write: acquire a lock with `mkdir "documentation/rewriting/.glossary.lock"`,
-retry every few seconds until it succeeds, edit the file, then release the lock with `rmdir "documentation/rewriting/.glossary.lock"`.
+Make a list that includes all terms the lesson explains or defines and all terms that have <Term> tooltips describing them.
+For each term in this list, search if it appears in the glossary, if not add it.
+Follow the file's format, appending one line per new term: `term | synonyms | one-line definition | first defined: Chapter <NNN> L<N>`.
 
 ## Step 7 - Final message
 

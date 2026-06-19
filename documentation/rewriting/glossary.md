@@ -22,9 +22,9 @@ term | synonyms | one-line definition | first defined: Chapter <NNN> L<N>
 - **one-line definition** — plain, one sentence, no markdown.
 - **first defined** — the chapter and lesson where the course first defines the term, e.g. `Chapter 001 L4`.
 
-Keep entries sorted alphabetically by term. Add a term the first time the course defines it;
-never duplicate an existing term, update its line instead.
+Append a term the first time the course defines it; order does not matter since lookups use grep.
+Never duplicate an existing term, update its line instead.
 
 ## Terms
 
-<!-- entries below, one per line, alphabetical -->
+<!-- entries below, one per line, append new terms at the end -->
