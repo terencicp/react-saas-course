@@ -23,7 +23,7 @@ After the agent finished successfully, add "rewrites: 1" to the frontmatter, or 
 
 For each rewritten lesson, compare its word count against the original in git,
 `git show HEAD:"<path>" | wc -w` versus `wc -w "<path>"`.
-For each lesson that has less than 25% compression rerun step 3 once.
+For each lesson that has less than 25% compression rerun the workflow in step 3 once for that lesson.
 
 ## Step 5 - Commit
 
