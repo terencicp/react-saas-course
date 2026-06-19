@@ -1,0 +1,430 @@
+---
+title: Array iteration methods
+tagline: The JavaScript array methods for transforming, filtering, and aggregating, and how to tell when a for...of loop is the better reach.
+chapter-id: 3
+course-progress: 0.0216
+rewrites: 2
+sidebar:
+  order: 3
+  label: Array methods
+---
+
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import TypeCoding from '../../../components/live-coding/TypeCoding/TypeCoding.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import CodeReview from '../../../components/exercises/code-review/CodeReview.astro';
+import ReviewFile from '../../../components/exercises/code-review/ReviewFile.astro';
+import ReviewIssue from '../../../components/exercises/code-review/ReviewIssue.astro';
+import ReviewWhy from '../../../components/exercises/code-review/ReviewWhy.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Two bugs frame this lesson, failing in opposite directions: one from not reaching for the array methods, the other from reaching for them where a plain loop was right. The running example is an array of invoice rows, `{ id, amountCents, status, customerId, dueDate }` with `status: 'paid' | 'pending' | 'overdue'`.
+
+```ts
+const invoiceTotal = (invoices: Invoice[]): number => {
+  let total = 0;
+  for (let i = 0; i < invoices.length; i++) {
+    total += invoices[i]!.amountCents;
+  }
+  return total;
+};
+```
+
+The first function isn't broken: it returns the right number, but in a style the codebase doesn't use. A C-style `for` loop with a hand-rolled accumulator and a <Term definition={"TypeScript's trailing `!` operator, as in `arr[i]!`, which tells the checker a value is not null or undefined without performing a runtime check; here it silences the `| undefined` that noUncheckedIndexedAccess adds to an indexed read."}>non-null assertion</Term> is what you reach for before the array methods are second nature. The one-line `invoices.reduce((sum, i) => sum + i.amountCents, 0)` states the intent, "fold the list into a single number"; the loop states only the mechanics.
+
+```ts
+const sendOverdueReminders = (invoices: Invoice[]) => {
+  invoices
+    .filter((i) => i.status === 'overdue')
+    .map(async (i) => {
+      await fetch(`/api/notify/${i.customerId}`, { method: 'POST' });
+    });
+};
+```
+
+The second function is the same habit over-applied. `.map(async ...)` looks like it awaits each request, but `.map` awaits nothing: each callback returns a `Promise<void>`, and `.map` collects them into a `Promise<void>[]` the function never uses. Every fetch fires in parallel, the promises are discarded, and the caller can't know when, or whether, the work finished. The right form is a `for...of` loop that awaits each request before the next, or `Promise.all` if parallel was the intent.
+
+The previous lesson covered the *container* surface on arrays: indexing, copying, and non-mutating updates. This lesson covers the *element-by-element* surface: eight methods that walk an array to produce a value, plus the four signs to drop the chain for a `for...of` loop, so you can pick the right form on sight.
+
+## Eight methods, five output shapes
+
+Don't memorize the eight names; group them by *what they produce*. Name the output shape your operation needs and the right method falls out.
+
+| Output shape | Methods | What each returns |
+| --- | --- | --- |
+| Transform | `.map`, `.flatMap` | a new array, same length (or expanded / contracted by `.flatMap`) |
+| Subset | `.filter` | a new array of items that pass the predicate |
+| Fold | `.reduce`, `.reduceRight` | a single value built up from every element |
+| Search / test | `.find`, `.findIndex`, `.findLast`, `.findLastIndex`, `.some`, `.every` | the first/last match, an index, or a boolean (*short-circuits*) |
+| Side effect | `.forEach` | `undefined`; runs the callback for each item |
+
+Ask *"what shape comes out?"* and the row points you at the method. The twist is the last row: even when you want only a side effect and no value, you almost never reach for `.forEach`, for reasons the rest of the lesson explains.
+
+<VideoCallout videoId="PojpwEbOQJg" videoTitle="How to use map(), filter(), and reduce() — JavaScript Array Methods Tutorial">
+  Coding2GO works through the three workhorse methods, `.map`, `.filter`, and `.reduce`, including the initial-value rule (~12 min).
+</VideoCallout>
+
+## Transform: `.map` and `.flatMap`
+
+`.map` is the most-used method here. Its job is "I have a list of A, I want a list of B": rows into view-models, records into IDs.
+
+```ts
+const amounts = invoices.map((i) => i.amountCents);
+```
+
+`amounts` is `number[]`, same length as `invoices`, one entry per row, inferred with no annotation.
+
+`.flatMap` is easy to overlook. Its callback returns an *array* per element, and `.flatMap` concatenates those into one flat result. The power is in what you return: `[]` to *drop* an item, `[a, b]` to *expand* one into two.
+
+```ts
+const overdueIds = invoices.flatMap((i) =>
+  i.status === 'overdue' ? [i.id] : [],
+);
+```
+
+That collapses `invoices.filter((i) => i.status === 'overdue').map((i) => i.id)` into a single walk; `? [i.id] : []` reads as *"keep this one as its id, or drop it."* It pays off most when the filter and the transform share a per-item computation, which `.flatMap` does once instead of recomputing in both.
+
+`.flat(depth)` is the narrower tool: it flattens a nested array without touching the elements, so `[[1, 2], [3]].flat()` gives `[1, 2, 3]`.
+
+## Subset: `.filter` and the type predicate
+
+`.filter` keeps the items the predicate returns `true` for, producing a new array of the same element type:
+
+```ts
+const overdue = invoices.filter((i) => i.status === 'overdue');
+```
+
+`overdue` is `Invoice[]`: the same shape as `invoices`, fewer rows.
+
+The harder case is when `.filter` should also *narrow* the element type. Filter the nulls out of a `(string | null)[]` and the result is a `string[]` at runtime, but TypeScript won't narrow it without proof. That proof is a <Term definition={"A function return type of the form `x is T` that tells TypeScript: if this returns true, treat the argument as T. Used in .filter, .find, and any user-defined type guard."}>type predicate</Term>, an annotation that lifts a runtime check into the type system. One shape fails to narrow and three succeed, in order of preference:
+
+<AnnotatedCode lang="ts" code={`
+const rawIds: (string | null)[] = ['inv_1', null, 'inv_2', null, 'inv_3'];
+
+const stillNullable = rawIds.filter(Boolean);
+const inferred = rawIds.filter((x) => x !== null);
+const explicit = rawIds.filter((x): x is string => x !== null);
+
+const isPresent = <T,>(x: T | null | undefined): x is T => x != null;
+const helper = rawIds.filter(isPresent);
+`}>
+  <AnnotatedStep meta={`{3} "Boolean"`} color="red">
+    The surprise people hit most. TypeScript 5.5+ won't infer a predicate from `Boolean`, since `0`, `''`, and `false` are falsy yet valid, so `stillNullable` stays `(string | null)[]`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{4} "(x) => x !== null"`} color="green">
+    The day-to-day form. Since TS 5.5, which the course pins, a simple `x !== null` check is read as a type predicate automatically, so `inferred` narrows to `string[]` with no annotation.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{5} "(x): x is string => x !== null"`} color="green">
+    The same narrowing with the intent spelled out: `x is string` says *"if this returns true, treat x as a string."* Reach for it when the predicate is too complex to infer, or to make the narrowing visible at the call site.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7-8} "isPresent"`} color="green">
+    A reusable helper: write `is T` once, every caller narrows for free. The trailing comma in `<T,>` keeps a generic arrow function parsing under `.tsx`.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The type predicate is the core TypeScript idea here, and it returns on `.find`; chapter 5 covers user-defined type guards in full. To drop `null` or `undefined`, reach for `(x) => x !== null` or `isPresent`, never `.filter(Boolean)`, which misleads on both the type it produces and the values it drops.
+
+## Fold: `.reduce`, and when to use something else
+
+`.reduce` folds an array into one built-up value: the callback walks the array carrying an *accumulator*, and the result is the accumulator after the last element.
+
+```ts
+const total = invoices.reduce((sum, i) => sum + i.amountCents, 0);
+```
+
+The `0` is the initial accumulator. Each step takes the running sum and the current invoice and returns the next sum, so the final value is the total in integer cents.
+
+Two rules keep `.reduce` healthy.
+
+**Always pass the initial value.** Omit the second argument and the first element becomes the accumulator, which makes the typing awkward (especially under `noUncheckedIndexedAccess`) and runs the callback one fewer time than you expect. Write `, 0` for sums, `, []` for arrays, `, {}` for objects.
+
+**Reach for a specialized method when one fits.** `"Is there at least one?"` is `.some`, which short-circuits; `"are they all?"` is `.every`; `"the first match?"` is `.find`. `.reduce` is the right reach only when the output is something none of those produce: a sum, an aggregate object, a min or max.
+
+One pitfall survives all of this: reducing to an object.
+
+<CodeVariants>
+  <CodeVariant label="Quadratic">
+    <div data-mark-color="red">
+
+    ```ts "{ ...acc, [i.id]: i }"
+    const byId = invoices.reduce<Record<string, Invoice>>(
+      (acc, i) => ({ ...acc, [i.id]: i }),
+      {},
+    );
+    ```
+
+    </div>
+    **It reads fluently but runs in `O(n²)`.** The spread copies the whole accumulator every iteration (1 key, then 2, up to n, across n iterations), so a thousand rows means half a million extra copies, ten thousand crawls, and nothing warns you because the result is still correct.
+  </CodeVariant>
+
+  <CodeVariant label="Linear">
+    <div data-mark-color="green">
+
+    ```ts "Object.fromEntries"
+    const byId = Object.fromEntries(invoices.map((i) => [i.id, i]));
+    ```
+
+    </div>
+    **`Object.fromEntries` plus `.map` is the linear form.** One walk builds the `[key, value]` pairs and `Object.fromEntries` drops them into the object with no accumulator copying; when the key is a non-string or you want `.get` and `.has`, reach for a `Map`, which the next lesson covers.
+  </CodeVariant>
+</CodeVariants>
+
+## Search and test: stop at the first answer
+
+Six methods walk the array only as far as the answer requires, then stop.
+
+```ts
+const target = invoices.find((i) => i.id === 'inv_001');
+const latestOverdue = invoices.findLast((i) => i.status === 'overdue');
+const hasOverdue = invoices.some((i) => i.status === 'overdue');
+const allPaid = invoices.every((i) => i.status === 'paid');
+```
+
+`.find(predicate)` returns the first match or `undefined`, so handle the miss with `??` or a guard. Like `.filter`, it accepts a type predicate, so `arr.find((x): x is Invoice => ...)` narrows the result to `Invoice | undefined`.
+
+`.findIndex(predicate)` returns the index or `-1`. Reach for it when the *position* matters: slicing, or paired updates with `.with(i, ...)` from the previous lesson.
+
+`.findLast` and `.findLastIndex` walk from the end, for *"the most recent event matching X"* without a `.reverse()` first.
+
+`.some(predicate)` short-circuits to `true` the moment the predicate fires. Prefer it over `arr.filter(fn).length > 0`: it stops early, reads as the question being asked, and allocates no intermediate array.
+
+`.every(predicate)` is the inverse, short-circuiting to `false` the moment one fails. Reach for it to check invariants, such as *"are all invoices paid?"*
+
+`.indexOf(value)` and `.includes(value)` match an exact value in a primitive array; `.includes` is the form for *"is this string in this short list?"* For larger lookups or non-primitive comparison, reach for a `Set`, which the next lesson covers.
+
+## `.forEach` runs callbacks but ignores `await`
+
+`.forEach((item) => { ... })` runs the callback for each item for its side effects and returns `undefined`. You'll rarely reach for it, for one reason that isn't style: it ignores `await`.
+
+```ts
+invoices.forEach(async (i) => {
+  await fetch(`/api/notify/${i.id}`);
+});
+// all fetches fire in parallel; none are awaited at this call site
+```
+
+The async callbacks all start in parallel, `.forEach` returns `undefined` synchronously, and the next line runs before any fetch lands. For sequenced async work use `for...of` with `await`; for deliberate fan-out use `Promise.all(arr.map(async ...))`. Both are covered next.
+
+`.forEach` earns its keep only for a short, synchronous side effect at the tail of a chain, such as `results.forEach((r) => console.log(r))`, and even there a one-line `for...of` works just as well.
+
+<VideoCallout videoId="KX6u8nAuBOg" videoTitle="Understanding JavaScript Promises in ForEach, Map, and Reduce Loops">
+  Adocasts shows live why `await` inside a `.forEach` or `.map` callback is ignored and fires in parallel, while a `for` loop honors it (~12 min).
+</VideoCallout>
+
+## Four signs to reach for `for...of`
+
+The method chain is your default; reach for `for...of` on these four signs.
+
+1. **Async work that needs sequencing.** `.map(async ...)` returns promises that run in parallel; `.forEach(async ...)` ignores them. When each step must await the previous one, loop with `await` in the body.
+
+2. **Early termination (`break`, `return`).** Every array method outside the search/test family walks the whole array; `for...of` can `break` the moment a condition fires. Reach for it to find the first match and stop when the loop also runs side effects, so `.find` won't do.
+
+3. **Multiple statements per iteration.** A body of three or four statements, or one with its own local variables, reads clearly in `for...of` but buries the control flow in a `.forEach` callback.
+
+4. **Need both index and value.** `arr.entries()` yields `[index, value]` pairs: `for (const [i, item] of arr.entries()) { ... }`. `.map((item, i) => ...)` is fine when the index is just one more argument; `.entries()` is clearer when the body uses both.
+
+The first sign is the one you'll hit most. Here are the async forms side by side.
+
+<CodeVariants>
+  <CodeVariant label="Parallel — Promise.all + .map">
+    <div data-mark-color="orange">
+
+    ```ts "Promise.all" "async"
+    await Promise.all(
+      invoices.map(async (i) => {
+        await fetch(`/api/notify/${i.id}`, { method: 'POST' });
+      }),
+    );
+    ```
+
+    </div>
+    **Every request fires at once; `Promise.all` resolves when the last one lands.** Reach for this when one piece doesn't depend on the previous result: notifications, fetching independent records.
+  </CodeVariant>
+
+  <CodeVariant label="Sequenced — for...of + await">
+    <div data-mark-color="orange">
+
+    ```ts "for" "await"
+    for (const i of invoices) {
+      await fetch(`/api/notify/${i.id}`, { method: 'POST' });
+    }
+    ```
+
+    </div>
+    **Each request waits for the previous one to land.** Reach for this when ordering matters, each call depends on the last, or you need to throttle a downstream API. `.forEach(async ...)` is the broken third variant: it fires in parallel while the outer code awaits nothing.
+  </CodeVariant>
+</CodeVariants>
+
+`Promise.all(arr.map(async ...))` for parallel, `for...of` with `await` for sequenced; `.forEach(async ...)` exists only to be flagged in review.
+
+## Name the intermediate, and reach for `Set`
+
+Two judgment calls are left, neither tied to a single method: when to break a chain apart for readability, and when to swap a slow lookup for a fast one.
+
+### Name the intermediate
+
+Two or three chained methods read clearly. Four or more hide what each step produces. The fix isn't a comment, it's pulling the intermediate results into named `const`s that state their intent.
+
+<CodeVariants>
+  <CodeVariant label="Fluent chain (hard to scan)">
+    ```ts
+    const totalOverdueEUR = invoices
+      .filter((i) => i.status === 'overdue')
+      .map((i) => ({ ...i, currency: i.customerId.startsWith('EU') ? 'EUR' : 'USD' }))
+      .filter((i) => i.currency === 'EUR')
+      .reduce((sum, i) => sum + i.amountCents, 0);
+    ```
+
+    **Four methods in one chain.** To follow it you have to track the array's shape at every step. The intent, *"total overdue invoices in EUR,"* is buried under the mechanics.
+  </CodeVariant>
+
+  <CodeVariant label="Named intermediates">
+    ```ts
+    const overdueInvoices = invoices.filter((i) => i.status === 'overdue');
+    const overdueEurInvoices = overdueInvoices.filter((i) =>
+      i.customerId.startsWith('EU'),
+    );
+    const totalOverdueEUR = overdueEurInvoices.reduce(
+      (sum, i) => sum + i.amountCents,
+      0,
+    );
+    ```
+
+    **The same result, with three named bindings.** Each line is one step, and the names carry the meaning the chain hid. The `.map` is gone too: it computed `currency` only to filter on it once, so the second filter now checks `customerId.startsWith('EU')` inline.
+  </CodeVariant>
+</CodeVariants>
+
+Once a chain runs past three links, name the steps.
+
+### Drop into a `Set` when the inner check is membership
+
+The pattern to spot is `.filter(x => other.includes(x.id))`. With a 10k-row `arr` and a 200-id `other`, that's `O(n × m)`, two million comparisons for what should be a single walk. Build a `Set` of the IDs *once*, outside the filter:
+
+```ts
+const otherIds = new Set(other.map((o) => o.id));
+const matching = arr.filter((x) => otherIds.has(x.id));
+```
+
+Each lookup drops from `O(m)` to `O(1)`, and the whole operation from `O(n × m)` to `O(n + m)`.
+
+## Narrow the array with a type predicate
+
+Two `.filter`s, two inferred types. Leave the first as is, since `.filter(Boolean)` does *not* narrow. Rewrite the second so `presentIds` is `string[]`, not `(string | null)[]`.
+
+<TypeCoding
+  instructions="Two `.filter`s, two different inferred types. The top line is a witness to the `.filter(Boolean)` footgun — leave it as is. Rewrite the bottom filter so `presentIds` is `string[]`, not `(string | null)[]`. Hint: TS 5.5+ infers a type predicate from a simple non-null check, but explicitly excludes truthiness checks like `Boolean`."
+  starter={`const rawIds: (string | null)[] = ['inv_1', null, 'inv_2', null, 'inv_3'];
+
+const truthyIds = rawIds.filter(Boolean);
+//    ^?
+
+const presentIds = rawIds.filter(Boolean);
+//    ^?
+`}
+  expectedQueries={[
+    { line: 4, contains: '(string | null)[]' },
+    { line: 7, contains: 'string[]' },
+  ]}
+/>
+
+## Refactor a tangled chain
+
+A teammate's PR. The function should fetch a status for each overdue invoice, sequence the requests so the API isn't hit in parallel, and return how many need a reminder. Find the bugs and comment on each.
+
+<CodeReview instructions="Review this PR for a teammate. The function is supposed to fetch a status for each overdue invoice, sequence the requests so we don't hammer the API in parallel, and return the count of those that need a reminder. Two bugs to flag — leave a comment on each.">
+  <ReviewFile name="src/invoices/process.ts">
+    ```ts
+    type Invoice = {
+      id: string;
+      amountCents: number;
+      status: 'paid' | 'pending' | 'overdue';
+      customerId: string;
+    };
+
+    export const processOverdue = async (invoices: Invoice[]): Promise<number> => {
+      let count = 0;
+      invoices
+        .filter((i) => i.status === 'overdue')
+        .map((i) => ({ ...i, key: i.id }))
+        .filter((i) => i.amountCents > 0)
+        .forEach(async (i) => {
+          const res = await fetch(`/api/customers/${i.customerId}/status`);
+          const { needsReminder } = await res.json();
+          if (needsReminder) count += 1;
+        });
+      return count;
+    };
+    ```
+  </ReviewFile>
+
+  <ReviewIssue
+    file="src/invoices/process.ts"
+    line={14}
+    kernel="`.forEach(async ...)` doesn't await — the callbacks fire in parallel and `processOverdue` returns 0 before any of them complete; use `for...of` with `await` for sequenced work"
+  >
+    `.forEach` ignores the promise the callback returns: the fetches fire in parallel and `processOverdue` resolves with `count === 0` before any land. It also can't sequence the requests, which the instructions asked for. Use `for...of` with `await`:
+
+    ```ts
+    for (const i of overdueInvoices) {
+      const res = await fetch(`/api/customers/${i.customerId}/status`);
+      const { needsReminder } = await res.json();
+      if (needsReminder) count += 1;
+    }
+    ```
+  </ReviewIssue>
+
+  <ReviewIssue
+    file="src/invoices/process.ts"
+    line={12}
+    kernel="no-op `.map` adds a `key` field that is never used and inflates a four-link chain; drop it and name the intermediate"
+  >
+    The `.map` adds a `key` field nothing reads, and the four-link `.filter().map().filter().forEach()` hides the intent. Drop the dead `.map` and name the intermediate:
+
+    ```ts
+    const overdueInvoices = invoices.filter(
+      (i) => i.status === 'overdue' && i.amountCents > 0,
+    );
+    ```
+  </ReviewIssue>
+
+  <ReviewWhy>
+    The pattern is the combination: a fluent chain ending in an async `.forEach`, both halves from the same instinct to use `.map` / `.filter` / `.forEach` for everything. Reach for `for...of` when the work needs sequencing, and name the intermediate when a chain hides its intent. The async `.forEach` is the dangerous one: it looks correct and silently returns the wrong number in production.
+  </ReviewWhy>
+</CodeReview>
+
+## Further reading
+
+<CardGrid>
+  <ExternalResource
+    title="MDN — Array.prototype.flatMap"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/flatMap"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="Reference for the under-known transform, with the `[]`-to-drop and `[a, b]`-to-expand idiom worked through."
+  />
+  <ExternalResource
+    title="MDN — Array.prototype.reduce"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/reduce"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The long-form callback signature reference, with the initial-value rule called out explicitly."
+  />
+  <ExternalResource
+    title="TypeScript 5.5 — Inferred Type Predicates"
+    href="https://devblogs.microsoft.com/typescript/announcing-typescript-5-5/#inferred-type-predicates"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The release-notes section that introduced the inferring-predicate surface for `.filter`, the modern narrowing default the course pins on."
+  />
+</CardGrid>

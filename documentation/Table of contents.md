@@ -23,14 +23,14 @@
 - 7 Closures: lexical capture by reference (Teaches closures as lexical capture by reference, not by value, the stale-closure trap in async code, and the three production sites it later explains: Server Actions, `useEffect` cleanups, and route-handler factories.)
 - 8 Quiz
 
-### Chapter 003 — Picking the right container
-- 1 The object as workhorse record (Read, build, and reshape a record-shaped value with dot and bracket access, the three construction sugars (shorthand, computed keys, spread), and the `Object.*` static surface including `Object.groupBy`.)
+### Chapter 003 — Data structures, regex, and tooling
+- 1 The object as a record (Read, build, and reshape a record-shaped value with dot and bracket access, the three construction sugars (shorthand, computed keys, spread), and the `Object.*` static surface including `Object.groupBy`.)
 - 2 Arrays and the non-mutating update (Index arrays under `noUncheckedIndexedAccess`, reach for `.at()` and the ES2023 non-mutating update family (`.toSorted`, `.toReversed`, `.toSpliced`, `.with`), and recognize the mutating methods that React state forbids.)
-- 3 The array method surface (Walk `.map`, `.filter` with type predicates, `.reduce`, the `.find` family, `.some`/`.every`, `.flatMap`, and `.forEach`, and learn the rule for when to drop out of a chain into a `for...of` loop.)
-- 4 When Set and Map earn their weight (Pick `Set` for dedup and membership, `Map` for keyed lookup at scale, `WeakMap` for GC-coupled caches, and reach for the ES2025 Set composition methods and `Map.groupBy` that retire the lodash habit.)
+- 3 Array iteration methods (Walk `.map`, `.filter` with type predicates, `.reduce`, the `.find` family, `.some`/`.every`, `.flatMap`, and `.forEach`, and learn the rule for when to drop out of a chain into a `for...of` loop.)
+- 4 Choosing Set, Map, and WeakMap (Pick `Set` for dedup and membership, `Map` for keyed lookup at scale, `WeakMap` for GC-coupled caches, and reach for the ES2025 Set composition methods and `Map.groupBy` that retire the lodash habit.)
 - 5 Iteration and the lazy helpers (Learn the iteration protocol behind every iterable, default to `for...of` for side effects, and reach for the ES2025 `Iterator.prototype` helpers when the input is large, lazy, or short-circuited.)
 - 6 Regex: the modern flavor (Write 2026-flavor regex with named capture groups, lookarounds, the `u` and `v` Unicode flags and property escapes, the `.matchAll` iterator surface, and the boundary where a parser replaces the regex.)
-- 7 VS Code as a team artifact (Teaches the editor commitment, the minimum-viable extension set with one senior reason each, and the repo-owned configuration files (`.editorconfig`, `.vscode/extensions.json`, `.vscode/settings.json`) that make editor setup a teammate-shared surface rather than a personal preference — placed right before the first lesson that runs TypeScript on local files.)
+- 7 Commit VS Code config to the repo (Teaches the editor commitment, the minimum-viable extension set with one reason each, and the repo-owned configuration files (`.editorconfig`, `.vscode/extensions.json`, `.vscode/settings.json`) that make editor setup a teammate-shared surface rather than a personal preference — placed right before the first lesson that runs TypeScript on local files.)
 - 8 Run TypeScript locally (Pin Node 24 LTS via mise's `.mise.toml` to make the runtime a property of the repo, then partition `.ts` execution into native strip-types as the default, `tsx` past a named trigger (path aliases, JSX, decorators), and `tsc` reserved for library publishing or `--noEmit` type-checking — the moment local TS execution earns its place.)
 - 9 Quiz
 
