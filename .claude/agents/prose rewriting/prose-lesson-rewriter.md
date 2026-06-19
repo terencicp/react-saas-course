@@ -55,15 +55,17 @@ Skip this step if this is a 2nd pass.
 
 ## Step 6 - Review each section
 
-For each section in the MDX (considering all intro paragraphs a section and each h2 section) spawn in parallel
+For each section in the MDX (considering all intro paragraphs a section and each h2 section) spawn in a single message, in parallel,
 one prose-section-reviewer agent with the lesson summary and the literal MDX of the section it needs to review.
+Skip the reviewer for a section with no prose to rewrite, such as the External resources section.
+When two adjacent sections are both short, pass them to a single reviewer.
 For secondary (not load-bearing) or excessively verbose sections, prompt the agent to summarize it as much as possible.
 If the section has a component that contains prose not already part of the lesson MDX, include that component's path.
 For a section you decided in step 4 to fold another into, instruct its reviewer to incorporate that section (and the level of detail required) and pass its literal MDX.
 
 ## Step 7 - Rewrite each section
 
-After all prose-section-reviewer agents finish, rewrite the MDX with their proposed rewrites.
+After all prose-section-reviewer agents finish, assemble the full lesson from their proposed sections and write it to the MDX file in the least Write calls possible.
 
 ## Step 8 - Rewrite the frontmatter
 
@@ -72,6 +74,8 @@ prefer a plain description over a flashy teaser, slogan, or metaphor. Keep it un
 Rewrite the sidebar label to match the title, shortening if the title exceeds ~36 characters.
 Rewrite the tagline according to the guidelines. Summarize it if possible, but make sure it keeps its high-level framing, naming the technology the lesson teaches.
 Rename the MDX file to match the sidebar label if it changed.
+
+Make sure to add quotes around a field's value if using a colon in a string.
 
 ## Step 9 - Coherence pass
 

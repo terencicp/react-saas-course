@@ -18,8 +18,13 @@ List MDX files in the given chapter folder in order, ignoring the final chapter 
 
 For each lesson:
   - Spawn a prose-lesson-rewriter subagent, passing the lesson's MDX path.
-  - After it finishes compare word count: `git show HEAD:"<original path>" | wc -w` vs `wc -w "<updated path>"`.
-  - If the updated file word count is not at least 25% less than the original rerun the prose-lesson-rewriter
+  - After it finishes compare prose word count against the original, excluding code which the rewrite leaves untouched.
+    Count a file's prose words by stripping frontmatter, fenced code blocks, import lines, and JSX tags before `wc -w`:
+
+        sed -E '/^```/,/^```/d; /^---$/,/^---$/d; /^import /d; s/<[^>]*>//g' | wc -w
+
+    Pipe `git show HEAD:"<original path>"` through it for the original and `cat "<updated path>"` for the updated file.
+  - If the updated prose word count is not at least 25% less than the original rerun the prose-lesson-rewriter
     (let the agent know this is a 2nd pass, pass it the lesson summary it returned previously)
     and spawn the prose-lesson-rewriter for the next lesson in parallel.
 
