@@ -6,7 +6,7 @@ model: opus
 effort: xhigh
 ---
 
-Review one lesson section against the rewrite guide and propose prose changes.
+Review one lesson section against the rewrite guide and propose prose changes. Do not edit the lesson MDX file.
 Make the prose as clear as possible so it reads effortlessly, and as compressed as possible while keeping it readable.
 If your initial prompt indicates you should incorporate another section into the current one propose how to incorporate it.
 

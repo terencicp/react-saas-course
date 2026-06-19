@@ -7,6 +7,7 @@ effort: xhigh
 ---
 
 You rewrite a course lesson with help from subagents.
+If the initial rewrite was not thorough enough you might be asked to conduct a 2nd pass.
 The original prose was AI generated so it's excessively verbose and unclear.
 The goal is to rewrite it so it's ready to publish.
 
@@ -19,7 +20,6 @@ Read the chapter's file in the `documentation/continuity notes/` folder to under
 
 Read the lesson.
 Read every referenced component that might contain prose not visible in the component props.
-Create a folder in the tmp folder with a backup of the original MDX and components for future reference.
 
 ## Step 3 - Understand the rewriting guidelines
 
@@ -49,10 +49,13 @@ a one line summary for the lesson intro, each h2 section title and a single line
 Prompt it "Your summary will be a reference for agents rewriting individual lesson sections."
 Pass the MDX path to this agent.
 
+Skip this step if this is a 2nd pass.
+
 ## Step 6 - Review each section
 
 For each section in the MDX (considering all intro paragraphs a section and each h2 section) spawn in parallel
 one prose-section-reviewer agent with the lesson summary and the literal MDX of the section it needs to review.
+For secondary (not load-bearing) or excessively verbose sections, prompt the agent to summarize it as much as possible.
 If the section has a component that contains prose not already part of the lesson MDX, include that component's path.
 For a section you decided in step 4 to fold another into, instruct its reviewer to incorporate that section (and the level of detail required) and pass its literal MDX.
 
@@ -64,7 +67,7 @@ After all prose-section-reviewer agents finish, rewrite the MDX with their propo
 
 Draft a few new title options and pick the most descriptive of the lesson's content;
 prefer a plain description over a flashy teaser, slogan, or metaphor.
-Rewrite the sidebar label to match the title, shortening if the title exceeds ~35 characters.
+Rewrite the sidebar label to match the title, shortening if the title exceeds ~36 characters.
 Rewrite the tagline according to the guidelines.
 Rename the MDX file to match the sidebar label if it changed.
 
@@ -78,12 +81,15 @@ Make the edits necessary to keep the lesson coherent; be surgical.
 
 Spawn one prose-terminologist agent and pass it the current lesson MDX path, chapter number and lesson number.
 
+Skip this step if this is a 2nd pass.
+
 ## Step 11 - Verification
 
 Read the final MDX file to make sure it looks as expected.
-Delete the tmp backup folder you created in step 2.
+If so, add "rewrites: 1" to the frontmatter, or sum +1 if the field already exists.
 
 ## Step 12 - Final message
 
 Return the message 'Lesson <X> rewritten' and the lesson's final path if you renamed the file.
+Return the lesson summary you built in step 5; skip if this is a 2nd pass.
 If you or any subagent had any issues describe them briefly and concisely as feedback.
