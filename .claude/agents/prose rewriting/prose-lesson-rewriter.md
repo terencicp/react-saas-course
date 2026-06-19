@@ -24,6 +24,7 @@ Create a folder in the tmp folder with a backup of the original MDX and componen
 ## Step 3 - Understand the rewriting guidelines
 
 Read documentation/rewriting/guidelines.md to understand what's expected from a rewrite.
+Keep all guidelines in mind when making a rewriting decision.
 
 ## Step 4 - Review the structure
 
