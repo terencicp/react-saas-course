@@ -19,6 +19,8 @@ Read AGENTS.md
 Read documentation/rewriting/guidelines.md to understand what's expected from your rewrite.
 Keep all guidelines in mind when making a rewriting decision.
 
+Read '.claude/skills/prose-writing/SKILL.md' for general prose writing advice.
+
 ## Step 3 - Cutting off-topic parts
 
 Read each paragraph and consider if there are off-topic paragraphs that should be cut.

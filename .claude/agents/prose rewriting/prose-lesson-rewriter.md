@@ -26,6 +26,8 @@ Read every referenced component that might contain prose not visible in the comp
 Read documentation/rewriting/guidelines.md to understand what's expected from a rewrite.
 Keep all guidelines in mind when making a rewriting decision.
 
+Read '.claude/skills/prose-writing/SKILL.md' for general prose writing advice.
+
 ## Step 4 - Review the structure
 
 Triage each lesson's section. Cut ruthlessly. Less is more.
