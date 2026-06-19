@@ -23,9 +23,11 @@ Keep all guidelines in mind when making a rewriting decision.
 
 Read each paragraph and consider if there are off-topic paragraphs that should be cut.
 Less is more. Ruthlessly cut any paragraph or sentence that goes out of scope because:
-- It teaches legacy syntax
-- It's unnecessary commentary tangential to the lesson
-- It explains concepts that belong in a future lesson
+- It teaches legacy syntax, including a list of old APIs not to use.
+- It's unnecessary commentary tangential to the lesson, including reassurance ("guaranteed by the spec, won't change")
+- It restates what has already been explained, such as a conclusion section
+- It explains concepts that belong in a future lesson, or merely name-drops a future unit, tool, or chapter.
+- The prose itself marks it as out of scope, rare, advanced, or optional; cut it to a single sentence or remove it.
 
 ## Step 4 - Sentence review
 

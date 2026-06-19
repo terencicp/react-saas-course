@@ -17,13 +17,17 @@ List MDX files in the given chapter folder in order, ignoring the final chapter 
 ## Step 3 - Rewrite every lesson in parallel
 
 Spawn one prose-lesson-rewriter per lesson, passing each the lesson's MDX path.
+After the agent finished successfully, add "rewrites: 1" to the frontmatter, or sum +1 if the field already exists.
 
-## Step 4 - Check git diff
+## Step 4 - Verify compression
+
+For each rewritten lesson, compare its word count against the original in git,
+`git show HEAD:"<path>" | wc -w` versus `wc -w "<path>"`.
+For each lesson that has less than 25% compression rerun step 3 once.
+
+## Step 5 - Commit
 
 Make sure every relevant file has been edited.
-
-## Step 5 — Commit
-
 Commit changes made only to files in your chapter, with the message `Prose rewrite: Chapter <XXX>`.
 
 ## Step 6 — Final message

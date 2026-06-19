@@ -13,7 +13,7 @@ The goal is to rewrite it so it's ready to publish.
 ## Step 1 - Understand what the course is about
 
 Read AGENTS.md, documentation/Units.md, this lesson's and its neighbors' entries in documentation/Table of contents.md.
-Read the chapter's file in documentation/continuity notes to understand the course context.
+Read the chapter's file in the `documentation/continuity notes/` folder to understand the course context.
 
 ## Step 2 - Read the original lesson prose
 
@@ -61,8 +61,11 @@ After all prose-section-reviewer agents finish, rewrite the MDX with their propo
 
 ## Step 8 - Rewrite the frontmatter
 
-Rewrite the title, sidebar label and tagline, according to the guidelines, if necessary.
-Rename the MDX file to match the sidebar label if necessary.
+Draft a few new title options and pick the most descriptive of the lesson's content;
+prefer a plain description over a flashy teaser, slogan, or metaphor.
+Rewrite the sidebar label to match the title, shortening if the title exceeds ~35 characters.
+Rewrite the tagline according to the guidelines.
+Rename the MDX file to match the sidebar label if it changed.
 
 ## Step 9 - Coherence pass
 
@@ -70,11 +73,15 @@ Since each section has been rewritten by a different subagent multiple similar s
 Make sure titles and section prose do not follow different conventions in each section.
 Make the edits necessary to keep the lesson coherent; be surgical.
 
-## Step 10 - Verification
+## Step 10 - Terminology pass
+
+Spawn one prose-terminologist agent and pass it the lesson MDX path.
+
+## Step 11 - Verification
 
 Read the final MDX file to make sure it looks as expected.
 
-## Step 11 - Final message
+## Step 12 - Final message
 
 Return the message 'Lesson <X> rewritten'.
 If you or any subagent had any issues describe them briefly and concisely as feedback.
