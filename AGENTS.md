@@ -35,6 +35,10 @@ The site has a BYOK OpenRouter AI tutor: a lazy React panel in `src/components/a
 - `documentation/components/INDEX.md` — API for the pre-built astro components.
 - `documentation/diagrams/INDEX.md` — How to pick the best diagram engine for each use case.
 
+### Agents
+
+- `.claude/agents/prose rewriting/` — prose rewriting pipeline. `prose-chapter-rewrite-orchestrator` runs a chapter: it spawns one `prose-lesson-rewriter` per lesson, which triages sections, then spawns one `prose-section-reviewer` per section to propose cuts and rewrites, applies them, and commits.
+
 ## Deployment
 
 Deploys as a static Astro build on Cloudflare Pages.
