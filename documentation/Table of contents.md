@@ -14,13 +14,13 @@
 - 7 Quiz
 
 ### Chapter 002 — Functions, naming, and control flow
-- 1 Arrow by default, declaration on demand (Teaches the three function forms, the senior rule that arrow expressions bound to `const` are the 2026 default, and the narrow triggers (hoisting, named recursion, type-guard signatures) that earn a `function` declaration.)
-- 2 Signatures that stay readable past two parameters (Teaches the two-positional-parameter rule and the options-object pattern, parameter defaults firing only on `undefined`, rest parameters and call-site spread, and the TypeScript ordering of required vs. optional parameters.)
-- 3 Name for intent, not implementation (Teaches Architectural Principle #4 across the four naming surfaces (variables, functions, parameters, types), the boolean-prefix convention, and the three bad-name classes (implementation-leaking, vague abstractions, negated booleans).)
-- 4 Guard clauses, ternaries, and exhaustive switch (Teaches flat control flow through early-return guards, expression-level ternaries, `switch` with `noFallthroughCasesInSwitch` and `assertNever`, the lookup-map alternative, and the loop forms a 2026 senior reaches for.)
-- 5 The null-safe operator trio (Teaches `?.` for nullable access at each chain link, `??` over `||` for defaults (with the `0` / `''` / `false` trap), and `??=` for lazy initialization, plus the operator-precedence rules that force parentheses.)
-- 6 Destructuring as the API call-shape (Teaches object and array destructuring with rename, defaults, and rest, the signature-level destructure that React and server actions consume, and the destructure-then-rebuild pattern that prevents accidental field forwarding.)
-- 7 Closures: lexical capture by reference (Teaches closures as lexical capture by reference (not by value), the stale-closure trap in async code, and the three production sites the model later explains: Server Actions, `useEffect` cleanups, and route-handler factories.)
+- 1 Arrow functions vs. function declarations (Teaches the three function forms, why an arrow expression bound to `const` is the default, and the narrow triggers — hoisting, named recursion, and type-guard signatures — that earn a `function` declaration.)
+- 2 Options objects over long parameter lists (Teaches the two-positional-parameter rule and the options-object pattern, parameter defaults firing only on `undefined`, rest parameters and call-site spread, and the TypeScript ordering of required vs. optional parameters.)
+- 3 Name for intent, not implementation (Teaches the naming principle across the four surfaces — variables, functions, parameters, types — the boolean-prefix convention, and the three bad-name classes: implementation-leaking, vague abstractions, and negated booleans.)
+- 4 Guards, ternaries, and exhaustive switch (Teaches flat control flow through early-return guards, expression-level ternaries, `switch` with `noFallthroughCasesInSwitch` and `assertNever`, the lookup-map alternative, and which loop form to reach for.)
+- 5 The null-safe operators: ?., ??, ??= (Teaches `?.` for nullable access at each chain link, `??` over `||` for defaults — with the `0` / `''` / `false` trap — `??=` for lazy initialization, and the precedence rule that forces parentheses when mixing them.)
+- 6 Object and array destructuring (Teaches object and array destructuring with rename, defaults, and rest, the signature-level destructure that React components and Server Actions consume, and the destructure-then-rebuild pattern that prevents accidental field forwarding.)
+- 7 Closures: lexical capture by reference (Teaches closures as lexical capture by reference, not by value, the stale-closure trap in async code, and the three production sites it later explains: Server Actions, `useEffect` cleanups, and route-handler factories.)
 - 8 Quiz
 
 ### Chapter 003 — Picking the right container
