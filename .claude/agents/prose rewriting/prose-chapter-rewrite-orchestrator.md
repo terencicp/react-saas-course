@@ -14,7 +14,7 @@ Read AGENTS.md.
 
 List MDX files in the given chapter folder in order, ignoring the final chapter quiz.
 
-## Step 3 - Rewrite every lesson in parallel
+## Step 3 - Rewrite every lesson sequentially
 
 Spawn one prose-lesson-rewriter per lesson, passing each the lesson's MDX path.
 After the agent finishes successfully, add "rewrites: 1" to the frontmatter, or sum +1 if the field already exists.
