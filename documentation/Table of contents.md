@@ -138,7 +138,7 @@
 - 6 data-*, aria-*, and the table decision (`data-*` for script hooks (delegation, tests, Tailwind state), `aria-*` for assistive-tech signals (`aria-label`, `aria-current`, `aria-expanded`, `aria-pressed`, `role="alert"`), and `<table>` with `<th scope>` and `<caption>` only when the data is genuinely tabular.)
 - 7 Quiz
 
-### Chapter 018 — Tailwind v4 inside the React component
+### Chapter 018 — Styling React with Tailwind
 - 1 Utility-first on JSX (Teaches the utility-class families, the theme scale, prefix-and-colon variants, opacity modifiers, and arbitrary values as the escape hatch.)
 - 2 CSS-first config in globals.css (Teaches the v4 directives — `@import "tailwindcss"`, `@theme` tokens, `@utility`, `@custom-variant`, `@container`, `@source`, `@plugin` — that replace `tailwind.config.ts`.)
 - 3 Composing classes with cn() (Teaches the `clsx` + `tailwind-merge` helper, the defaults-then-`className`-last override pattern, and conditional class forms for component props.)

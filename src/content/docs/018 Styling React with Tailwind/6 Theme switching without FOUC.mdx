@@ -1,0 +1,465 @@
+---
+title: Theme switching without FOUC
+tagline: Wire up next-themes for a React light and dark mode toggle that switches instantly, with no flash of the wrong theme on load.
+chapter-id: 18
+course-progress: 0.1398
+sidebar:
+  order: 6
+  label: Theme switching
+rewrites: 4
+---
+
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import ReactCoding from '../../../components/live-coding/ReactCoding/ReactCoding.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { Aside, Steps, CardGrid } from '@astrojs/starlight/components';
+import FirstPaintRace from '../../../components/lessons/018/6/FirstPaintRace.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson, "Dark mode via semantic tokens," you styled a component for both themes, assuming something had already put `.dark` on `<html>`. This lesson builds that something. Picture a user on a dark-mode machine opening your app: for a fraction of a second they see a white flash, then the page snaps to dark. By the end you'll have a theme toggle that switches instantly, and know why every piece of the setup has to be there.
+
+That flash has a name: <Term definition="Flash of unstyled content. Here specifically, a flash of the wrong-themed page — the default theme paints for an instant before the correct one applies.">FOUC</Term>.
+
+## Why React runs too late to set the theme
+
+The flash is a timing problem. Trace the naive version you'd write with only what you know so far: read the saved theme in a component, add `.dark` to `<html>` when it's dark. On load:
+
+<Steps>
+1. The server renders the page, but **it doesn't know the user's theme**: the preference lives in the browser (`localStorage`) and the OS setting, and the server can read neither. So it emits HTML with the *default* theme and no `.dark` class.
+
+2. The browser **paints** that HTML. This first paint, the user's first pixels, happens *before any React code runs*, so the screen shows the default light theme.
+
+3. React loads and hydrates. Now your code runs: it reads the saved theme, sees `"dark"`, and adds `.dark` to `<html>`.
+
+4. The page **repaints** in dark. The user saw light, then dark. That gap, steps 2 to 4, is the flash.
+</Steps>
+
+The correction always runs after the first paint. Reading the theme inside React, whether in an effect or a provider that flips the class on mount, is structurally too late: the wrong pixels are already on screen. You can't fix a paint that already happened, only set the class *before* it.
+
+That dictates the fix. The only code that runs before the body paints is a synchronous `<script>` in the `<head>`: the browser runs a blocking inline `<head>` script while parsing, before painting the `<body>`. A tiny script there that reads `localStorage` and the OS preference and writes `.dark` onto `<html>` makes the very first paint correct, so no wrong frame exists.
+
+The diagram traces both timelines: the top lane is the naive one above, the bottom the fixed one. The flash lives between "HTML arrives" and "first paint" — exactly the gap the inline `<head>` script fills.
+
+<DiagramSequence>
+  <DiagramStep>
+    <FirstPaintRace step={1} />
+    <Fragment slot="caption">
+      The server renders both lanes the same: it can't read `localStorage` or the OS setting, so no theme class goes out.
+    </Fragment>
+  </DiagramStep>
+  <DiagramStep>
+    <FirstPaintRace step={2} />
+    <Fragment slot="caption">
+      The naive HTML arrives bare. The fixed HTML carries one extra thing: an inline `<head>` script, loaded but not yet run.
+    </Fragment>
+  </DiagramStep>
+  <DiagramStep>
+    <FirstPaintRace step={3} />
+    <Fragment slot="caption">
+      Naive lane: nothing has set the theme, so the browser paints the default. First paint is **LIGHT** — the flash.
+    </Fragment>
+  </DiagramStep>
+  <DiagramStep>
+    <FirstPaintRace step={4} />
+    <Fragment slot="caption">
+      Fixed lane: the inline script runs *before* the body paints and writes `.dark` onto `<html>`, sliding into the gap right before the marker.
+    </Fragment>
+  </DiagramStep>
+  <DiagramStep>
+    <FirstPaintRace step={5} />
+    <Fragment slot="caption">
+      Fixed lane: the first paint is already **DARK**, on the same marker where the naive lane painted light. No wrong frame ever existed, so nothing flashes.
+    </Fragment>
+  </DiagramStep>
+  <DiagramStep>
+    <FirstPaintRace step={6} />
+    <Fragment slot="caption">
+      React hydrates in both lanes. The naive lane corrects the class and repaints; the fixed lane's class is already right, so nothing moves.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+The rest of the lesson leans on one word from that timeline. <Term definition="React's second pass: in the browser, it walks the same component tree the server already rendered, adopts the existing HTML, and attaches event handlers rather than rebuilding the DOM. The deeper render model comes in a later chapter.">Hydration</Term> happens *after* the first paint, which is precisely why a React-based theme fix arrives too late. That same timeline explains `suppressHydrationWarning`, which you met on `<html>` last chapter; soon you'll derive it yourself.
+
+## next-themes: the script, packaged
+
+You could hand-write that inline script, but it's fiddly. The standard solution on a Next.js stack is <Term definition="A ~3KB library that manages light/dark/system theming for React apps: it injects the pre-paint inline script, persists the choice to localStorage, tracks the OS preference, and exposes a useTheme() hook.">`next-themes`</Term>. It does four things:
+
+- injects that synchronous `<head>` script, so the class is set before the first paint;
+- persists the choice to `localStorage`, so it sticks across visits;
+- listens to the OS <Term definition="The CSS media query that exposes the operating system's light/dark setting. next-themes reads it so 'system' mode follows the OS live; its full syntax comes in a later chapter.">`prefers-color-scheme`</Term> setting, so `"system"` mode follows the OS live; and
+- exposes a React hook, `useTheme()`, to read and change the theme from components.
+
+You configure it once. Two moving parts: **`<ThemeProvider>`** wraps your app, holds the configuration, and injects the script; **`useTheme()`** is the hook your toggle calls. Install it:
+
+```bash
+npm i next-themes
+```
+
+## Wiring the provider into the root layout
+
+`<ThemeProvider>` uses React context and effects, which makes it a Client Component. But the root layout `app/layout.tsx` owns the `<html>` and `<body>` tags and, as the previous chapter showed, must stay a Server Component. Adding `'use client'` to host the provider there would turn the entire app into a client subtree.
+
+That is what the `<Providers>` pattern from the previous chapter solves: a thin Client Component at `app/_components/providers.tsx` that carries `'use client'` and wraps the app, rendered as a child by the server layout. It held a bare `<ThemeProvider>` before; now you configure it. The boundary stops at `<Providers>`, leaving `<html>` and `<body>` on the server.
+
+<CodeVariants>
+  <CodeVariant label="app/_components/providers.tsx">
+    ```tsx title="app/_components/providers.tsx" ins={8-11}
+    'use client';
+
+    import { ThemeProvider } from 'next-themes';
+
+    export function Providers({ children }: { children: React.ReactNode }) {
+      return (
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          {children}
+        </ThemeProvider>
+      );
+    }
+    ```
+    **The previous chapter's provider wrapper, now configured.** Every app-wide provider gathers here: later chapters add the data-fetching client and the i18n provider beside `<ThemeProvider>`.
+  </CodeVariant>
+
+  <CodeVariant label="app/layout.tsx">
+    ```tsx title="app/layout.tsx" ins="suppressHydrationWarning"
+    import { Providers } from './_components/providers';
+    import './globals.css';
+
+    export default function RootLayout({
+      children,
+    }: {
+      children: React.ReactNode;
+    }) {
+      return (
+        <html lang="en" suppressHydrationWarning>
+          <body>
+            <Providers>{children}</Providers>
+          </body>
+        </html>
+      );
+    }
+    ```
+    **Unchanged from the previous chapter except one attribute.** No `'use client'`: the root layout stays a Server Component, rendering `<Providers>` as a child. The new piece is `suppressHydrationWarning` on `<html>` — the one thing you should never copy without understanding why, and the next section's subject.
+  </CodeVariant>
+</CodeVariants>
+
+<Aside type="note" title="Why one `<Providers>` and not shadcn's `theme-provider.tsx`">
+  When you later copy a dark-mode setup from shadcn, it ships a dedicated `theme-provider.tsx` holding only `<ThemeProvider>`. We keep the single `Providers` wrapper instead, because every app-wide provider you add over the course belongs in one client boundary. Same provider, same props, just consolidated into the file you already have.
+</Aside>
+
+Each prop earns its place.
+
+<AnnotatedCode lang="tsx" code={`
+<ThemeProvider
+  attribute="class"
+  defaultTheme="system"
+  enableSystem
+  disableTransitionOnChange
+>
+`}>
+  <AnnotatedStep meta="{2}" color="green">
+    `attribute="class"` tells next-themes to express the theme as `class="dark"` on `<html>` — the exact hook last lesson's `@custom-variant dark (&:is(.dark *))` reads, so this prop and that variant are two ends of the same wire. (For a multi-theme app you'd switch to `attribute="data-theme"`, in the last section.)
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3}" color="blue">
+    `defaultTheme="system"` decides what a brand-new visitor gets before picking a theme: the OS preference, not a hardcoded light. A first-timer on a dark OS lands in dark.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4}" color="blue">
+    `enableSystem` makes `"system"` a real, selectable value and activates the OS listener. It's what makes `defaultTheme="system"` valid and keeps the page tracking the OS until the user overrides.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="blue">
+    `disableTransitionOnChange` briefly switches off CSS transitions during the swap. Without it, any `transition-colors` utilities on the page animate every color at once on toggle, and the whole UI does an ugly fade.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The attribute that *isn't* on the provider, `suppressHydrationWarning` on `<html>`, confuses people, so it gets its own section.
+
+<CodeTooltips tooltips={{
+  suppressHydrationWarning: 'Tells React not to warn about the class the inline script changed on <html> before hydration — derived in the next section.',
+}}>
+```tsx
+<html lang="en" suppressHydrationWarning>
+```
+</CodeTooltips>
+
+### Why `suppressHydrationWarning` belongs on `<html>`, and only there
+
+The fix from the first section creates a new problem, and this prop answers it.
+
+The inline script mutates `<html>`'s class *before React hydrates*. So when React compares the live DOM against the server's HTML, it finds a discrepancy: the server sent `<html>` with no class, but the live DOM has `<html class="dark">`. React calls that a <Term definition="When the HTML React produces on its first browser pass doesn't match the HTML the server sent. React expects them identical; a difference normally signals a bug, so React warns. Here the difference is caused on purpose by the inline script.">hydration mismatch</Term> and logs a warning.
+
+That mismatch is the fix working as designed: the class genuinely *is* different, because you changed it before hydration to win the race against first paint. `suppressHydrationWarning` tells React, "I changed this element's attributes on purpose; don't warn" — acknowledging a deliberate change, not hiding a problem.
+
+Three things to hold onto, each easy to get backwards:
+
+- **It goes on `<html>`** specifically, the element the script mutates. The class lands there, so the acknowledgement does too.
+- **It is shallow.** It silences mismatch warnings for that one element's *own* attributes only, not for any descendant, so it can't mask a real mismatch deeper in your tree.
+- **It is not a general "make hydration errors go away" switch.** Putting it elsewhere to quiet a real mismatch just hides a bug. It belongs here only, because the mutation is intentional and external to React.
+
+Check your model of it:
+
+<MultipleChoice>
+  Putting `suppressHydrationWarning` on `<html>` is the right call here. Which statements explain *why* it's correct in this specific spot? Select all that apply.
+
+  <McqChoice correct>The pre-paint script rewrites `<html>`'s class before React runs, so React is bound to find a class that was never in the server's HTML — the difference is on purpose, not a defect.</McqChoice>
+  <McqChoice correct>It only quiets warnings about `<html>`'s own attributes, so a real mismatch further down the tree would still surface.</McqChoice>
+  <McqChoice>It makes React skip hydrating `<html>` altogether, so its class can never conflict.</McqChoice>
+  <McqChoice>Anything styled with a theme token like `bg-background` or `text-foreground` needs it too, or those utilities won't line up between server and client.</McqChoice>
+
+  <McqWhy>The prop acknowledges one specific, intentional mismatch — the class the inline script wrote onto `<html>` before hydration — without reaching past `<html>` into its descendants, which is what keeps it safe. It doesn't switch hydration off (React still hydrates `<html>` normally; it just stays quiet about that attribute), and it has nothing to do with theme-token utilities, which match on both sides because CSS resolves identically server and client.</McqWhy>
+</MultipleChoice>
+
+## Building the theme toggle
+
+The mismatch problem returns in the button the user clicks. A toggle wants to show the icon for the *current* theme, a sun in light mode and a moon in dark. But the server doesn't know the theme, so rendering that icon there makes React hydrate and find a different icon than sent.
+
+Two approaches avoid this. Lead with the one that needs no React state.
+
+<CodeVariants>
+  <CodeVariant label="CSS-only swap">
+    <div data-mark-color="green">
+
+    ```tsx title="app/_components/theme-toggle.tsx" {14-15}
+    'use client';
+
+    import { Moon, Sun } from 'lucide-react';
+    import { useTheme } from 'next-themes';
+
+    export const ThemeToggle = () => {
+      const { resolvedTheme, setTheme } = useTheme();
+      return (
+        <button
+          type="button"
+          aria-label="Toggle theme"
+          onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
+        >
+          <Sun className="inline dark:hidden" />
+          <Moon className="hidden dark:inline" />
+        </button>
+      );
+    };
+    ```
+
+    </div>
+    **The default for a plain light/dark toggle.** Both icons always render, so the markup is byte-for-byte identical on server and client, with nothing to mismatch. CSS decides which is *visible*, keyed off the `.dark` class the inline script set before paint. `useTheme()` is used purely to *write* on click, through `setTheme`, which runs after hydration.
+  </CodeVariant>
+
+  <CodeVariant label="Mount-gated read">
+    <div data-mark-color="blue">
+
+    ```tsx title="app/_components/theme-toggle.tsx" {8-9, 11-13}
+    'use client';
+
+    import { useEffect, useState } from 'react';
+    import { useTheme } from 'next-themes';
+
+    export const ThemeToggle = () => {
+      const { resolvedTheme, setTheme } = useTheme();
+      const [mounted, setMounted] = useState(false);
+      useEffect(() => setMounted(true), []);
+
+      if (!mounted) {
+        return <button type="button" aria-label="Toggle theme" className="size-9" />;
+      }
+
+      return (
+        <button
+          type="button"
+          aria-label="Toggle theme"
+          onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
+        >
+          {resolvedTheme === 'dark' ? 'Dark' : 'Light'}
+        </button>
+      );
+    };
+    ```
+
+    </div>
+    **Reach for this only when the button's *content* depends on the theme**, such as a menu showing the active theme's label as text. Rendering that text means reading the theme in React, so you wait until after mount: a `mounted` flag flips to `true` in an effect, and until then a same-size placeholder keeps the layout from jumping. `useState` and `useEffect` come in a later chapter; just recognize the shape.
+  </CodeVariant>
+</CodeVariants>
+
+For a simple light/dark switch, default to the CSS-only swap: it sidesteps the mismatch by construction, no hooks, no placeholder. Reach for the mount-gate only when the content, not just the styling, branches on the theme.
+
+<Aside type="note" title="next-themes is the React side only">
+  `next-themes` sets the class in the browser. If you ever need the *server* to render theme-dependent content, say a server component that branches its markup on the theme, the server must learn the theme another way, by reading it from a cookie. This lesson doesn't cover that.
+</Aside>
+
+Both toggles read `resolvedTheme`, not `theme`, to decide the next value — the one `useTheme()` subtlety worth a look.
+
+### `theme` vs `resolvedTheme`
+
+`useTheme()` returns `{ theme, setTheme, resolvedTheme, systemTheme, themes }`. Two values look interchangeable but aren't, and mixing them up is the classic `next-themes` bug. The distinction is *setting* versus *result*:
+
+- `theme` is the **setting the user picked**, and can be the literal string `"system"`.
+- `resolvedTheme` is the **concrete theme in effect**, always `"light"` or `"dark"`, after `system` resolves against the OS preference.
+
+When the user chose "system" and their OS is dark:
+
+```tsx "'system'" "'dark'"
+const { theme, resolvedTheme } = useTheme();
+
+theme;         // 'system'  — the setting the user chose
+resolvedTheme; // 'dark'    — what 'system' actually resolves to right now
+```
+
+So a toggle that computes the next theme from `theme` breaks the moment `theme` is `"system"`: there's no sensible opposite to flip to. Read **`resolvedTheme`** whenever you need what's actually on screen, which is why both toggles above flip on `resolvedTheme === 'dark'`. A light/dark toggle won't need the `systemTheme` and `themes` the hook also returns.
+
+
+Now build the swap yourself. The exercise renders your toggle on a light surface and again under a `.dark` ancestor, so you can watch the icon switch as the variant fires. The `<style type="text/tailwindcss">` line teaches this standalone preview what `dark:` means; in a real app, last lesson's `@custom-variant` line does that while `next-themes` toggles the class.
+
+<ReactCoding
+  live
+  instructions={`The same toggle is rendered twice: on a light page (top) and under a .dark ancestor (bottom). Right now both glyphs show in both rows. Add visibility classes to the two spans so the sun (☀) shows only in the light row and the moon (☾) shows only in the dark row, matching the target. The glyphs are plain text so the exercise stays about the dark: variant, not about importing an icon set.`}
+  starter={`function ThemeToggle() {
+  return (
+    <button
+      type="button"
+      aria-label="Toggle theme"
+      className="rounded-md border border-slate-300 p-2 text-xl leading-none text-slate-700 dark:border-slate-600 dark:text-slate-200"
+    >
+      <span>☀</span>
+      <span>☾</span>
+    </button>
+  );
+}
+
+export function App() {
+  return (
+    <>
+      <style type="text/tailwindcss">{\`@custom-variant dark (&:is(.dark *));\`}</style>
+      <div className="space-y-3">
+        <div className="rounded-md bg-slate-100 p-3">
+          <p className="mb-2 text-xs font-medium text-slate-500">Light page</p>
+          <ThemeToggle />
+        </div>
+        <div className="dark rounded-md bg-slate-950 p-3">
+          <p className="mb-2 text-xs font-medium text-slate-400">.dark ancestor</p>
+          <ThemeToggle />
+        </div>
+      </div>
+    </>
+  );
+}`}
+  target={`function ThemeToggle() {
+  return (
+    <button
+      type="button"
+      aria-label="Toggle theme"
+      className="rounded-md border border-slate-300 p-2 text-xl leading-none text-slate-700 dark:border-slate-600 dark:text-slate-200"
+    >
+      <span className="inline dark:hidden">☀</span>
+      <span className="hidden dark:inline">☾</span>
+    </button>
+  );
+}
+
+export function App() {
+  return (
+    <>
+      <style type="text/tailwindcss">{\`@custom-variant dark (&:is(.dark *));\`}</style>
+      <div className="space-y-3">
+        <div className="rounded-md bg-slate-100 p-3">
+          <p className="mb-2 text-xs font-medium text-slate-500">Light page</p>
+          <ThemeToggle />
+        </div>
+        <div className="dark rounded-md bg-slate-950 p-3">
+          <p className="mb-2 text-xs font-medium text-slate-400">.dark ancestor</p>
+          <ThemeToggle />
+        </div>
+      </div>
+    </>
+  );
+}`}
+  maxHeight={420}
+/>
+
+## Check the theme switch
+
+Two checks confirm the switch works and double as triage: when a teammate says "dark mode is broken," they tell you which half failed.
+
+
+<Steps>
+1. **Open DevTools, inspect `<html>`, and toggle the theme.** The `class` attribute should flip between absent and `"dark"` on every click.
+
+   - *No class ever appears.* The provider isn't wrapping the tree, or `attribute` is misconfigured. Start at `app/_components/providers.tsx`.
+   - *The class flips, but the colors don't change.* The wiring is fine; the problem is on last lesson's Tailwind side — the `@custom-variant dark` line or the token overrides in `globals.css`.
+
+2. **Hard-reload with dark active and watch the first frame.** No flash means the inline script set the class before paint. A flash means the script isn't running: the provider is missing or misplaced, or a competing effect-based setter is fighting it. Let `next-themes` own the class.
+</Steps>
+
+These events fire in a fixed order. Drag them into place.
+
+<Sequence instructions="Order the events from a fresh page load with dark mode active, from server to first user interaction.">
+  <Step>The server renders the page with the default theme — it can't read the browser or the OS</Step>
+  <Step>The inline `<head>` script runs and sets `.dark` on `<html>`</Step>
+  <Step>The browser paints the first frame — already dark, so no flash</Step>
+  <Step>React hydrates the page, finding the class already in place</Step>
+  <Step>The user clicks the toggle, and `setTheme` flips the theme</Step>
+</Sequence>
+
+<VideoCallout videoId="7zqI4qMDdg8" videoTitle="Next.js Dark Mode with No Flicker + Tailwind CSS">
+  Dave Gray walks the whole flow: why the flash happens, the `Providers` pattern, `suppressHydrationWarning`, and the mounted toggle. The config is Tailwind v3, but the `next-themes` mechanics are identical.
+</VideoCallout>
+
+## Beyond light and dark
+
+Some apps ship more than two themes: a marketing site with brand variants, or a high-contrast mode. The same machinery scales — switch `<ThemeProvider>` to `attribute="data-theme"`, pass `themes={['light', 'dark', 'blue', 'high-contrast']}`, and add a `[data-theme="blue"] { … }` token block in `globals.css` for each. It's last lesson's token model, keyed off an attribute instead of `.dark`. Rare in SaaS dashboards, common on marketing sites; you won't build it here.
+
+<Aside type="note" title="A note you can mostly ignore">
+  If an older guide warns that React 19 rejects the inline `<script>` that `next-themes` injects, ignore it: current `next-themes` handles this cleanly.
+</Aside>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="The Quest for the Perfect Dark Mode"
+    href="https://www.joshwcomeau.com/react/dark-mode/"
+    icon="lucide:moon-star"
+    iconColor="#6E56CF"
+    description="Josh Comeau derives the pre-paint inline-script fix from first principles, the deepest take on the flash this lesson is built to fix."
+  />
+  <ExternalResource
+    title="React — suppressHydrationWarning"
+    href="https://react.dev/reference/react-dom/client/hydrateRoot"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The authoritative word on the one prop that confuses people: one level deep, an escape hatch, not for general use."
+  />
+  <ExternalResource
+    title="next-themes — README"
+    href="https://github.com/pacocoursey/next-themes"
+    icon="simple-icons:github"
+    description="The canonical API: every ThemeProvider prop and the full useTheme() surface, straight from the source."
+  />
+  <ExternalResource
+    title="shadcn/ui — Dark mode (Next.js)"
+    href="https://ui.shadcn.com/docs/dark-mode/next"
+    icon="simple-icons:shadcnui"
+    iconColor="#000000"
+    description="shadcn's setup. Note its standalone theme-provider.tsx, the per-provider shape our single Providers consolidates."
+  />
+</CardGrid>
