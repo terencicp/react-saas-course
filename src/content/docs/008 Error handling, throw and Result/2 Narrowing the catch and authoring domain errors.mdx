@@ -1,0 +1,550 @@
+---
+title: Narrowing the catch and authoring domain errors
+tagline: A TypeScript discipline that turns an unknown catch into a typed discrimination ladder, backed by custom Error subclasses that carry structured failure data.
+chapter-id: 8
+course-progress: 0.0682
+sidebar:
+  order: 2
+  label: Narrowing and domain errors
+rewrites: 2
+---
+
+import { CardGrid } from '@astrojs/starlight/components';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import RealmBoundary from '../../../components/lessons/008/2/RealmBoundary.astro';
+import CodeReview from '../../../components/exercises/code-review/CodeReview.astro';
+import ReviewFile from '../../../components/exercises/code-review/ReviewFile.astro';
+import ReviewIssue from '../../../components/exercises/code-review/ReviewIssue.astro';
+import ReviewWhy from '../../../components/exercises/code-review/ReviewWhy.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Picture a `chargeInvoice(invoiceId)` Server Action in one `try`/`catch`. It charges the card through Stripe, writes an invoice row to Postgres, and enqueues a confirmation email. Three failures can reach that catch, each needing a different response.
+
+A Stripe network error means the API was unreachable; let it bubble, so the operator log records it and the framework renders the global error page. A Stripe `card_declined` means the issuer rejected the card; turn it into "Your card was declined." for the user. An `AbortError` means the user navigated away mid-charge; no-op silently, since there's no one left to apologize to. One `catch (err)`, three failures, and `err` is typed `unknown`. How does the catch tell them apart and carry the original failure forward so the log gets the full chain?
+
+Under `strict`, `useUnknownInCatchVariables` types the catch parameter as `unknown`, so `err.message` won't compile until you narrow. Four moves turn that `unknown` into a discrimination ladder: **narrow** with `instanceof Error`, **discriminate** on `error.name`, **normalize** with `ensureError` at vendor seams, and **walk** `Error.cause` when the log needs the chain.
+
+## The `instanceof Error` narrow
+
+The cheapest narrow on an `unknown` value is `instanceof Error`. After the check, the compiler treats `err` as a full `Error`.
+
+<CodeVariants syncKey="catch-narrow">
+  <CodeVariant label="Wrong">
+    <div data-mark-color="red">
+
+    ```ts "err.message"
+    try {
+      await chargeInvoice(invoiceId);
+    } catch (err) {
+      log.error('charge failed', { message: err.message });
+    }
+    ```
+
+    </div>
+    The catch parameter is `unknown`. The compiler refuses `err.message` because it has no proof that `err` is even an object, let alone one with a `message` field. This is the `useUnknownInCatchVariables` trap the previous lesson named.
+  </CodeVariant>
+
+  <CodeVariant label="Right">
+    <div data-mark-color="green">
+
+    ```ts {4-6}
+    try {
+      await chargeInvoice(invoiceId);
+    } catch (err) {
+      if (err instanceof Error) {
+        log.error('charge failed', { message: err.message, name: err.name });
+      }
+    }
+    ```
+
+    </div>
+    `err instanceof Error` <Term definition="A TypeScript control-flow check that refines a value type from broader to more specific — unknown to Error, string | undefined to string. After the narrow, the compiler reasons about the refined type inside the guarded block.">narrows</Term> `err` from `unknown` to `Error`. Because the project obeys the "only throw `Error`" rule from the previous lesson, this catches everything its own code throws.
+  </CodeVariant>
+</CodeVariants>
+
+Inside the guard, four standard properties are typed and readable. `message` is the operator-facing string the throw site wrote. `name` is the constructor's name: `'Error'` for `new Error(...)`, or whatever a subclass set. `stack` is the trace captured at construction. `cause` is whatever the options object set, or `undefined`. Custom subclasses add their own typed fields on top.
+
+<VideoCallout videoId="xdQkEn3mx1k" videoTitle="Better error handling with unknown type in TypeScript">
+  Benny Code walks the `unknown` catch from `instanceof Error` to custom type guards and the `useUnknownInCatchVariables` flag, in eleven minutes.
+</VideoCallout>
+
+## Cross-realm error checks: `Error.isError()`
+
+`instanceof Error` works inside a single JavaScript <Term definition="A JavaScript execution context with its own global object and its own copy of every built-in constructor — a Web Worker, a vm context, an iframe, the Next.js edge runtime. instanceof fails across realms because each side holds a different constructor reference for the same built-in name.">realm</Term>.
+The moment a thrown value crosses a realm boundary, the two sides hold different `Error` constructors, so `err instanceof Error` returns `false` on a real `Error` instance.
+
+<RealmBoundary />
+
+The fix is `Error.isError()`, an ES2026 helper that ships unflagged in the course's runtime and in modern browsers.
+It checks the internal `[[ErrorData]]` slot instead of constructor identity, so it returns `true` for any real `Error` whatever realm built it.
+
+<div data-mark-color="blue">
+
+```ts "Error.isError(err)"
+try {
+  await chargeInvoice(invoiceId);
+} catch (err) {
+  if (Error.isError(err)) {
+    log.error('charge failed', { message: err.message });
+  }
+}
+```
+
+</div>
+
+The shape matches the `instanceof Error` version; only the check changes.
+Inside a single realm, which covers most application code, `instanceof Error` is fine.
+Reach for `Error.isError()` when the catch sits on the receiving side of a realm boundary: a Web Worker, a `vm` context, an iframe, or middleware (edge runtime) whose error is caught in a Server Component (Node runtime).
+
+On an older runtime, or when the catching code can't import the error's class, the `error.name` string is the durable fallback, covered next.
+
+## Discriminating on `error.name`
+
+Every `Error` subclass sets a `name` string. Because strings are values, not constructor references, `err.name === 'AbortError'` works across realms, across module boundaries, and even when the class isn't importable from the catching code.
+
+Two cases make this concrete, both from the cancellation APIs of the previous chapter.
+
+<CodeVariants syncKey="error-name-sites">
+  <CodeVariant label="AbortError">
+    <div data-mark-color="blue">
+
+    ```ts "err.name === 'AbortError'"
+    try {
+      const data = await fetch(url, { signal: controller.signal });
+      return data;
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        return;
+      }
+      throw err;
+    }
+    ```
+
+    </div>
+    `fetch`, `AbortSignal.timeout`, and most cancellable APIs throw `AbortError` when the signal aborts. The class differs by environment, a `DOMException` in browsers and something else in Node, but `err.name === 'AbortError'` always reads. The catch returns silently: a deliberate cancellation has no user left to notify.
+  </CodeVariant>
+
+  <CodeVariant label="TimeoutError">
+    <div data-mark-color="blue">
+
+    ```ts "err.name === 'TimeoutError'"
+    try {
+      const data = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      return data;
+    } catch (err) {
+      if (err instanceof Error && err.name === 'TimeoutError') {
+        return retry();
+      }
+      throw err;
+    }
+    ```
+
+    </div>
+    When the deadline hits, `AbortSignal.timeout(ms)` throws a distinct `TimeoutError`, not an `AbortError`. The difference drives behavior: a timeout is worth retrying, a user cancellation is not.
+  </CodeVariant>
+</CodeVariants>
+
+When the catch and the throw live in different modules or bundles, the class may not be importable, but the `name` string always reads. That is why the custom subclasses in the next section pin `name` to a `readonly ... as const` literal: the literal is the discriminant, and it stays in lockstep with the class.
+
+## Authoring a custom `Error` subclass
+
+When the catch needs *structured data*, such as a Stripe decline code, a retry-after duration, or a tenant ID, reach for a small custom `Error` subclass. Extend `Error` directly, give it a literal-typed `name`, add typed fields, and pass `{ cause }` through to `super`. No abstract base classes, no taxonomy trees.
+
+<AnnotatedCode lang="ts" code={`
+// lib/errors.ts
+export class BillingError extends Error {
+  readonly name = 'BillingError' as const;
+  readonly code: 'card_declined' | 'insufficient_funds' | 'authentication_required';
+
+  constructor(
+    code: 'card_declined' | 'insufficient_funds' | 'authentication_required',
+    message: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.code = code;
+  }
+}
+`}>
+  <AnnotatedStep meta="{2}" color="blue">
+    **Extends `Error` directly.** No abstract base class, no `AppError` parent. Domain errors form a flat namespace: one class per concern (`BillingError`, `RateLimitError`, `TenancyError`), all extending `Error`. The taxonomy is the *set of literal `name` values*, not an inheritance tree, because the catch only needs to read a tag.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3}" color="green">
+    **The literal-typed `name`.** This is the discriminant. Mark it `readonly`, and write `'BillingError' as const` so its type is the literal `'BillingError'`, not the wider `string`. Combined with `instanceof Error`, `err.name === 'BillingError'` narrows the type at the catch, even across realm or module boundaries where `instanceof BillingError` would fail. Don't write `super('BillingError', ...)`: that puts `'BillingError'` into `message`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{4} {7} {12}`} color="orange">
+    **Structured fields.** The class carries the data the catch branches on. Here `code` is the per-failure-mode discriminant, typed as a string-<Term definition='A TypeScript type that is a specific string, number, or boolean value rather than the wider category. "BillingError" is a literal type; string is the wider type. Use as const (or an explicit annotation) to keep a value at its literal type instead of widening to string.'>literal</Term> union so the consumer's `switch` is exhaustive. Other classes add fields freely: `RateLimitError` carries `retryAfter: Temporal.Duration`, `TenancyError` carries `expectedOrgId` and `actualOrgId`. The catch reads `err.code`, not a substring of `err.message`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{9} {11}`} color="violet">
+    **`{ cause }` passes through.** The `Error` constructor's options object accepts a `cause` field. Passing it through to `super` preserves the chain that the next section's rewrap pattern depends on. Without it, `err.cause` is `undefined` even when callers set it.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Name each class in `PascalCase`, one per domain concern. The flat namespace lives at `/lib/errors.ts`, next to the `Result` helpers from the previous lesson.
+
+## Chaining errors with `Error.cause`
+
+`Error.cause` links a failure to the one that caused it, in two patterns.
+**Rewrap at the seam** is the daily one: a function catches a vendor error and throws a domain error carrying the original.
+**Walk the chain** lives inside the structured logger, reading `cause` recursively to log every link.
+
+<div data-mark-color="blue">
+
+```ts {5-7}
+try {
+  await stripe.charges.create({ amount, source: token });
+} catch (e) {
+  if (e instanceof Stripe.errors.StripeCardError) {
+    throw new BillingError('card_declined', 'Card declined by issuer', {
+      cause: e,
+    });
+  }
+  throw e;
+}
+```
+
+</div>
+
+The vendor's `StripeCardError` becomes the project's `BillingError`.
+The action's user-facing branch reads `err instanceof BillingError && err.code === 'card_declined'` and renders a message.
+The operator log walks `err.cause` for the full Stripe response, including request ID, decline code, and network timing, with no string parsing.
+
+Notice the catch parameter is `e`, not `err`.
+The previous lesson named `err` as the failure-factory helper from `lib/result.ts`, and shadowing it would force every reference back to a qualified import.
+When the catch body calls the `err` factory, use `e` for the caught value; otherwise `err` is fine.
+
+The structured logger walks the chain like this.
+
+<div data-mark-color="blue">
+
+```ts
+const causes: Error[] = [];
+let current: unknown = err;
+while (current instanceof Error && !causes.includes(current)) {
+  causes.push(current);
+  current = current.cause;
+}
+```
+
+</div>
+
+The loop reads `cause` until it is undefined, or until it sees one it has already pushed.
+Cause cycles are rare, but they send an unguarded walker into an infinite loop.
+Read the chain in a loop, never through `err.cause.cause.cause`, which throws the moment the chain is shorter than the dots assume.
+
+Setting `cause` to a non-`Error` value (a string, a plain object, `null`) is legal but loses the structured chain.
+Your own code keeps `cause` an `Error` or `undefined`; vendor seams may set anything, which is why the loop checks `current instanceof Error` before reading `current.cause`.
+
+## Normalizing unknown throws with `ensureError`
+
+The "only throw `Error`" rule holds inside your own code. At third-party seams, though, a thrown value may be a string, a plain object, or even `null`. The `ensureError` helper normalizes any `unknown` into an `Error` so the rest of the catch can treat it uniformly.
+
+<div data-mark-color="blue">
+
+```ts
+// lib/errors.ts
+export const ensureError = (value: unknown): Error =>
+  value instanceof Error
+    ? value
+    : new Error(
+        typeof value === 'string' ? value : JSON.stringify(value),
+        { cause: value },
+      );
+```
+
+</div>
+
+An existing `Error` passes through untouched. Anything else is wrapped in a fresh `Error` with a readable `message` and the original value on `cause`, so the structured logger still sees what came in. At the seam, `catch (err) { const error = ensureError(err); ... }` lets the rest of the block treat `error` as an `Error` safely.
+
+`ensureError` lives in `/lib/errors.ts` beside the custom subclasses, imported at every catch that touches a vendor seam. Inside your own code, `instanceof Error` is enough. It belongs at the bottom of the catch ladder you'll build next, as the catch-all after the specific branches.
+
+## The full catch, most specific to least
+
+The four moves assemble into one catch that reads top to bottom: specific subclasses first (the most type-safe narrows), then `error.name` for cross-realm errors recognized by string, then a generic `Error` branch for everything else the project threw, then `ensureError` for vendors that broke the rule. This is the `chargeInvoice` Server Action the lesson opened with.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+// app/(app)/invoices/actions.ts
+export const chargeInvoice = async (invoiceId: string) => {
+  try {
+    await processCharge(invoiceId);
+    return ok({ chargedAt: Temporal.Now.instant() });
+  } catch (e) {
+    if (e instanceof BillingError) {
+      switch (e.code) {
+        case 'card_declined':
+          return err({ code: 'CARD_DECLINED', userMessage: 'Your card was declined.' });
+        case 'insufficient_funds':
+          return err({ code: 'INSUFFICIENT_FUNDS', userMessage: 'Not enough funds.' });
+        case 'authentication_required':
+          return err({ code: '3DS_REQUIRED', userMessage: 'Additional verification needed.' });
+      }
+    }
+    if (e instanceof Error && e.name === 'AbortError') {
+      return;
+    }
+    if (e instanceof Error) {
+      throw e;
+    }
+    throw ensureError(e);
+  }
+};
+`}>
+  <AnnotatedStep meta="{7-16}" color="blue">
+    **Specific subclass first.** The `instanceof BillingError` narrow exposes the typed `e.code` discriminant, and the `switch` converts each code into a `Result.err` with a stable code and a user-facing message: the channel conversion from the previous lesson, applied at the seam. Anything else falls through.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{17-19}" color="orange">
+    **Cross-realm `name` check next.** An `AbortError` can arrive from another realm, such as an edge-runtime middleware or worker that cancelled, and `error.name` is the portable discriminant. The `instanceof Error && e.name === '...'` shape works inside the same realm; for true cross-realm code, swap `instanceof Error` for `Error.isError(e)`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{20-22}" color="violet">
+    **Generic `Error` branch.** An `Error` that is neither a `BillingError` nor an `AbortError` is operational: Stripe is down, the database is unreachable, an invariant tripped. Rethrow and let the framework boundary handle the user-versus-operator split.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{23}" color="red">
+    **`ensureError` as the catch-all.** If `e` isn't an `Error` at all, because a third-party adapter threw a string, `ensureError` normalizes it before you rethrow. The boundary then receives a real `Error` (so its narrowing reads) with the original on `cause` (so the operator log sees what came in).
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Order matters because the narrows widen as you descend: `instanceof BillingError` is the most specific, `instanceof Error` matches everything it would and more, and `ensureError` matches anything. Put `instanceof Error` first and it swallows every `BillingError` into the generic branch, losing the discriminant.
+
+:::note
+`Temporal.Now.instant()` returns the current instant. The course's data layer uses the `Temporal` API, native in Node 26 and polyfilled on Node 24 LTS; a later lesson installs it.
+:::
+
+## `AggregateError` and the `errors` array
+
+The previous chapter installed `Promise.any` as the "first to succeed" combinator. When *every* input rejects, it rejects with an `AggregateError` carrying each rejection on an `errors` array.
+
+<div data-mark-color="blue">
+
+```ts {5-7}
+try {
+  const winner = await Promise.any([fetchPrimary(), fetchSecondary(), fetchTertiary()]);
+  return winner;
+} catch (e) {
+  if (e instanceof AggregateError) {
+    log.error('all sources failed', { errors: e.errors.map((err) => err.message) });
+  }
+  throw e;
+}
+```
+
+</div>
+
+Narrow with `e instanceof AggregateError`, then read `e.errors` to decide the response: log every rejection, return a "no sources available" message, or trigger a fallback. Each entry is itself a value the same ladder can narrow: specific subclass, `error.name`, generic `Error`.
+
+## `Error.message` is for operators, not users
+
+The `message` field on an `Error` is for *operators*. It carries the technical detail the structured log needs: the SQL constraint name, the Stripe decline code, the Zod path, the request ID.
+
+The user-facing message lives elsewhere. The UI maps the `Result.err.code` discriminant from the previous lesson to a translation key, and at framework boundaries the `error.tsx` chrome carries the apology. So the rule is simple: **don't render `err.message` to users.** The technical detail leaks information and reads as gibberish; the localized message lives on the `code` the type system already forced the caller to inspect.
+
+A later chapter builds the wrapper that produces both messages from one error: the user-visible one from `code`, the operator log line from `err.message` and `err.cause`. The rule lands here so you keep `err.message` out of the UI from the start.
+
+## Practice
+
+Two exercises: spot a broken catch, then write a custom error subclass and the catch that reads it.
+
+### Exercise 1: Review three broken catches
+
+Three files, one defect each. Leave an inline comment naming what's wrong.
+
+<CodeReview instructions="Three catches, one defect each. Leave an inline comment on the line that breaks the lesson's narrowing reflex.">
+  <ReviewFile name="lib/billing/charge.ts">
+    ```ts
+    try {
+      await stripe.charges.create({ amount });
+    } catch (err) {
+      log.error(err.message);
+      throw err;
+    }
+    ```
+  </ReviewFile>
+
+  <ReviewFile name="app/workers/import-csv.ts">
+    ```ts
+    worker.addEventListener('error', (event) => {
+      if (event.error instanceof Error) {
+        handleError(event.error);
+      }
+    });
+    ```
+  </ReviewFile>
+
+  <ReviewFile name="lib/storage/upload.ts">
+    ```ts
+    try {
+      await legacyS3SDK.upload({ key, body });
+    } catch (err) {
+      log.error('upload failed', { message: err.message });
+      throw err;
+    }
+    ```
+  </ReviewFile>
+
+  <ReviewIssue file="lib/billing/charge.ts" line={4} kernel="unguarded err.message — catch parameter is unknown, needs instanceof Error narrow first">
+    Same trap the previous lesson named. `err` is typed `unknown`, so `err.message` is a compile error. Narrow with `if (err instanceof Error)` first, or normalize with `ensureError(err)` and read from the result.
+  </ReviewIssue>
+
+  <ReviewIssue file="app/workers/import-csv.ts" line={2} kernel="instanceof Error fails across realms — use Error.isError or check err.name">
+    Web Workers run in a separate realm with their own `Error` constructor, so `instanceof Error` returns `false` on a real `Error` thrown inside the worker. Use `Error.isError(event.error)`, or fall back to a `name` check.
+  </ReviewIssue>
+
+  <ReviewIssue file="lib/storage/upload.ts" line={4} kernel="vendor SDK may throw non-Error — wrap with ensureError before reading">
+    This SDK throws strings on certain failure modes, so `err` may not be an `Error` at all. Wrap with `const error = ensureError(err)` and read from the result, which is guaranteed to be an `Error`.
+  </ReviewIssue>
+
+  <ReviewWhy>
+    The three defects map to the lesson's first three moves: narrow before reading, use realm-safe narrows when realms are involved, and reach for `ensureError` at vendor seams.
+  </ReviewWhy>
+</CodeReview>
+
+### Exercise 2: Author a `RateLimitError` and catch it
+
+Give it a literal `name`, a `retryAfter` field, and `{ cause }` passthrough, then write the catch that discriminates it from a generic `Error`.
+
+<ScriptCoding
+  instructions="Author the RateLimitError class with a literal-typed name, a retryAfter field, and a {cause} passthrough. Then write the catch that discriminates it from a generic Error."
+  starter={`// Author RateLimitError as a small custom Error subclass.
+// Required shape:
+//   - extends Error directly (no abstract base)
+//   - readonly name = 'RateLimitError' as const
+//   - readonly retryAfter: number (seconds until retry is allowed)
+//   - constructor accepts (retryAfter, message, options?: { cause?: unknown })
+//     and passes options through to super(message, options)
+
+export class RateLimitError extends Error {
+  // your code here
+}
+
+// Write a catch that discriminates RateLimitError from a generic Error.
+// - If it's a RateLimitError, return { ok: false, retryAfter: e.retryAfter }
+// - Otherwise, rethrow.
+
+export const callApi = async (
+  fn: () => Promise<unknown>,
+): Promise<{ ok: true } | { ok: false; retryAfter: number }> => {
+  try {
+    await fn();
+    return { ok: true };
+  } catch (e) {
+    // your code here
+  }
+};
+`}
+  tests={`
+test('RateLimitError carries a literal name', () => {
+  const e = new RateLimitError(30, 'too many requests');
+  expect(e.name).toBe('RateLimitError');
+});
+
+test('RateLimitError carries retryAfter', () => {
+  const e = new RateLimitError(30, 'too many requests');
+  expect(e.retryAfter).toBe(30);
+});
+
+test('RateLimitError preserves cause', () => {
+  const original = new Error('429');
+  const e = new RateLimitError(30, 'too many requests', { cause: original });
+  expect(e.cause).toBe(original);
+});
+
+test('callApi returns retryAfter on RateLimitError', async () => {
+  const result = await callApi(async () => {
+    throw new RateLimitError(45, 'slow down');
+  });
+  expect(result).toEqual({ ok: false, retryAfter: 45 });
+});
+
+test('callApi rethrows generic Error', async () => {
+  await expect(
+    callApi(async () => {
+      throw new Error('network down');
+    }),
+  ).rejects.toThrow('network down');
+});
+`}
+/>
+
+<details>
+<summary>Reveal solution</summary>
+
+```ts
+export class RateLimitError extends Error {
+  readonly name = 'RateLimitError' as const;
+  readonly retryAfter: number;
+
+  constructor(retryAfter: number, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.retryAfter = retryAfter;
+  }
+}
+
+export const callApi = async (
+  fn: () => Promise<unknown>,
+): Promise<{ ok: true } | { ok: false; retryAfter: number }> => {
+  try {
+    await fn();
+    return { ok: true };
+  } catch (e) {
+    if (e instanceof RateLimitError) {
+      return { ok: false, retryAfter: e.retryAfter };
+    }
+    throw e;
+  }
+};
+```
+
+The class needs four things: `extends Error` directly, `readonly name = 'RateLimitError' as const`, a typed `retryAfter` field, and `super(message, options)` to pass the cause through. The catch is the specific-subclass-first shape: narrow with `instanceof RateLimitError`, read the field, rethrow anything else.
+
+</details>
+
+<VideoCallout videoId="vAH4GRWbAQw" videoTitle="How to handle Node.js errors like a Pro?">
+  Software Developer Diaries subclasses `Error` into a structured `AppError` with a literal name and an `isOperational` flag, then splits operational from programmer errors with an `instanceof` check. The custom-subclass and rethrow moves from a server angle, in 13 minutes.
+</VideoCallout>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="MDN — Error.cause"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error/cause"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The canonical reference for the cause field, the constructor's options object, and the chain semantics."
+  />
+  <ExternalResource
+    title="TC39 — Error.isError proposal"
+    href="https://github.com/tc39/proposal-is-error"
+    icon="simple-icons:github"
+    iconColor="#181717"
+    description="The Stage 4 (ES2026) cross-realm check. Rationale behind the helper and the realm-boundary cases it solves."
+  />
+  <ExternalResource
+    title="V8 — Error causes"
+    href="https://v8.dev/features/error-cause"
+    icon="simple-icons:v8"
+    iconColor="#4B8BF4"
+    description="The V8 team's introduction to Error.cause — short, engineer-focused, with the rewrap-at-the-seam example side by side with the older custom-class workaround."
+  />
+  <ExternalResource
+    title="TypeScript — useUnknownInCatchVariables"
+    href="https://www.typescriptlang.org/tsconfig/useUnknownInCatchVariables.html"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The TSConfig reference for the flag that types catch parameters as unknown under strict — the rule that makes the narrow-before-read discipline mandatory."
+  />
+</CardGrid>

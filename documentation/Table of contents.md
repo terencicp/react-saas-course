@@ -69,9 +69,9 @@
 - 4 Cancellation with AbortController and AbortSignal (Teaches the `{ signal }` parameter shape every modern web API speaks, the canonical user-cancel pattern with `AbortError` discrimination at the catch, `AbortSignal.timeout(ms)` as the 2026 replacement for `Promise.race` timeouts, and `AbortSignal.any([...])` for composing user-cancel, timeout, and shutdown signals into one.)
 - 5 Quiz
 
-### Chapter 008 — Errors as a first-class concern
-- 1 Two channels: throw the unexpected, return the expected (Teaches the `try`/`catch`/`finally` mechanics, the async-throw flow, the "only throw `Error`" rule, and the heuristic for routing each failure into either a `Result<T, E>` return or a throw the framework boundary catches.)
-- 2 Narrowing the catch and authoring domain errors (Teaches the `unknown`-in-catch narrow with `instanceof Error` and the `ensureError` normalizer, small custom `Error` subclasses with literal-typed `name` discriminants, `Error.cause` for re-wrap and chain walking, and the `error.name` fallback for `AbortError`, `TimeoutError`, and the cross-realm `instanceof` gotcha.)
+### Chapter 008 — Error handling, throw and Result
+- 1 Throw errors, return Results (Teaches the `try`/`catch`/`finally` mechanics, the async-throw flow, the "only throw `Error`" rule, and the heuristic for routing each failure into either a `Result<T, E>` return or a throw the framework boundary catches.)
+- 2 Narrowing the catch and authoring domain errors (Teaches the `unknown`-in-catch narrow with `instanceof Error`, the realm-safe `Error.isError()` and `error.name` discriminants, the `ensureError` normalizer, small custom `Error` subclasses with literal-typed `name`, and `Error.cause` for re-wrap and chain walking.)
 - 3 Quiz
 
 ### Chapter 009 — JSON, classes, and the Temporal pivot

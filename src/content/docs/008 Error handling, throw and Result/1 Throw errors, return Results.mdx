@@ -1,0 +1,489 @@
+---
+title: 'Throw errors, return Results'
+tagline: A TypeScript discipline for failure handling that splits every error into a thrown Error or a returned Result, the foundation the rest of the course builds on.
+chapter-id: 8
+course-progress: 0.0664
+sidebar:
+  order: 1
+  label: Two error channels
+rewrites: 2
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import TwoChannels from '../../../components/lessons/008/1/TwoChannels.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Imagine writing `parseInvoiceCsv(file)`, a function that parses an uploaded invoice CSV.
+Before any code, consider how it can fail.
+The file might be empty because the user picked the wrong export.
+A row might be malformed, with the wrong column count on line 17.
+A value might be out of range, like a `99,999,999.99` total on a system that caps invoices at six figures.
+Or the disk read might fail because the temp file vanished between upload and parse.
+
+The reflex is to `throw new Error(...)` for all four, wrap the call in `try`/`catch`, and render "something went wrong."
+Instead, ask one question of each failure: *can the caller do something different in this case?*
+That question splits the four into two channels and gives you a signature for `parseInvoiceCsv`.
+
+## The two channels
+
+Every failure in a JavaScript program travels on one of two channels.
+A <Term definition="A throw statement bubbles a value up the call stack, past every frame that doesn't catch it, until either a try/catch block catches it or the runtime treats it as unhandled.">throw</Term> bubbles a value up the call stack until something catches it or the runtime treats it as unhandled.
+A return passes a value down to the immediate caller; when that value carries a tagged failure, the type system makes the caller inspect it before reading either field.
+
+<TwoChannels />
+
+The decision comes down to one question:
+
+> **Can the caller reasonably do something different per case?**
+
+- **Yes, the caller branches on the cause.** A *domain* failure: an expected outcome in the function's contract, a discriminant the caller reads to render a different message, retry, or fall back. **Return** a `Result<T, E>`.
+- **No, the caller can only log and show "something went wrong."** An *operational* failure: an infrastructure or unexpected fault with no per-case recovery at this layer. **Throw**, and let a <Term definition="The catch site at the edge of the framework's request lifecycle — error.tsx, the route handler's catch, the Server Action wrapper. The buck stops here; the boundary decides on the user-visible response.">framework boundary</Term> decide the user-visible response.
+
+Run the question on `parseInvoiceCsv`'s four failures:
+
+- **Empty file:** the caller can render "this file has no invoices, please re-upload," distinct from "row 7 is malformed." **Return** `{ code: 'EMPTY' }`.
+- **Malformed row:** the caller can highlight the specific row. **Return** `{ code: 'INVALID_ROW', row: 17 }`.
+- **Out-of-range column:** the caller can highlight the specific column. **Return** `{ code: 'OUT_OF_RANGE', column: 'total' }`.
+- **Disk read failed:** no caller has a recovery beyond "show the global error toast." **Throw**.
+
+Three are expected and travel on the return channel as a discriminated union; one is operational and throws.
+
+## `try`/`catch`/`finally`, in the strict-mode shape
+
+The throw channel has three pieces.
+A `try` block guards a section of code; if anything inside throws, control jumps to the matching `catch`; and `finally` runs on the way out no matter what happened.
+
+<AnnotatedCode lang="ts" code={`const closeStaleSessions = async (orgId: string) => {
+  const connection = await pool.acquire();
+  try {
+    const stale = await connection.query(/* ... */);
+    await connection.execute(/* ... */);
+    return stale.length;
+  } catch (err) {
+    // err is typed unknown — accessing err.message here is a compile error
+    log.error('closeStaleSessions failed', { orgId });
+    throw err;
+  } finally {
+    connection.release();
+  }
+};`}>
+  <AnnotatedStep meta="{3-7}" color="blue">
+    **The guarded block.** Anything between `try {` and its closing `}` is under the catch's protection. A synchronous `throw` inside, or a rejection from any `await`ed Promise, jumps to `catch`. One exclusion: a throw from a nested `async` call you don't await escapes as an unhandled rejection.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7-11}" color="orange">
+    **The catch parameter is `unknown`.** TypeScript's `strict` flag turns on `useUnknownInCatchVariables`, typing `err` as `unknown`, so the compiler refuses any property access, including `err.message`. JavaScript lets you throw any value, even `42`, so unknown shape is the only safe assumption. The next lesson covers the `instanceof Error` narrow that unlocks `err.message`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11-13}" color="green">
+    **`finally` runs whatever happened.** Whether the `try` completed normally, the `catch` ran, or the `catch` rethrew, `finally` runs before control leaves the function. Use it for cleanup, like releasing the connection above. One pitfall: a `return` or `throw` inside `finally` *overrides* the `try`/`catch` outcome, so keep `finally` to side effects, not control flow.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+When the catch has nothing to do with the error, like a fire-and-forget log you'd rather drop than let crash the surrounding flow, omit the parameter:
+
+```ts
+try {
+  await logEvent(event);
+} catch {
+  /* swallow — logging is fire-and-forget */
+}
+```
+
+This bare `catch` is not an escape from the `unknown` typing; it's only for when there's nothing to read.
+
+### The async-throw flow
+
+Most catches you write guard `await` expressions, not synchronous throws.
+The rule from the async chapter still holds: **a rejected Promise becomes a throw at the `await` site**, and the synchronous catch rules take over from there.
+That has three practical consequences.
+
+<CodeVariants syncKey="async-throw">
+  <CodeVariant label="await inside try catches">
+    <div data-mark-color="green">
+
+    ```ts
+    try {
+      const invoice = await fetchInvoice(id);
+      return invoice;
+    } catch (err) {
+      // err is unknown — the rejection from fetchInvoice lands here
+    }
+    ```
+
+    </div>
+
+    **The Promise rejects, the `await` throws, the `catch` catches it.** Treat a rejected Promise like any thrown value: `err` is `unknown`, and you narrow before reading.
+  </CodeVariant>
+
+  <CodeVariant label="No await, no catch">
+    <div data-mark-color="red">
+
+    ```ts
+    try {
+      fetchInvoice(id); // missing await — the rejection escapes the try
+    } catch (err) {
+      // never runs — the catch sees nothing
+    }
+    ```
+
+    </div>
+
+    **No `await`, no catch.** Without `await`, the call returns its Promise immediately, and the `try` block has already exited by the time the Promise rejects. The rejection becomes unhandled. For a deliberate fire-and-forget call, use the discipline from the parallel-by-default lesson: `void fetchInvoice(id).catch((err) => log.error(err))`.
+  </CodeVariant>
+
+  <CodeVariant label="return await is mandatory in try">
+    <div data-mark-color="orange">
+
+    ```ts
+    // wrong — `return getInvoice(id)` returns the promise to the caller;
+    // the catch never sees the rejection
+    try {
+      return getInvoice(id);
+    } catch (err) {
+      // never runs
+    }
+
+    // right — `return await` keeps the function on the stack until the
+    // promise settles
+    try {
+      return await getInvoice(id);
+    } catch (err) {
+      // catches rejection
+    }
+    ```
+
+    </div>
+
+    **Inside a `try`, the function must stay on the stack to catch the rejection.** A bare `return` pops the function off the stack the moment it hands back the Promise, so when the Promise rejects there's no `try` frame left to catch it. Inside `try`, always `return await`; outside, a bare `return` is fine.
+  </CodeVariant>
+</CodeVariants>
+
+All three follow from one rule: the `await` is where the throw happens.
+If it's inside the `try`, the catch sees the rejection; if it's missing or skipped by a bare `return`, the catch sees nothing and the rejection becomes <Term definition="A rejected Promise with no .catch, no await inside a try/catch, and no combinator handling the rejection branch. In modern Node, this terminates the process by default.">unhandled</Term>.
+
+<VideoCallout videoId="wsoQ-fgaoyQ" videoTitle="5 Async + Await Error Handling Strategies — Wes Bos">
+  Wes Bos walks through five ways to handle a rejected Promise (18 min). The try/catch scoping problems he keeps hitting are why the next sections reach for a returned Result.
+</VideoCallout>
+
+## Throw only `Error` instances
+
+JavaScript lets you throw any value: `throw 'oh no'`, `throw 42`, and `throw { code: 'BILLING' }` are all legal.
+The rule for this course: **the thrown value is always an `Error` instance, or a subclass of `Error`.**
+
+<CodeVariants syncKey="throw-shape">
+  <CodeVariant label="Wrong">
+    <div data-mark-color="red">
+
+    ```ts
+    if (!total) throw 'missing total';
+    if (status === 'void') throw { code: 'VOID_INVOICE' };
+    ```
+
+    </div>
+
+    **A string or plain object is thrown.** `instanceof Error` returns `false`, so the catch can't read `message`, `name`, `stack`, or `cause`. There's no stack trace either, so nothing tells you where the failure happened.
+  </CodeVariant>
+
+  <CodeVariant label="Right">
+    <div data-mark-color="green">
+
+    ```ts
+    if (!total) throw new Error('missing total');
+    // for domain failures with structure, reach for a custom Error subclass
+    // (covered in the next lesson)
+    ```
+
+    </div>
+
+    **An `Error` is thrown.** The catch narrows with `instanceof Error` and reads `message`, `name`, `stack`, and `cause`, and the trace points at the throw site. Every catch in the codebase can rely on the same surface.
+  </CodeVariant>
+</CodeVariants>
+
+The payoff is a predictable catch: one `instanceof Error` narrows every thrown value to that known surface, and the trace points at the throw site, not the catch site.
+Some SDKs and browser APIs still throw strings or plain objects; the next lesson adds a small `ensureError` normalizer that wraps those before a catch reads them.
+Inside the course's own code the rule is absolute: `throw new Error(...)`, or a subclass that extends it, never anything else.
+
+## The `Result<T, E>` shape
+
+Now the return channel needs its shape.
+When a failure is expected and the caller branches on the cause, you return a discriminated union the type system forces the caller to inspect before reading either side.
+That is the `Result<T, E>` shape: the discriminated union from the earlier TypeScript chapter, now applied to async returns. You have the structural tool already; this lesson teaches *when* to reach for it.
+
+<AnnotatedCode lang="ts" code={`// lib/result.ts
+export type Result<T, E> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+export const ok = <T>(value: T): Result<T, never> => ({ ok: true, value });
+export const err = <E>(error: E): Result<never, E> => ({ ok: false, error });`}>
+  <AnnotatedStep meta="{2-4}" color="blue">
+    **The shape.** A discriminated union with two variants. The boolean `ok` is the discriminant: `value` lives on the success variant, `error` on the failure variant, each carrying only the field valid for its state. No `Result` has both `value` and `error`, and none has neither. The impossible state is unrepresentable.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="green">
+    **The success factory.** `ok(value)` builds the success variant. Its return type is `Result<T, never>`; the `never` on the absent side lets the value land in any `Result<T, E>` slot, whatever `E` is.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7}" color="red">
+    **The failure factory.** `err(error)` mirrors it, returning `Result<never, E>` so it lands in any `Result<T, E>` slot whatever `T` is. Together `ok` and `err` are the only two ways the project builds a `Result`; no one writes the `{ ok: true, value }` literal inline.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+`T` is whatever the success carries: an array of invoices, a user record, a token.
+`E` is where the real design work happens.
+
+### `E` is a discriminated union too
+
+The point of `Result` isn't to return an error string but a *structured, tagged* failure the type system makes the caller inspect.
+So `E` is itself a discriminated union, each tag carrying exactly the data its branch needs to render a different message or retry differently.
+
+Here is the `parseInvoiceCsv` signature:
+
+```ts
+type ParseError =
+  | { code: 'EMPTY' }
+  | { code: 'INVALID_ROW'; row: number }
+  | { code: 'OUT_OF_RANGE'; column: string };
+
+const parseInvoiceCsv = async (
+  file: File,
+): Promise<Result<Invoice[], ParseError>> => {
+  // ... can throw on disk read errors; returns ok(invoices) or err({ code: '...' })
+};
+```
+
+Read each side of the `Promise<Result<Invoice[], ParseError>>`.
+Success returns an array of invoices.
+Expected failure returns one of three tagged variants, each carrying what its branch needs: the row number for `INVALID_ROW`, the column name for `OUT_OF_RANGE`.
+The disk-read failure is *absent* from `ParseError`: no caller can branch on it usefully, so it travels on the throw channel instead.
+
+The caller, then, looks like this:
+
+```ts
+const result = await parseInvoiceCsv(file);
+if (result.ok) {
+  return showInvoices(result.value);
+}
+switch (result.error.code) {
+  case 'EMPTY':
+    return showEmptyMessage();
+  case 'INVALID_ROW':
+    return highlightRow(result.error.row);
+  case 'OUT_OF_RANGE':
+    return highlightColumn(result.error.column);
+  default:
+    return assertNever(result.error);
+}
+```
+
+Two things to notice.
+First, `if (result.ok)` is the discriminant narrow: inside the `if`, `result.value` is `Invoice[]`; outside it, `result.error` is `ParseError`, and the compiler refuses `result.value`.
+Second, the `default` branch calls `assertNever(result.error)`, the exhaustiveness helper: add a fourth variant to `ParseError` and every consumer's `switch` becomes a compile error until it handles the new case.
+
+That is the payoff. The type system forces the caller to check `ok` before reading either field, branch on the discriminant, and update when a new failure mode is added. None of it holds if all four failures throw.
+
+<VideoCallout videoId="AdmGHwvgaVs" videoTitle="I'm Ditching Try/Catch for Good! — Web Dev Simplified">
+  Web Dev Simplified builds the same returned-error pattern from scratch in TypeScript (10 min), showing the catch-scoping problems that push you away from `try`/`catch` toward a `Result`.
+</VideoCallout>
+
+### When not to return a `Result`
+
+The opposite mistake is reaching for `Result<T, E>` on *every* failure.
+A signature like `Result<T, 'DATABASE_DOWN' | 'TIMEOUT' | 'INTERNAL'>` does operator-error reporting in the return channel.
+What does the caller do with `error.code === 'DATABASE_DOWN'`?
+Log it and render "something went wrong," same as `TIMEOUT` and `INTERNAL`.
+That isn't per-case branching; it's a throw forced into a return.
+
+A failure belongs on the return channel when it is **expected *and* the caller branches on it**.
+If either condition is missing, it's a throw.
+
+:::note
+The `Result<T, E>` shape used throughout the project lives at `lib/result.ts` with these exact field names: `value` for success, `error` for failure. A later chapter locks it into the Server Action contract, where every form action returns a `Result<T, ActionError>` and the form reads `result.ok` to render success or error.
+:::
+
+## Where to put the catch
+
+The channel decision tells you whether a failure throws or returns.
+A second question is *where* the catch goes. There are two right places and one anti-pattern.
+
+**At the framework boundary, for unexpected throws.** Server Actions, route handlers, page-level loaders, and React's `error.tsx` boundary catch the throws that escaped business code. The audit log and the split between user-facing and operator-facing messages happen there. The boundary is a destination, not a mechanic you reach for in business code.
+
+**At a call site with a non-throw alternative.** A `try`/`catch` wraps a third-party SDK call to *convert the channel*: the vendor's throw becomes the project's `Result.err(...)`.
+
+The anti-pattern alongside the conversion:
+
+<CodeVariants syncKey="catch-placement">
+  <CodeVariant label="Anti-pattern: log and continue">
+    <div data-mark-color="red">
+
+    ```ts
+    try {
+      await chargeInvoice(invoiceId);
+    } catch (err) {
+      // logs and continues — the caller still thinks the charge succeeded
+      log.error('charge failed', { invoiceId, err });
+    }
+    return ok(invoice);
+    ```
+
+    </div>
+
+    **The catch logs and continues with no remediation.** The function returns `ok(invoice)` even though the charge failed, so the caller never finds out, the user sees a success page, and the invoice stays unpaid. The catch neither converts the channel nor lets the boundary handle it. Either the failure is recoverable, so the catch should convert it to `Result.err`, or it isn't, so the catch shouldn't exist and the boundary catches the throw.
+  </CodeVariant>
+
+  <CodeVariant label="Converted: vendor throw becomes Result.err">
+    <div data-mark-color="green">
+
+    ```ts
+    try {
+      await chargeInvoice(invoiceId);
+      return ok(invoice);
+    } catch (e) {
+      // catch parameter is `e` to avoid shadowing the `err` factory helper
+      // vendor's throw becomes our Result.err — the caller can branch on
+      // 'CARD_DECLINED'
+      if (e instanceof Stripe.errors.StripeCardError) {
+        return err({
+          code: 'CARD_DECLINED',
+          userMessage: 'Your card was declined.',
+        });
+      }
+      throw e; // operational — let the boundary catch it
+    }
+    ```
+
+    </div>
+
+    **The catch converts the channel for the case the caller can act on.** The form can render a `StripeCardError` as a per-card message, so the function returns `err({ code: 'CARD_DECLINED', ... })`. Everything else is operational, Stripe is down, the key was rotated, the request was malformed, so the catch rethrows it and the boundary owns the response.
+  </CodeVariant>
+</CodeVariants>
+
+The right shape has a catch because the catch is *doing something*: converting a vendor's throw into the project's `Result.err`.
+The anti-pattern has a catch because the developer wanted to "handle the error somehow," and that vagueness is the tell.
+A catch that neither converts the channel nor defers to the boundary shouldn't exist.
+
+## Practice
+
+The first exercise drills the return-vs-throw decision, the second has you write the `Result<T, E>` shape from a throwing function.
+
+### Exercise 1: Route each failure
+
+Eight failures from a real codebase. Sort each into the channel an experienced engineer would choose.
+
+<Buckets twoCol instructions="Sort each failure into the channel an experienced engineer would route it through. Apply the 'can the caller do something different per case?' heuristic.">
+  <Bucket name="return" label="Return Result<T, E>" description="The caller branches on the cause" />
+  <Bucket name="throw" label="Throw — let the boundary catch" description="The caller cannot reasonably recover per-case" />
+
+  <Item bucket="return">CSV row out of range during invoice import</Item>
+  <Item bucket="throw">Postgres connection refused</Item>
+  <Item bucket="throw">Stripe API key rotated mid-request</Item>
+  <Item bucket="return">User submitted a duplicate email at sign-up</Item>
+  <Item bucket="throw">S3 returned 503 on upload</Item>
+  <Item bucket="return">Zod parse failed on form input</Item>
+  <Item bucket="throw">Invariant violated: tenant ID mismatch between session and resource</Item>
+  <Item bucket="throw">OAuth provider returned an unknown error code</Item>
+</Buckets>
+
+### Exercise 2: Refactor throws to `Result<T, E>`
+
+Refactor the throwing `parseUser` to return `Result<User, ParseError>`, carrying the offending value on `INVALID_AGE` so the caller can render "we got `'thirty'`, please enter a number."
+
+<ScriptCoding
+  instructions="Refactor parseUser so it returns Result<User, ParseError> for the two validation failures. ParseError is a discriminated union with codes 'INVALID_EMAIL' and 'INVALID_AGE'. The INVALID_AGE variant carries the offending value as 'received'."
+  starter={`// Result helpers (the lesson's lib/result.ts shape)
+const ok = (value) => ({ ok: true, value });
+const err = (error) => ({ ok: false, error });
+
+// Rewrite parseUser so it returns Result<User, ParseError>.
+// ParseError is a discriminated union of two cases:
+//   - { code: 'INVALID_EMAIL' }
+//   - { code: 'INVALID_AGE'; received: unknown }
+//
+// User shape: { id: string; email: string; age: number }
+
+const parseUser = (input) => {
+  if (!input.email.includes('@')) throw new Error('invalid email');
+  if (typeof input.age !== 'number') throw new Error('invalid age');
+  return { id: input.id, email: input.email, age: input.age };
+};
+`}
+  tests={`
+test('returns ok on valid input', () => {
+  const result = parseUser({ id: '1', email: 'a@b.com', age: 30 });
+  expect(result).toEqual({ ok: true, value: { id: '1', email: 'a@b.com', age: 30 } });
+});
+
+test('returns INVALID_EMAIL on a missing @', () => {
+  const result = parseUser({ id: '1', email: 'no-at-sign', age: 30 });
+  expect(result.ok).toBe(false);
+  expect(result.error).toEqual({ code: 'INVALID_EMAIL' });
+});
+
+test('returns INVALID_AGE on a non-number age', () => {
+  const result = parseUser({ id: '1', email: 'a@b.com', age: 'thirty' });
+  expect(result.ok).toBe(false);
+  expect(result.error).toEqual({ code: 'INVALID_AGE', received: 'thirty' });
+});
+
+test('returns INVALID_AGE on a boolean age (received preserved)', () => {
+  const result = parseUser({ id: '1', email: 'a@b.com', age: true });
+  expect(result.ok).toBe(false);
+  expect(result.error).toEqual({ code: 'INVALID_AGE', received: true });
+});
+`}
+/>
+
+<details>
+<summary>Reveal solution</summary>
+
+```js
+const parseUser = (input) => {
+  if (!input.email.includes('@')) return err({ code: 'INVALID_EMAIL' });
+  if (typeof input.age !== 'number') {
+    return err({ code: 'INVALID_AGE', received: input.age });
+  }
+  return ok({ id: input.id, email: input.email, age: input.age });
+};
+```
+
+Both validation failures travel on the return channel now. `INVALID_AGE` carries `received` so the caller can render "we got `'thirty'`, please enter a number." The caller would narrow with `if (result.ok)`, then `switch` on `result.error.code`.
+
+</details>
+
+## Next: reading errors inside the catch
+
+The catch still types `err` as `unknown`, so `err.message` is a compile error.
+The next lesson introduces the `instanceof Error` narrow that unlocks it, then builds custom `Error` subclasses for domain failures.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/try...catch"
+    title="MDN — try...catch"
+    description="The canonical reference for the mechanics. Reach here when you need syntax depth this lesson didn't cover: the spec-level rules for finally, nested try blocks, and the bare catch shape."
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+  />
+  <ExternalResource
+    href="https://www.typescriptlang.org/tsconfig/useUnknownInCatchVariables.html"
+    title="TSConfig — useUnknownInCatchVariables"
+    description="The strict-mode flag that types the catch parameter as unknown. The TSConfig reference page with the example that mirrors the lesson's compile-error walkthrough."
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+  />
+</CardGrid>
