@@ -97,10 +97,10 @@
 - 3 Headers and their audiences (Teaches the header surface a SaaS engineer touches — content negotiation, `Cache-Control` directives, `Authorization` schemes, rate-limit signaling, security-baseline headers, and the custom-header naming convention — through the three-audience model of which headers the browser, infrastructure, and application each read.)
 - 4 Quiz
 
-### Chapter 012 — URLs, origins, and security boundaries
+### Chapter 012 — URLs, origins, and CORS
 - 1 Parse, don't concatenate (Teaches the URL as a structured value with origin/pathname/search/hash, `new URL()` and `URLSearchParams` as the senior reach, percent-encoding rules (including the `%20`-vs-`+` split), and the bug classes string concatenation produces.)
 - 2 Origin is the unit of browser trust (Teaches origin as the `(scheme, host, port)` tuple versus site as `(scheme, eTLD+1)`, what the same-origin policy blocks versus what it always allows, and the load-bearing point that the policy protects the user (not the server) by gating the response, not the request.)
-- 3 The preflight dance (Teaches CORS as the opt-in that loosens same-origin, the simple-vs-preflighted decision, the `Access-Control-Allow-*` response-header palette, the wildcard-with-credentials trap, and the canonical browser error messages with their fixes.)
+- 3 CORS and the preflight request (Teaches CORS as the opt-in that loosens same-origin, the simple-vs-preflighted decision, the `Access-Control-Allow-*` response-header palette, the wildcard-with-credentials trap, and the canonical browser error messages with their fixes.)
 - 4 Quiz
 
 ### Chapter 013 — Cookies and the trust model
