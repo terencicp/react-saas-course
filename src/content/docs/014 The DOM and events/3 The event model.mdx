@@ -1,0 +1,582 @@
+---
+title: "The event model: capture, bubble, delegate"
+tagline: The browser's native event system, capture and bubble through delegation and AbortController cleanup, the substrate React's onClick is built on.
+chapter-id: 14
+course-progress: 0.0999
+sidebar:
+  order: 3
+  label: The event model
+rewrites: 2
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import EventPhaseWalk from '../../../components/lessons/014/3/EventPhaseWalk.astro';
+import DefaultVsPropagationGrid from '../../../components/lessons/014/3/DefaultVsPropagationGrid.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import { CardGrid, Card } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You put a click listener on a button and click it. Your handler runs, as expected. But a listener you also attached to the surrounding `<form>` runs too, and one on `document` runs after that. You clicked the button, not the form and not the whole document, so why did three handlers fire?
+
+Because the click didn't happen *on* the button. It traveled. Every event takes a trip through the tree: down from the top to the element you touched, then back up again, and any listener along that route gets a turn. The button, the form, and `document` all sat on the route, so all three fired.
+
+That one fact drives the rest of the lesson, including *delegation*: a single listener on a parent serving any number of children. Delegation is also what React's `onClick` does under the hood, so learning the trip is learning what your handlers compile down to.
+
+## An event's round trip: capture, target, bubble
+
+When you click an element, the browser doesn't hand the event straight to it.
+The event starts at `window`, the top of the tree, walks *down* through every ancestor to the element you touched, then turns around and walks back *up* the same path: one event, two passes.
+The trip has three named phases, in this order:
+
+- **Capture** is the downward leg. The event descends from `window` through each ancestor, stopping just above the <Term definition="The element the user actually interacted with, the deepest node in the tree at the point of interaction. It stays the same for the entire trip.">target</Term>, so the outer elements get the *first* chance to intercept it.
+- **Target** is where the event reaches the element you interacted with. Listeners attached directly to it fire here.
+- **Bubble** is the upward leg. The event rises back through every ancestor to `window`, firing each one's listeners on the way up.
+
+Here is that trip one tick at a time.
+The lit node is where the event is *right now*, and the caption names the phase and what fires there.
+
+<DiagramSequence>
+  <DiagramStep>
+    <EventPhaseWalk step={0} />
+    <Fragment slot="caption">
+      **Before the click.** The trip hasn't started, so no listener has run. `window` wraps `document`, which wraps the `<form>`, which wraps the `<button>` you're about to click.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <EventPhaseWalk step={1} />
+    <Fragment slot="caption">
+      **Capture begins at the top.** The event heads *down* toward the button. A listener registered with `{ capture: true }` on `window` fires now, before anything closer to the target sees it.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <EventPhaseWalk step={2} />
+    <Fragment slot="caption">
+      **Still descending.** The event passes through `document`; its capture-phase listeners fire here.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <EventPhaseWalk step={3} />
+    <Fragment slot="caption">
+      **The last ancestor above the target.** The `<form>`'s capture listeners get the event *before* the button ever sees it.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <EventPhaseWalk step={4} />
+    <Fragment slot="caption">
+      **Target.** The event reaches the `<button>`, the element you clicked. Listeners attached directly to it fire here, in the order they were added.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <EventPhaseWalk step={5} />
+    <Fragment slot="caption">
+      **The event turns around and rises.** The `<form>`'s bubble listener fires, the first of the surprise handlers from the intro.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <EventPhaseWalk step={6} />
+    <Fragment slot="caption">
+      **Still bubbling up.** `document`'s listener fires next.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <EventPhaseWalk step={7} />
+    <Fragment slot="caption">
+      **Back at the top.** The trip is over. Three ancestors fired on the way up, though you only clicked the button.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+One fact about that trip shapes how you write listeners every day: by default, **`addEventListener('click', handler)` registers your handler on the bubble phase**, not capture.
+A handler with no options runs on the way *up*, which is why the form and document handlers fired *after* the button.
+
+You opt into the capture phase with a third argument:
+
+```js
+button.addEventListener('click', handler);                 // bubble — the default
+window.addEventListener('click', handler, { capture: true }); // capture — the downward leg
+```
+
+Production code lives almost entirely on the bubble phase.
+Capture is rare; it exists for two jobs: intercepting an event at an ancestor *before* a child handles it, and catching events at a parent that don't bubble on their own.
+
+That second job has a sharp edge.
+The `focus` and `blur` events **do not bubble**: they fire only at the target, so a listener on an ancestor never sees them.
+To watch a whole region, use `focusin` and `focusout`, which do the same thing and *do* bubble.
+
+Lock in the firing order:
+
+<Sequence instructions="A user clicks a link that sits inside a form, which sits inside the document. Every level — document, form, and the link itself — has a listener for both the capture and bubble phases. Drag the handlers into the order they fire.">
+  <Step>`document` — capture phase</Step>
+  <Step>`form` — capture phase</Step>
+  <Step>`a` (the link) — target phase</Step>
+  <Step>`form` — bubble phase</Step>
+  <Step>`document` — bubble phase</Step>
+</Sequence>
+
+Read top to bottom and the trip forms a V: down the left through capture, a turn at the target, up the right through bubble.
+
+## `target` vs `currentTarget`: what was clicked vs what's listening
+
+Inside any handler, the event object carries two element references that answer two different questions.
+
+- `event.target` is **what the user actually hit**: the deepest node at the point of interaction. It is *fixed* for the entire trip, on whichever ancestor's listener runs.
+- `event.currentTarget` is **what *this* handler is attached to**: the node you called `addEventListener` on. It *changes* as the event moves, always pointing at the node whose listener is running now.
+
+When the listener sits on the element you click, the two match. They diverge the moment it sits on an *ancestor*, which is every delegation handler:
+
+```js
+// <ul id="menu">
+//   <li>Profile</li>
+//   <li>Billing</li>
+//   <li>Sign out</li>
+// </ul>
+
+const menu = document.getElementById('menu');
+
+menu.addEventListener('click', (event) => {
+  console.log(event.currentTarget.tagName); // 'UL'  — always the <ul> the handler is on
+  console.log(event.target.tagName);        // 'LI'  — whichever item you actually clicked
+});
+```
+
+Memorize one line: **`target` is what was clicked; `currentTarget` is what the handler is on.**
+
+One catch in `target` drives the next section: the deepest node can be deeper than you expect. If your `<li>` contains a `<span>` with an icon and the user clicks the icon, `target` is the `<span>`, not the `<li>`. Climbing from there up to the element you care about is what `closest()` is for, the heart of the next section.
+
+Predict what this logs.
+
+<PredictOutput
+  instructions="A list item contains a <span>. There is one click listener, on the <ul>. The user clicks directly on the <span> text. Predict the two logged lines."
+  expected={`UL
+SPAN`}
+>
+
+```js
+// <ul id="menu">
+//   <li><span class="label">Sign out</span></li>
+// </ul>
+
+const menu = document.getElementById('menu');
+
+menu.addEventListener('click', (event) => {
+  console.log(event.currentTarget.tagName);
+  console.log(event.target.tagName);
+});
+```
+
+<PredictWhy>
+`currentTarget` is the element the handler is bound to — the `<ul>` — so the first line is `UL` wherever you click. `target` is the deepest node the click hit, here the `<span>` rather than the `<li>` wrapping it, so the second line is `SPAN`. This is why a delegation handler can't trust `event.target`: the click lands on a descendant of the item you care about. You climb back up with `event.target.closest('li')`.
+</PredictWhy>
+
+</PredictOutput>
+
+## Event delegation: one listener for many children
+
+Say you have a toolbar with three buttons: Save, Duplicate, Delete. The naive approach puts a listener on each:
+
+```js
+saveButton.addEventListener('click', handleSave);
+duplicateButton.addEventListener('click', handleDuplicate);
+deleteButton.addEventListener('click', handleDelete);
+```
+
+For three buttons this is fine. At the scale real apps run, two problems appear. A list of two hundred rows, each with an action button, needs two hundred listeners doing the same job. And any element added after setup, a row the user inserts or a list you fetch after load, arrives with no listener attached, so you must rewire on every DOM change and a missed one is a button that silently does nothing.
+
+<Term definition="One listener on a stable ancestor that handles events for any number of descendants, including ones added after setup, by inspecting where the event came from.">Delegation</Term> solves both at once. Put a *single* listener on a stable ancestor that's always there: the toolbar, the `<ul>`, a container `<div>`. Every click on a descendant bubbles up to it, so the one listener sees them all, the two-hundredth row as readily as the first, and rows added long after you attached it.
+
+The shape is small and always the same.
+
+<AnnotatedCode lang="js" maxLines={16} code={`
+// <div id="toolbar">
+//   <button data-action="save"><span class="icon">💾</span> Save</button>
+//   <button data-action="duplicate">Duplicate</button>
+//   <button data-action="delete">Delete</button>
+// </div>
+
+const toolbar = document.getElementById('toolbar');
+
+toolbar.addEventListener('click', (event) => {
+  const actionEl = event.target.closest('[data-action]');
+  if (!actionEl) return;
+
+  switch (actionEl.dataset.action) {
+    case 'save':
+      saveDocument();
+      break;
+    case 'duplicate':
+      duplicateDocument();
+      break;
+    case 'delete':
+      deleteDocument();
+      break;
+  }
+});
+`}>
+  <AnnotatedStep meta="{9}" color="green">
+    One listener on the stable container, not one per button. Every click inside the toolbar bubbles up here, so this handler sees them all, including buttons added later.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{10} "closest"`} color="green">
+    `event.target` is wherever the click *landed*, maybe the `<span>` icon inside Save rather than the button. `closest('[data-action]')` climbs to the nearest element carrying the discriminator, the climb the previous section set up.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11}" color="green">
+    The guard you can't skip. A click on padding with no `[data-action]` ancestor makes `closest` return `null`; returning early avoids reading `dataset` off `null`. Forgetting this line is the most common delegation bug.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{13-23} "dataset"`} color="green">
+    Route on the `data-action` value, read through `dataset.action` (the reading side of the `data-*` bridge from the previous lesson). A fourth button with `data-action="archive"` costs one new `case`, nothing else.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two refinements separate a delegation handler that works in the demo from one that works in production:
+
+- **Climb with `closest()`, never trust `target` directly.** As the predict exercise showed, `target` is the deepest hit node, often a descendant of the thing you mean. `closest()` keeps the handler working when the button wraps an icon or other nested markup.
+- **Build on `click`, and the keyboard comes free.** A native `<button>` fires `click` when activated by Enter or Space, not just by mouse, so a delegated `click` handler already serves keyboard users, which `mousedown`/`mouseup` would not.
+
+One exception: `focus` doesn't bubble, so a single listener on a form never hears a field inside it gain focus. Use the bubbling pair `focusin`/`focusout`, and delegation works exactly as it does for clicks.
+
+This is also what React does. Writing `onClick` attaches no listener to the button; React runs this same delegation pattern at the root, which the final section covers in full.
+
+<VideoCallout videoId="cOoP8-NPLSo" videoTitle="Learn Event Delegation In 10 Minutes — Web Dev Simplified">
+  Web Dev Simplified builds the pattern from the exact problem above, listeners that miss elements added after load, then refactors to one listener on a parent (10 min).
+</VideoCallout>
+
+Now write one yourself. Complete the delegated handler so the tests pass.
+
+<ScriptCoding
+  instructions="A toolbar uses event delegation. Complete resolveAction: given the node a click landed on, climb to the nearest element carrying a data-action and return its action string — or null if the click landed outside any action."
+  starter={`document.body.innerHTML = \`
+  <div id="toolbar">
+    <button data-action="save"><span class="icon">save</span></button>
+    <button data-action="delete">Delete</button>
+    <span id="gap">no action here</span>
+  </div>
+\`;
+
+// Given the element a click landed on, return the action to run, or null.
+const resolveAction = (hitEl) => {
+  // your code here
+};
+`}
+  tests={`
+const iconInSave = document.querySelector('.icon');
+const deleteBtn = document.querySelector('[data-action="delete"]');
+const gap = document.getElementById('gap');
+
+test('climbs from a clicked icon up to its button action', () => {
+  expect(resolveAction(iconInSave)).toBe('save');
+});
+test('resolves a directly-clicked action button', () => {
+  expect(resolveAction(deleteBtn)).toBe('delete');
+});
+test('returns null when the click landed outside any action', () => {
+  expect(resolveAction(gap)).toBe(null);
+});
+`}
+/>
+
+<details>
+<summary>Reveal solution</summary>
+
+```js
+const resolveAction = (hitEl) => {
+  const actionEl = hitEl.closest('[data-action]');
+  if (!actionEl) return null;
+  return actionEl.dataset.action;
+};
+```
+
+`closest('[data-action]')` climbs from wherever the click landed, including the `<span class="icon">` inside Save, to the nearest element carrying the discriminator, so a click on the icon still resolves to `'save'`. The `if (!actionEl) return null` guard handles a click on `<span id="gap">`, where `closest` finds nothing and returns `null`. Then `dataset.action` reads the routed value, the same `closest` + `dataset` pair the handler above is built on.
+
+</details>
+
+## `preventDefault` and `stopPropagation`: two independent axes
+
+These two methods sound like one idea, "stop the event," but they control two independent things.
+
+`event.preventDefault()` cancels the browser's <Term definition="The browser's built-in reaction to an event: a link navigating to its href, a form submitting and reloading, a checkbox toggling, the right-click menu opening.">default action</Term> for that event. It does **not** stop the trip. Clicking a link still runs every bubble listener; `preventDefault` only cancels the navigation.
+
+`event.stopPropagation()` halts the trip: no further ancestors on the current leg receive the event. It does **not** cancel the default action, so calling it on a link click without `preventDefault` still navigates.
+
+<Figure>
+  <DefaultVsPropagationGrid />
+  <Fragment slot="caption">
+    Two independent axes. `preventDefault` works the horizontal one (the browser's built-in reaction); `stopPropagation` works the vertical one (the trip through the tree). Neither touches the other's axis, so you can flip either, both, or neither.
+  </Fragment>
+</Figure>
+
+The everyday case lives in the `preventDefault`-only cell: a form's submit handler.
+
+```js
+form.addEventListener('submit', (event) => {
+  event.preventDefault();
+  submitWithFetch(new FormData(form));
+});
+```
+
+Without that first line, submitting triggers the default action: a full-page navigation that reloads everything and discards your JavaScript state. `preventDefault` suppresses exactly that, leaving the event free to keep traveling while your code takes over the submission. This is the single most common use of either method. It leaves field validation and autofill alone, since neither is part of the default action.
+
+:::caution
+**`stopPropagation` quietly breaks delegation.** A delegated handler lives on an *ancestor* and depends on events bubbling up to it. If a child handler calls `stopPropagation`, the event never reaches the ancestor, the delegated handler never runs, and no error tells you why. The cause lives in entirely different code, so the failure is hard to trace. Reach for `stopPropagation` rarely; the urge to use it is usually a sign to reconsider the design. `preventDefault` is almost always the method you actually wanted.
+:::
+
+<TrueFalse instructions="Each statement probes the line between preventDefault and stopPropagation. Mark each one.">
+  <Statement answer="false">
+    Calling `stopPropagation()` in a form's submit handler prevents the page from reloading.
+    <TfWhy>**False.** Stopping propagation halts the *trip* through the tree; it does nothing to the default action, so the page still reloads. The method that suppresses the reload is `preventDefault()`.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    Calling `preventDefault()` stops the event from reaching listeners on ancestor elements.
+    <TfWhy>**False.** `preventDefault` only cancels the browser's built-in reaction. The event keeps traveling, so ancestor listeners still fire. Halting the trip is `stopPropagation`'s job.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    A child calling `stopPropagation()` can stop a delegated handler on a parent from ever running.
+    <TfWhy>**True.** Delegation depends on the event bubbling up to the ancestor. `stopPropagation` cuts the trip short, so the event never arrives, and nothing reports the failure. This is why `stopPropagation` is treated as a design smell.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    You can call both `preventDefault()` and `stopPropagation()` on the same event.
+    <TfWhy>**True.** They control independent axes, the default action and the trip, so calling both is valid: cancel the browser's reaction *and* halt propagation.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## The addEventListener options object
+
+The third argument to `addEventListener` is an options object with four flags, listed here from most to least common.
+
+- **`capture: true`** registers on the capture phase instead of bubble. Niche, as you saw above.
+- **`once: true`** removes the listener automatically after it fires once. Use it for one-shot work like a setup step on first interaction or "first scroll" telemetry.
+- **`passive: true`** promises the browser your handler won't call `preventDefault`, so it can start scrolling or zooming immediately instead of waiting on your handler, a measurable fix for scroll jank on touch and wheel. Browsers apply this default to `wheel` and `touch` events on `window`, `document`, and `body` (though Safari doesn't), so pass `{ passive: true }` explicitly on any other element. Use `{ passive: false }` only when you genuinely must `preventDefault`, such as a gesture surface that blocks native scrolling.
+- **`signal: AbortSignal`** removes the listener when you abort the signal you passed in, instead of pairing each `addEventListener` with a `removeEventListener`. The next section covers it.
+
+Here's the shape:
+
+```js
+const onWheel = () => updateParallax();
+const onFirstInteraction = () => trackEngagement();
+
+panel.addEventListener('wheel', onWheel, { passive: true });
+panel.addEventListener('pointerdown', onFirstInteraction, { once: true });
+```
+
+:::caution
+A `passive: true` listener that calls `preventDefault()` is **ignored**, and the browser logs a console warning. The promise you made wins. To cancel the default, register with `{ passive: false }`.
+:::
+
+That second listener uses `pointerdown`, not `mousedown` or `touchstart`. On a touchscreen both mouse and touch events fire for one tap, so listening for a single input type handles the tap twice. The `pointer*` family (`pointerdown`, `pointermove`, `pointerup`) unifies mouse, touch, and pen into one event, and it's the default to reach for whenever you need raw pointer input.
+
+## One AbortController per setup site
+
+A listener you attach and never remove keeps firing, and keeps its handler (and everything that handler closes over) alive in memory. In a long-lived single-page app that is a classic leak, so any listener added in code that can be torn down needs a way to be removed.
+
+The old fix is `removeEventListener`, which has two failure modes worth seeing first. Here are three listeners torn down that way, then with one `AbortController`.
+
+<CodeVariants maxLines={16}>
+  <CodeVariant label="The removeEventListener ceremony">
+    <div data-mark-color="red">
+
+    ```js {10-12}
+    const onScroll = () => updateHeader();
+    const onResize = () => recomputeLayout();
+    const onKeydown = (event) => handleShortcut(event);
+
+    window.addEventListener('scroll', onScroll);
+    window.addEventListener('resize', onResize);
+    document.addEventListener('keydown', onKeydown);
+
+    const cleanup = () => {
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onResize);
+      document.removeEventListener('keydown', onKeydown);
+    };
+    ```
+
+    </div>
+    **The old pattern.** `removeEventListener` needs the exact function reference you added, so every listener needs a named reference held until cleanup and every `add` a hand-matched `remove`. Miss one pairing and that listener leaks. An inline arrow has no reference to pass back, so it can *never* be removed.
+  </CodeVariant>
+
+  <CodeVariant label="One AbortController">
+    <div data-mark-color="green">
+
+    ```js {8} "signal"
+    const controller = new AbortController();
+    const { signal } = controller;
+
+    window.addEventListener('scroll', () => updateHeader(), { signal });
+    window.addEventListener('resize', () => recomputeLayout(), { signal });
+    document.addEventListener('keydown', (event) => handleShortcut(event), { signal });
+
+    const cleanup = () => controller.abort();
+    ```
+
+    </div>
+    **The fix.** One controller's signal goes into every listener, across different event types and targets, and a single `controller.abort()` removes them all. Nothing to hold or hand-match, and inline arrows are fine since you never need their reference.
+  </CodeVariant>
+</CodeVariants>
+
+One controller per setup site: declare `const controller = new AbortController();` where you wire listeners up, pass `{ signal: controller.signal }` to each `addEventListener` in that scope, and call `controller.abort()` in cleanup to remove them all. One signal, many listeners, one shutdown switch: fewer references to hold, fewer ways to leak, and anonymous handlers stop being a problem.
+
+This `AbortController`-and-signal shape is the same primitive that cancels `fetch` requests, and the one React's unmount cleanup expects. React calls your cleanup branch for you, but inside it you still create a controller, register listeners with its signal, and `abort()` on the way out.
+
+Now wire it up yourself. The setup is written for you; make `cleanup()` actually stop the listeners.
+
+<ScriptCoding
+  instructions="Two listeners are attached to bus. Complete the setup so a single AbortController wires them up and cleanup() removes both at once. After cleanup() runs, dispatching the events should change nothing — and reading controller.signal.aborted should be true."
+  starter={`const bus = new EventTarget();
+let count = 0;
+
+// Wire one AbortController so cleanup() removes BOTH listeners at once.
+const controller = /* your code here */;
+
+bus.addEventListener('ping', () => { count += 1; } /* …options… */);
+bus.addEventListener('pong', () => { count += 1; } /* …options… */);
+
+const cleanup = () => {
+  // your code here
+};
+`}
+  tests={`
+test('both listeners run before cleanup', () => {
+  bus.dispatchEvent(new Event('ping'));
+  bus.dispatchEvent(new Event('pong'));
+  expect(count).toBe(2);
+});
+
+test('one cleanup() removes every listener that shares the signal', () => {
+  cleanup();
+  bus.dispatchEvent(new Event('ping'));
+  bus.dispatchEvent(new Event('pong'));
+  expect(count).toBe(2); // unchanged — both listeners are gone
+});
+
+test('cleanup() aborts the shared signal', () => {
+  expect(controller.signal.aborted).toBe(true);
+});
+`}
+/>
+
+<details>
+<summary>Reveal solution</summary>
+
+```js
+const controller = new AbortController();
+const { signal } = controller;
+
+bus.addEventListener('ping', () => { count += 1; }, { signal });
+bus.addEventListener('pong', () => { count += 1; }, { signal });
+
+const cleanup = () => controller.abort();
+```
+
+One `AbortController`, its `signal` threaded into *both* `addEventListener` calls, and a single `controller.abort()` in `cleanup()` that removes both at once. Dispatching `ping` or `pong` afterward finds no listener, so `count` stops moving and `controller.signal.aborted` flips to `true`.
+
+</details>
+
+## What React owns, and where you still write addEventListener
+
+React abstracts the substrate but doesn't replace it, and knowing where the abstraction ends tells you when to drop to `addEventListener`.
+
+Inside your component tree, React owns the listeners: you write `onClick`, `onChange`, `onSubmit`, never `addEventListener`. Under the hood it attaches a few native listeners at the **root container** where your app mounts (the element you render into, not `document`), wraps each event in a <Term definition="React's cross-browser wrapper around the native DOM event. It exposes the same surface you already know (preventDefault, stopPropagation, target, currentTarget), so the substrate knowledge transfers directly.">`SyntheticEvent`</Term>, and dispatches it down the tree. That is the delegation pattern you just learned, run by the framework. (One leftover you might see, `event.persist()`, is now a no-op from a retired event-pooling optimization.)
+
+So when do you still reach for `addEventListener`? At three escape-hatch sites, where the substrate shows through. Each lives inside React's cleanup machinery, wired with the `AbortController` pattern you just learned.
+
+<CardGrid>
+  <Card title="Global targets" icon="window">
+    `window` and `document` events: a `keydown` shortcut, `resize`, `scroll`. There's no JSX element to hang these on, because the target isn't in your tree.
+  </Card>
+  <Card title="Third-party DOM libraries" icon="puzzle">
+    A library hands you a raw DOM node and its own events: Stripe Elements, a map, a charting lib. You wire its listeners imperatively, outside React's tree.
+  </Card>
+  <Card title="Non-JSX browser APIs" icon="comment">
+    Event-emitting objects that aren't elements: `MediaQueryList`, `BroadcastChannel`, a `WebSocket`. Event-driven, but not through the component tree.
+  </Card>
+</CardGrid>
+
+In each case, you create one `AbortController`, thread its signal into every `addEventListener`, and call `abort()` in the cleanup branch.
+
+One last exercise, a judgment call. For each scenario, decide whether it's plain React (`onClick` and friends) or one of the three escape hatches.
+
+<Buckets twoCol instructions="Sort each scenario by how you'd wire it: React owns it, or it's an addEventListener escape hatch.">
+  <Bucket name="react" label="React owns it" description="Write onClick / onChange in the component" />
+  <Bucket name="escape" label="addEventListener escape hatch" description="In an effect, cleaned up with AbortController" />
+
+  <Item bucket="react">A button click inside a component</Item>
+  <Item bucket="react">A text field's change event</Item>
+  <Item bucket="react">Clicking a row in a rendered list</Item>
+  <Item bucket="escape">A global `Escape`-key shortcut on `window`</Item>
+  <Item bucket="escape">Reacting to the browser window resizing</Item>
+  <Item bucket="escape">A Stripe Elements card-input callback</Item>
+</Buckets>
+
+## External resources
+
+The canonical platform references behind this lesson, if you want to go to the source:
+
+<CardGrid>
+  <ExternalResource
+    title="MDN — Introduction to events"
+    href="https://developer.mozilla.org/en-US/docs/Learn_web_development/Core/Scripting/Events"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The platform's own walkthrough of listeners, the event object, bubbling and capture, and delegation."
+  />
+  <ExternalResource
+    title="MDN — EventTarget.addEventListener()"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/EventTarget/addEventListener"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The full options surface (capture, once, passive, signal), including the exact passive-default behavior and its scope."
+  />
+  <ExternalResource
+    title="MDN — AbortController"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/AbortController"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The cleanup primitive: one controller, a signal you thread into listeners (and fetches), and a single abort() that severs them all."
+  />
+  <ExternalResource
+    title="javascript.info — Bubbling and capturing"
+    href="https://javascript.info/bubbling-and-capturing"
+    icon="simple-icons:javascript"
+    iconColor="#F7DF1E"
+    description="A deeper, example-driven walk through the three phases, target vs currentTarget, and why stopPropagation is a trap."
+  />
+  <ExternalResource
+    title="javascript.info — Event delegation"
+    href="https://javascript.info/event-delegation"
+    icon="simple-icons:javascript"
+    iconColor="#F7DF1E"
+    description="The delegation pattern in depth: the closest() climb, data-* routing, and the limits worth knowing before you lean on it."
+  />
+</CardGrid>
