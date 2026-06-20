@@ -1,0 +1,435 @@
+---
+title: Exhaustiveness and narrowing helpers
+tagline: TypeScript patterns that turn a missing union case or an unchecked external value into a compile error, not a production bug.
+chapter-id: 5
+course-progress: 0.0452
+rewrites: 2
+sidebar:
+  order: 3
+  label: Exhaustiveness and narrowing
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import TypeCoding from '../../../components/live-coding/TypeCoding/TypeCoding.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+After the previous two lessons, your discriminated unions are watertight: every variant is typed, and so is every transition between them.
+
+The remaining gap is in the **consumers**, the code that reads a union: a `switch`, a router, an event handler. TypeScript keeps no compile-time link between which variants exist and which a consumer handles. Picture a webhook handler that dispatches on `event.type` across the four variants below. Six months in, a teammate ships a fifth event, `'invoice.refunded'`, and wires up the producer. The `switch` keeps compiling, because TypeScript never checks that every variant has a case, so refunds fall through the `default` and go unhandled until customer service finds the bug.
+
+<div data-mark-color="orange">
+
+```ts {13}
+type AppEvent =
+  | { type: 'user.created'; userId: string }
+  | { type: 'invoice.paid'; invoiceId: string; amount: number }
+  | { type: 'subscription.canceled'; subscriptionId: string }
+  | { type: 'session.revoked'; sessionId: string };
+
+const handle = (event: AppEvent): void => {
+  switch (event.type) {
+    case 'user.created':          return notifyUser(event.userId);
+    case 'invoice.paid':          return recordPayment(event.invoiceId, event.amount);
+    case 'subscription.canceled': return cleanupSubscription(event.subscriptionId);
+    case 'session.revoked':       return revokeSession(event.sessionId);
+    default:                      return; // adding a fifth variant lands here, silently
+  }
+};
+```
+
+</div>
+
+The fix is structural: make the compiler refuse to build when a handler is missing, by ending every `switch` on a discriminant with something that turns a missing variant into a compile error. The lesson then covers two narrowing helpers the rest of the course relies on, **type predicates** and **assertion functions**, for narrowing `unknown` from the wire and filtering arrays cleanly.
+
+## How a `switch` narrows to `never`
+
+The enforcement mechanic rests on one property of <Term definition="The bottom type — no value is assignable to `never`. Used to mark unreachable code and to enforce exhaustiveness on discriminated unions.">`never`</Term>: nothing is assignable to it.
+
+Inside a `switch` on a union's discriminant, the compiler narrows the value one variant at a time. Each `case` that returns removes its variant from what remains. Handle every variant and nothing is left, so the value at `default` narrows to `never`.
+
+```ts
+const handle = (event: AppEvent): void => {
+  switch (event.type) {
+    case 'user.created':          return notifyUser(event.userId);
+    case 'invoice.paid':          return recordPayment(event.invoiceId, event.amount);
+    case 'subscription.canceled': return cleanupSubscription(event.subscriptionId);
+    case 'session.revoked':       return revokeSession(event.sessionId);
+    default:
+      const remaining = event;
+      //    ^? const remaining: never
+  }
+};
+```
+
+Remove one case and the compiler can no longer eliminate that variant, so the value at `default` is the missed variant itself, not `never`.
+
+<div data-mark-color="red">
+
+```ts {6, 10}
+const handle = (event: AppEvent): void => {
+  switch (event.type) {
+    case 'user.created':          return notifyUser(event.userId);
+    case 'invoice.paid':          return recordPayment(event.invoiceId, event.amount);
+    case 'subscription.canceled': return cleanupSubscription(event.subscriptionId);
+    // case 'session.revoked':    handled? no.
+    default:
+      const remaining = event;
+      //    ^?
+      //    const remaining: { type: 'session.revoked'; sessionId: string }
+  }
+};
+```
+
+</div>
+
+So any type other than `never` at `default` means a variant was missed. To enforce it, pass that value to a function whose parameter is typed `never`: handle everything and the call compiles, miss a variant and it fails with an error naming the missing variant by its full type.
+
+## `assertNever`, the default
+
+A three-line helper function:
+
+```ts
+export function assertNever(value: never): never {
+  throw new Error(`Unhandled variant: ${JSON.stringify(value)}`);
+}
+```
+
+It uses the `function` keyword rather than the chapter's arrow-function default because its `never` return type is the point of the signature. The file lives at `lib/assert-never.ts`, one kebab-case export per file.
+
+At the call site:
+
+<AnnotatedCode lang="ts" code={`
+import { assertNever } from '@/lib/assert-never';
+
+type AppEvent =
+  | { type: 'user.created'; userId: string }
+  | { type: 'invoice.paid'; invoiceId: string; amount: number }
+  | { type: 'subscription.canceled'; subscriptionId: string }
+  | { type: 'session.revoked'; sessionId: string };
+
+const handle = (event: AppEvent): void => {
+  switch (event.type) {
+    case 'user.created':          return notifyUser(event.userId);
+    case 'invoice.paid':          return recordPayment(event.invoiceId, event.amount);
+    case 'subscription.canceled': return cleanupSubscription(event.subscriptionId);
+    case 'session.revoked':       return revokeSession(event.sessionId);
+    default:                      return assertNever(event);
+  }
+};
+`}>
+  <AnnotatedStep meta="{11-14}" color="blue">
+    One `case` per variant. Each ends in `return`, so the compiler eliminates that variant as the `switch` walks down. Handler bodies are elided.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{15}" color="green">
+    The exhaustiveness check. `assertNever`'s parameter is typed `never`, so the call type-checks only once the bottom of the `switch` has narrowed to `never`, which happens exactly when every variant above is handled.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{15}" color="red">
+    Remove a `case` or add a variant without one, and `event` here is the missed variant, not `never`. The error reads `Argument of type '{ type: "session.revoked"; ... }' is not assignable to parameter of type 'never'`, naming the missed variant by its full type so you can go straight to it.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The `default` line does two jobs. One is the compile-time check above. The other is a runtime throw: if an unhandled variant ever reaches it, say from a future API version or a hand-crafted payload, `assertNever` fails loudly instead of swallowing the value in a `console.warn`. The `Error` carries the offending value via `JSON.stringify`, so whoever is on call sees it in the logs.
+
+## `satisfies never`, when the runtime throw isn't needed
+
+The `satisfies` operator writes the same check inline, without a helper:
+
+```ts
+const handle = (event: AppEvent): void => {
+  switch (event.type) {
+    case 'user.created':          return notifyUser(event.userId);
+    case 'invoice.paid':          return recordPayment(event.invoiceId, event.amount);
+    case 'subscription.canceled': return cleanupSubscription(event.subscriptionId);
+    case 'session.revoked':       return revokeSession(event.sessionId);
+    default:                      event satisfies never;
+  }
+};
+```
+
+`satisfies` checks that the value on its left is assignable to the type on its right without widening its inferred type, so `event satisfies never` compiles only when `event` has narrowed to `never` at that point. Same enforcement as `assertNever`, but the line erases at compile time: no function call, no throw, no JavaScript emitted.
+
+The choice turns on what should happen if the `default` is reached at runtime.
+
+:::tip
+| Reach | Use when |
+| --- | --- |
+| `assertNever(event)` | The consumer is a real handler, such as a webhook router, a reducer, or a render dispatch, and a bad payload reaching the `default` should fail loudly. The runtime throw is part of the contract. |
+| `event satisfies never` | The `default` is **structurally unreachable** and only the compile-time check matters: the function returns before the switch ends, the switch lives in a pure type-narrowing helper, or it is a test branch-coverage check. |
+:::
+
+Default to `assertNever`: in a production handler, silence at the bottom is how runtime drift goes unnoticed. Reach for `satisfies never` only when the `default` genuinely can't be hit.
+
+## `noFallthroughCasesInSwitch`, catching missing case terminators
+
+A second enforcement composes with `assertNever`, and the course's `tsconfig.json` already enables it: `noFallthroughCasesInSwitch`. The flag makes a `case` body that lacks an explicit `break`, `return`, `throw`, or `continue` a compile error, so a case can no longer fall silently into the next.
+
+The two are independent. `noFallthroughCasesInSwitch` makes every `case` body terminate; `assertNever` makes every `switch` cover every variant. Together they close a `switch` at the case level and the variant level.
+
+## Dispatch with a `Record` instead of a `switch`
+
+When each variant maps to a single handler with no inline logic, a `Record` indexed by the variant literal reads cleaner than a `switch` and enforces the same exhaustiveness.
+
+```ts
+type EventType = AppEvent['type'];
+
+const HANDLERS: Record<EventType, (event: AppEvent) => Promise<void>> = {
+  'user.created':          handleUserCreated,
+  'invoice.paid':          handleInvoicePaid,
+  'subscription.canceled': handleSubscriptionCanceled,
+  'session.revoked':       handleSessionRevoked,
+};
+
+await HANDLERS[event.type](event);
+```
+
+`Record<EventType, Handler>` requires a handler for **every** key in the union. Add `'invoice.refunded'` to `AppEvent` and the object fails to type-check, missing a key. That is the same guarantee `assertNever` gives, expressed as a constraint on the record's keys instead of a check at the bottom of a switch.
+
+`AppEvent['type']` is **indexed access**: it reads the type of the `type` field straight off `AppEvent`, the cleanest way to name the variant set here.
+
+Choosing between the two shapes:
+
+- **`switch + assertNever`** when a case carries real logic: a conditional, a few lines, anything wanting its own block.
+- **`Record<Variant, Handler>`** when each case is a one-to-one handler reference. The table is shorter, and its keys document the variant set at a glance.
+
+## Type predicates, block-scoped narrowing
+
+So far the chapter has assumed values that already carry a type: a discriminated union you wrote, a state machine you control. The other half of the job is values that don't, such as the `unknown` returned by `await req.json()`. Two helpers narrow such values before the typed code that reads them; this section covers the first.
+
+A <Term definition="Function whose return type `value is T` tells the compiler that when the function returns `true`, the argument is `T` inside the if-block where the call appears.">type predicate</Term> returns `value is T`. The narrow holds inside the if-block where the call appears and widens back on the way out. That **block-scoped** rule is what separates this helper from the next.
+
+Here is the canonical shape:
+
+```ts
+function isUser(value: unknown): value is User {
+  return typeof value === 'object'
+    && value !== null
+    && 'id' in value
+    && 'email' in value;
+}
+```
+
+As with `assertNever`, the `value is User` return type is the whole contract, so it takes the `function` keyword rather than an arrow.
+
+<AnnotatedCode lang="ts" code={`
+type User = { id: string; email: string };
+type Guest = { sessionId: string };
+
+function isUser(value: unknown): value is User {
+  return typeof value === 'object'
+    && value !== null
+    && 'id' in value
+    && 'email' in value;
+}
+
+declare const allMembers: (User | Guest)[];
+const users = allMembers.filter(isUser);
+//    ^? const users: User[]
+
+declare const maybeUsers: (User | undefined)[];
+const present = maybeUsers.filter((u) => u !== undefined);
+//    ^? const present: User[]
+
+declare const payload: unknown;
+if (isUser(payload)) {
+  await sendWelcome(payload);
+  //                ^? (parameter) payload: User
+}
+`}>
+  <AnnotatedStep meta={`"value is User"`} color="blue">
+    The signature is the type predicate's whole API surface: the `value is User` return type tells the compiler the function refines its argument when it returns `true`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12-13}" color="green">
+    The named-predicate filter. The array narrows from `(User | Guest)[]` to `User[]` because `.filter` recognizes a type-predicate callback and uses its refined type for the result.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{16-17}" color="violet">
+    The inferred form. Since TypeScript 5.5, the compiler infers `u is User` when an inline arrow's body is a simple refinement, so one-shot filters need no helper.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{20-23}" color="orange">
+    Narrowing `unknown` from the wire. Inside the `if`-block, `payload` is `User` and typed code can read its fields; outside, it is still `unknown`. That is the block-scoped narrow.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The two narrowing forms split by reuse. For a one-shot inline filter, lean on 5.5 inference: when the arrow's body is a simple refinement, such as `u !== undefined` or `typeof u === 'string'`, the compiler infers the predicate, so the array narrows with no helper and no annotation. For a named, multi-condition predicate you import from several call sites, the explicit `value is T` form stays the default: the signature documents its intent, and the body can grow without losing the narrow.
+
+The body of `isUser` is illustrative, not production code. That `in` chain never checks that `id` and `email` are strings and drifts the moment `User` grows a field; in production it would be a <Term definition="A TypeScript-first schema library: you declare a schema once, then validate and parse unknown runtime data against it, getting a typed value back or a thrown error.">Zod</Term> parse, covered in a later chapter on schema authoring. Here the lesson is the signature, not the body.
+
+<VideoCallout videoId="Wksz1DnJ2VM" videoTitle="Type Predicates Solve This Common TypeScript Error">
+  Web Dev Simplified shows the exact problem: extracting an inline `if` check into a function loses the narrow until you add `value is T`. Five minutes, with the inference failure on screen.
+</VideoCallout>
+
+## Assertion functions, scope-wide narrowing
+
+The second narrowing helper returns `asserts value is T`. Unlike a predicate, its narrow runs **scope-wide**: once the call returns, the argument is `T` for the rest of the function, not just inside an if-block.
+
+```ts
+function assertIsUser(value: unknown): asserts value is User {
+  if (!isUser(value)) {
+    throw new Error(`Expected User, got: ${JSON.stringify(value)}`);
+  }
+}
+```
+
+That is the structural split between the two: a predicate returns a boolean for the caller to branch on, while an <Term definition="Function whose return type `asserts value is T` tells the compiler that after the call returns (without throwing), the argument is `T` for the rest of the scope.">assertion function</Term> throws and lets the caller continue with the narrowed type. Like a predicate, it needs the `function` keyword. The call sites show the difference:
+
+<TabbedContent>
+  <TabbedItem label="Type predicate — block-scoped">
+    <Fragment slot="caption">`payload` narrows to `User` inside the if-block, then widens back to `unknown`.</Fragment>
+```ts
+const handlePayload = async (payload: unknown): Promise<void> => {
+  if (isUser(payload)) {
+    await sendWelcome(payload);
+  }
+
+  await logUnknown(payload);
+};
+```
+  </TabbedItem>
+
+  <TabbedItem label="Assertion function — scope-wide">
+    <Fragment slot="caption">After `assertIsUser` returns, `raw` is `User` for the rest of the function, with no if-block.</Fragment>
+```ts
+const sendWelcomeForRaw = async (raw: unknown): Promise<User> => {
+  assertIsUser(raw);
+
+  await sendWelcome(raw);
+
+  return raw;
+};
+```
+  </TabbedItem>
+</TabbedContent>
+
+The assertion form earns its weight at a **parse-or-throw service boundary**: a function reads `unknown` from a third-party SDK, asserts the shape, and continues with the narrowed value, no nested if-block:
+
+```ts
+const raw: unknown = await stripe.invoices.retrieve(id);
+assertIsInvoice(raw);
+return raw;
+```
+
+It also fits **test harnesses**, where a helper like `expectUser(value)` narrows once and the rest of the test reads the value directly.
+
+The choice between the two: should the caller handle the false case, or should the call site fail fast? Production parse boundaries usually want the assertion, because the upstream wire shape is a contract, so a violation is a bug, not a branch you handle.
+
+<VideoCallout videoId="syBjKTOgFfo" videoTitle="Assertion Functions or Assertion Guards - TypeScript Narrowing">
+  Lucas Paganini contrasts assertion functions with type guards, return versus throw, and lands on request-handler validation as the dominant use case. Five minutes.
+</VideoCallout>
+
+## Exercise: make the missing variant fail to compile
+
+The `switch` below handles four of `AppEvent`'s five variants, so `assertNever(event)` won't compile. Add the missing `case`.
+
+<TypeCoding
+  instructions="The `AppEvent` union has five variants; the `switch` only handles four. The `return assertNever(event)` line refuses to compile because `event` at the `default` is the unhandled variant, not `never`. Add the missing `case` so the call type-checks again."
+  starter={`type AppEvent =
+  | { type: 'user.created'; userId: string }
+  | { type: 'invoice.paid'; invoiceId: string; amount: number }
+  | { type: 'subscription.canceled'; subscriptionId: string }
+  | { type: 'session.revoked'; sessionId: string }
+  | { type: 'invoice.refunded'; invoiceId: string };
+
+function assertNever(value: never): never {
+  throw new Error(\`Unhandled variant: \${JSON.stringify(value)}\`);
+}
+
+const handle = (event: AppEvent): void => {
+  switch (event.type) {
+    case 'user.created':          return notify(event.userId);
+    case 'invoice.paid':          return record(event.invoiceId, event.amount);
+    case 'subscription.canceled': return cleanup(event.subscriptionId);
+    case 'session.revoked':       return revoke(event.sessionId);
+    // TODO: handle the missing variant so the \`assertNever(event)\` line compiles.
+    default:                      return assertNever(event);
+  }
+};
+
+// stubs — do not edit
+declare function notify(userId: string): void;
+declare function record(invoiceId: string, amount: number): void;
+declare function cleanup(subscriptionId: string): void;
+declare function revoke(sessionId: string): void;
+declare function refund(invoiceId: string): void;
+`}
+/>
+
+<details>
+<summary>Reveal the reference solution</summary>
+
+```ts
+case 'invoice.refunded':      return refund(event.invoiceId);
+```
+
+With every variant handled, `event` at the `default` narrows to `never` and the `assertNever(event)` call compiles.
+
+</details>
+
+Read the compiler error first: `Argument of type '{ type: "invoice.refunded"; invoiceId: string; }' is not assignable to parameter of type 'never'` names the exact variant that slipped through.
+
+## Exercise: pick the narrowing tool
+
+Pair each scenario to the tool that fits; the verbs in each description are the cue.
+
+<Matching instructions="Pair each scenario to the narrowing tool that fits. Two of the right-side options handle exhaustiveness on discriminated unions; the other three handle narrowing a wider type to a narrower one.">
+  <Pair>
+    <Fragment slot="left">Filter an array of `(User | Guest)[]` down to just the `User[]` values, using a named, reusable predicate.</Fragment>
+    <Fragment slot="right">Named type predicate — `function isUser(value: unknown): value is User`.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">Narrow a `(User | undefined)[]` down to `User[]` in a single inline `.filter` call, with no helper to extract.</Fragment>
+    <Fragment slot="right">Inline arrow callback — `arr.filter((u) => u !== undefined)`, predicate inferred since TypeScript 5.5.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">Validate an `unknown` payload from a third-party SDK at a service boundary, then continue the function with the narrowed value — no nested if-block.</Fragment>
+    <Fragment slot="right">Assertion function — `function assertIsInvoice(value: unknown): asserts value is Invoice`.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">Make a `switch` on a discriminated union refuse to compile when a future variant is added to the union.</Fragment>
+    <Fragment slot="right">`assertNever(value)` at the `default` branch.</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">The same exhaustiveness check, but the bottom of the function is structurally unreachable and you don't want a runtime throw.</Fragment>
+    <Fragment slot="right">`value satisfies never` at the bottom of the switch.</Fragment>
+  </Pair>
+</Matching>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="TypeScript Handbook — Exhaustiveness checking"
+    href="https://www.typescriptlang.org/docs/handbook/2/narrowing.html#exhaustiveness-checking"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The authoritative reference for `never`-based exhaustiveness checking, with the canonical explanation of why the bottom of an exhaustive switch is `never`."
+  />
+  <ExternalResource
+    title="TypeScript Handbook — The `satisfies` operator"
+    href="https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html#the-satisfies-operator"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The release-notes entry that introduced `satisfies`, covering the operator's full mechanics with examples beyond `satisfies never`."
+  />
+  <ExternalResource
+    title="Total TypeScript — Type predicate inference"
+    href="https://www.totaltypescript.com/type-predicate-inference"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="Matt Pocock's practical tour of the 5.5 feature, with side-by-side before and after examples of the cases where the compiler now infers the predicate for you."
+  />
+</CardGrid>

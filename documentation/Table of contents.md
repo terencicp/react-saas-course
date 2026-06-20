@@ -45,13 +45,13 @@
 - 8 Annotate the boundaries, infer the inside (The senior rule for where annotations earn their weight (parameters, exported APIs) and where inference wins (locals, return types, inline callbacks), plus the `import type` discipline that `verbatimModuleSyntax` enforces.)
 - 9 Quiz
 
-### Chapter 005 — TypeScript bug-class moves
-- 1 Impossible states, unrepresentable (Teaches the discriminated-union shape, Architectural Principle #7, the canonical SaaS variants (request state, Result, event message, UI variant), and narrowing by a literal discriminant.)
-- 2 States plus transitions (Teaches the flow state-machine pattern as discriminated unions extended with per-transition function signatures, per-state invariants, and the three canonical SaaS machines (optimistic mutation, upload, subscription).)
-- 3 Exhaustiveness, enforced (Teaches type predicates (block-scoped narrow), assertion functions (scope-wide narrow), and the `assertNever` plus `satisfies never` idioms that make a missing variant a compile error.)
+### Chapter 005 — Eliminating bug classes with types
+- 1 Discriminated unions (Teaches the discriminated-union shape, Architectural Principle #7, the canonical SaaS variants (request state, Result, event message, UI variant), and narrowing by a literal discriminant.)
+- 2 State machines with transitions (Teaches the flow state-machine pattern as discriminated unions extended with per-transition function signatures, per-state invariants, and the three canonical SaaS machines (optimistic mutation, upload, subscription).)
+- 3 Exhaustiveness and narrowing (Teaches the `assertNever` plus `satisfies never` idioms and the `noFallthroughCasesInSwitch` flag that make a missing variant a compile error, plus type predicates (block-scoped narrow) and assertion functions (scope-wide narrow).)
 - 4 Branded IDs (Teaches the branded-string pattern (`unique symbol` and `__brand` forms), brand factories, the Zod and Drizzle integration points, and the line between IDs that earn a brand and strings that don't.)
 - 5 Derive types from values (Teaches the `typeof V`, `keyof T`, and `T[K]` operators and the load-bearing 2026 idioms (`typeof ARR[number]`, `keyof typeof OBJ`) that keep types tracking the values they describe.)
-- 6 The utility-type toolbox (Teaches the eleven daily-reach utility types grouped by what they reshape (`Partial`/`Required`/`Readonly`, `Pick`/`Omit`, `Record`, `NonNullable`, `Extract`/`Exclude`, `ReturnType`/`Parameters`, `Awaited`) and how they compose into derived types.)
+- 6 Built-in utility types (Teaches the eleven daily-reach utility types grouped by what they reshape (`Partial`/`Required`/`Readonly`, `Pick`/`Omit`, `Record`, `NonNullable`, `Extract`/`Exclude`, `ReturnType`/`Parameters`, `Awaited`) and how they compose into derived types.)
 - 7 Generics with constraints (Teaches generic functions and types, `extends` constraints (including `K extends keyof T`), default type parameters, the `const` modifier, and the senior 2026 wrapper idioms (`safeAction`, `requireRole`, `cache`).)
 - 8 Quiz
 
