@@ -187,6 +187,52 @@ flowchart TB
 - **Per-lesson test files** — build-it-yourself lessons ship with real tests, so a lesson's promises are mechanically verified against my code.
 - **Layered review gates** — `reviewer ⇄ corrector`, then `inspector ⇄ corrector` on the running app, then a final `approver` that can send the whole chapter back for a re-plan.
 
+## The prose rewriting pipeline
+
+The authoring pipelines above ship the whole course, first-draft prose included. Because that prose is AI-generated, it runs long and over-scaffolded. A separate pipeline goes back over every finished lesson to ready it for publication: a clarity-and-concision edit governed by a single [rewrite guide](documentation/rewriting/guidelines.md) — tighten the wording (typically ~30% shorter), cut scaffolding, hype, and out-of-scope detours, and fix any factual error, while leaving the curriculum, code, exercises, links, and diagrams untouched. Like the authoring orchestrator, it runs one chapter at a time, lesson by lesson, so terminology and cross-references stay consistent.
+
+| Agent | Does |
+| --- | --- |
+| `prose-chapter-rewrite-orchestrator` | Drives a chapter: rewrites each lesson in turn, then renames the chapter to a plainer title, realigns the table of contents, and commits. |
+| `prose-lesson-rewriter` | Rewrites one lesson end to end: triages and cuts whole sections, fans out a reviewer per surviving section, reassembles them, and rewrites the frontmatter. |
+| `prose-section-reviewer` (×n) | Proposes the tightened prose for one section — cutting, merging, and rewriting sentence by sentence then paragraph by paragraph against the guide. |
+| `prose-terminologist` | Checks every load-bearing term is defined once at first use, and records it in the course glossary. |
+
+```mermaid
+flowchart TB
+    orchestrator[chapter-orchestrator]
+    subgraph PL [for each lesson in chapter, in order]
+        direction TB
+        subgraph t1 [triage and cut sections]
+            direction LR
+            GUIDE(guidelines.md) --> rewriter[lesson-rewriter]
+            MDX(lesson.mdx) --> rewriter
+        end
+        subgraph t2 [rewrite every section, in parallel]
+            direction LR
+            reviewer["section-reviewer<br/>↻ per section"] --> SECS(rewritten sections)
+        end
+        subgraph t3 [reassemble and finalize]
+            direction LR
+            assembler[lesson-rewriter] --> terminologist[terminologist] --> GLOSS(glossary.md)
+            terminologist --> OUT(lesson.mdx ✎)
+        end
+        t1 --> t2 --> t3
+    end
+    orchestrator --> PL --> TOC(chapter title + Table of contents ✎)
+    classDef agent fill:#e0e7ff,stroke:#6366f1,color:#312e81;
+    classDef file fill:#dcfce7,stroke:#16a34a,color:#14532d;
+    class orchestrator,rewriter,reviewer,assembler,terminologist agent;
+    class GUIDE,MDX,SECS,GLOSS,OUT,TOC file;
+```
+
+**Keeping the rewrite faithful and consistent.** Four mechanisms hold the line:
+
+- **The rewrite guide** — [`documentation/rewriting/guidelines.md`](documentation/rewriting/guidelines.md) is the single contract every agent reads: name the mechanism not a metaphor, cut scaffolding and hype, define each term once, edit prose but never touch code, links, tests, or exercises.
+- **Word-count gate** — after each lesson the orchestrator strips code and measures the prose; if the rewrite isn't at least 25% shorter than the original, the lesson goes back for a second pass.
+- **Coherence pass** — because each section is rewritten by a different reviewer, the lesson-rewriter makes a final pass over the reassembled lesson to normalize titles and conventions across sections.
+- **Course glossary** — `prose-terminologist` records every load-bearing term and where it was first defined, so each term is introduced once and reused consistently across lessons.
+
 ## The interactive stack
 
 The site is an Astro + Starlight documentation app. Lessons are MDX, file-system-routed: every `NNN Chapter name` folder under `src/content/docs/` becomes a sidebar group. Most components are plain Astro (`.astro`), rendered to static HTML at build time; the genuinely interactive pieces drop down to React islands only where they need client-side state.
