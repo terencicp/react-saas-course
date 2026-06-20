@@ -198,7 +198,7 @@
 - 2 Derive in render, do not mirror into state (Teaches that values computable from existing props and state belong in the function body, names the canonical mirror-prop-into-state-and-sync-with-effect anti-pattern, and lands the three fixes (derive, lift, `key`-reset).)
 - 3 The four homes for state (Teaches the local-lifted-URL-server decision tree, the colocate-then-lift-on-demand reflex, URL state with `nuqs` as the 2026 reach, and the prop-drilling-is-not-a-context-bug distinction.)
 - 4 useReducer when transitions multiply (Teaches the threshold where coordinated `useState`s become a reducer, the discriminated-union action shape, the reducer purity contract, lazy init via the `init` argument, and the async-lives-in-the-handler rule.)
-- 5 useRef as the non-rendering escape hatch (Teaches the two flavors of ref (DOM nodes and instance values), the state-vs-ref rule ("does the JSX read it?"), the four canonical DOM-ref reaches, the don't-read-or-write-during-render rule, and how refs interact with the React Compiler.)
+- 5 useRef for non-rendering values (Teaches the two flavors of ref (DOM nodes and instance values), the state-vs-ref rule ("does the JSX read it?"), the four canonical DOM-ref reaches, the don't-read-or-write-during-render rule, and how refs interact with the React Compiler.)
 - 6 useId for ARIA wiring across SSR (Teaches the position-in-the-tree derivation that keeps IDs stable across server and client, composing multiple IDs from one call, the label-input-error wiring pattern, and the not-for-list-keys rule.)
 - 7 Quiz
 
