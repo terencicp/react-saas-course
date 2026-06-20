@@ -220,11 +220,11 @@
 - 4 Quiz
 
 ### Chapter 027 — shadcn/ui and the accessibility baseline
-- 1 Own the source, not the dependency (Teaches the shadcn/ui copy-into-repo model — the CLI workflow, `components.json` config, Radix-vs-Base engine choice, `asChild` slot composition, semantic-token theming, the fork threshold, and the registry namespace system.)
-- 2 The four commitments (Consolidates the four discipline-level accessibility commitments — keyboard navigation, WCAG 2.1 AA contrast, `prefers-reduced-motion`, and touch target size — and names semantic HTML as the first move before any ARIA.)
+- 1 shadcn-ui source you own (Teaches the shadcn/ui copy-into-repo model — the CLI workflow, `components.json` config, Radix-vs-Base engine choice, `asChild` slot composition, semantic-token theming, the fork threshold, and the registry namespace system.)
+- 2 The four commitments (Consolidates the four discipline-level accessibility commitments — keyboard navigation, WCAG 2.2 AA contrast, `prefers-reduced-motion`, and touch target size — and names semantic HTML as the first move before any ARIA.)
 - 3 No ARIA is better than bad ARIA (Teaches the four ARIA surfaces a SaaS engineer reaches for — roles, labels, descriptions, and live regions — the icon-only button label pattern, the `sr-only`/`aria-hidden`/`hidden` decision tree, the live-region pre-mount rule, and `role="status"` vs. `role="alert"`.)
-- 4 Where focus belongs (Teaches focus management across the three canonical SaaS situations — modal focus traps (Radix-handled), the route-change focus reflex Next.js does not provide, and post-submission focus — plus skip links, the `disabled` vs. `aria-disabled` decision, and the DOM-order rule for tab order.)
-- 5 Four states, not one (Teaches the loading/empty/error/populated component contract — `Skeleton` over spinners, `Empty` with a CTA, `Alert` with retry, the accessibility pairing for each state, and the discriminated-union state model that replaces three booleans.)
+- 4 Managing keyboard focus (Teaches focus management across the three canonical SaaS situations — modal focus traps (Radix-handled), the route-change focus reflex Next.js does not provide, and post-submission focus — plus skip links, the `disabled` vs. `aria-disabled` decision, and the DOM-order rule for tab order.)
+- 5 Loading, empty, error states (Teaches the loading/empty/error/populated component contract — `Skeleton` over spinners, `Empty` with a CTA, `Alert` with retry, the accessibility pairing for each state, and the discriminated-union state model that replaces three booleans.)
 - 6 Quiz
 
 ### Chapter 028 — Project: themed product surface
