@@ -34,15 +34,15 @@
 - 8 Run TypeScript locally (Pin Node 24 LTS via mise's `.mise.toml` to make the runtime a property of the repo, then partition `.ts` execution into native strip-types as the default, `tsx` past a named trigger (path aliases, JSX, decorators), and `tsc` reserved for library publishing or `--noEmit` type-checking — the moment local TS execution earns its place.)
 - 9 Quiz
 
-### Chapter 004 — Typing values you know
+### Chapter 004 — Typing values with TypeScript
 - 1 Primitives, literals, and the four corners (The seven primitive types, literal unions as the senior reach for finite domains, and the `any`/`unknown`/`never`/`void` corners with the trigger that earns each.)
-- 2 Object shapes: type, interface, and field modifiers (When to default to `type` (always) and reach for `interface` (declaration merging), paired with the per-field `?` and `readonly` modifiers plus the array-level `readonly T[]` and `Readonly<T>` cousins.)
+- 2 Object types and field modifiers (When to default to `type` (always) and reach for `interface` (declaration merging), paired with the per-field `?` and `readonly` modifiers plus the array-level `readonly T[]` and `Readonly<T>` cousins.)
 - 3 Tuples: positions with labels (Tuple syntax with element labels, optional and rest positions, `readonly` tuples, and the concrete patterns (`useState`, custom hooks, `Object.entries`) where a tuple beats a named-field object.)
-- 4 Dynamic keys: index signatures and Record<K, T> (The two forms for dynamic-keyed objects, the completeness payoff of `Record<LiteralUnion, V>`, and how `noUncheckedIndexedAccess` narrows reads differently across the open-keyed and finite-keyed cases.)
+- 4 Dynamic keys: index signatures and Record<K, V> (The two forms for dynamic-keyed objects, the completeness payoff of `Record<LiteralUnion, V>`, and how `noUncheckedIndexedAccess` narrows reads differently across the open-keyed and finite-keyed cases.)
 - 5 Composing types: unions and intersections (The `|` and `&` operators across literal, mixed-primitive, shape, and nullable unions plus shape-and-narrowing intersections, with the discriminated-union shape seeded for Chapter 005.)
-- 6 Narrow, don't assert (Control-flow narrowing through `typeof`, equality, `in`, `instanceof`, `Array.isArray`, and discriminant fields, with the three legitimate triggers that earn `as` and `!` named as conditional escape hatches.)
-- 7 Keeping literals narrow: as const and satisfies (The value-site freeze that keeps literal types from widening, the contract check that validates without losing the narrow, and the combined `as const satisfies T` idiom for typed-config patterns.)
-- 8 Annotate the boundaries, infer the inside (The senior rule for where annotations earn their weight (parameters, exported APIs) and where inference wins (locals, return types, inline callbacks), plus the `import type` discipline that `verbatimModuleSyntax` enforces.)
+- 6 Narrowing and type assertions (Control-flow narrowing through `typeof`, equality, `in`, `instanceof`, `Array.isArray`, and discriminant fields, with the three legitimate triggers that earn `as` and `!` named as conditional escape hatches.)
+- 7 Typed configs with as const and satisfies (The value-site freeze that keeps literal types from widening, the contract check that validates without losing the narrow, and the combined `as const satisfies T` idiom for typed-config patterns.)
+- 8 When to annotate vs. infer types (The senior rule for where annotations earn their weight (parameters, exported APIs) and where inference wins (locals, return types, inline callbacks), plus the `import type` discipline that `verbatimModuleSyntax` enforces.)
 - 9 Quiz
 
 ### Chapter 005 — Eliminating bug classes with types
@@ -55,9 +55,9 @@
 - 7 Generics with constraints (Teaches generic functions and types, `extends` constraints (including `K extends keyof T`), default type parameters, the `const` modifier, and the senior 2026 wrapper idioms (`safeAction`, `requireRole`, `cache`).)
 - 8 Quiz
 
-### Chapter 006 — Modules as a graph
+### Chapter 006 — ES modules and the import graph
 - 1 The four import-export shapes (Teaches the named, default, side-effecting, and dynamic export forms with their matching import surface, the type-only import discipline under `verbatimModuleSyntax`, and the bare-specifier resolution algorithm that picks the file behind every `import 'pkg'`.)
-- 2 Walking the graph: evaluation, live bindings, and the client bundle (Teaches modules as a depth-first-evaluated directed graph with live-binding semantics, dynamic `import()` as a deferred edge that drives code splitting, and `"use client"` plus `import 'server-only'`/`'client-only'` as the module-graph rule that keeps server code out of the browser.)
+- 2 Module evaluation and bundling (Teaches modules as a depth-first-evaluated directed graph with live-binding semantics, dynamic `import()` as a deferred edge that drives code splitting, and `"use client"` plus `import 'server-only'`/`'client-only'` as the module-graph rule that keeps server code out of the browser.)
 - 3 Top-level await vs. lazy init (Teaches top-level `await` as a graph-level change that turns every upstream consumer async, the canonical `env.ts` shape, and the senior call between top-level await for cheap startup validation and a lazy `getDb()` for expensive or conditional setup.)
 - 4 Augmenting third-party modules (Teaches the `declare module` pattern in dedicated `.d.ts` files to extend a published package's interfaces (Better Auth `Session`, Drizzle relations, `next-intl` messages) and tie branded IDs to the third-party session shape at the source.)
 - 5 Quiz

@@ -1,0 +1,356 @@
+---
+title: Augmenting third-party modules
+tagline: Extending a package's published types with TypeScript's declare module, and knowing when the library offers a better path.
+chapter-id: 6
+course-progress: 0.0579
+rewrites: 2
+sidebar:
+  order: 4
+  label: Module augmentation
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { Aside, FileTree, CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Your project has branded IDs: `UserId` is `string & { readonly __brand: 'UserId' }`, so a raw `string` can never stand in for a `UserId`, the substitution that ends with one tenant reading another tenant's data.
+Then you wire up Better Auth, which publishes its `Session.user.id` as a plain `string`.
+Every Server Action that reads the user ID off the session and hands it to a function expecting `UserId` now has to either cast it or weaken the function to accept a bare `string`, and both undo the branding from chapter 5.
+
+This lesson teaches `declare module`, the TypeScript mechanism for extending a third-party package's published interfaces from a `.d.ts` file your project owns.
+The syntax is a few lines; the harder part is knowing when to use it, and whether the library already offers its own extension contract instead.
+
+## Two fixes that erode the brand
+
+Both fixes below satisfy the type checker, but neither holds up over time.
+
+<CodeVariants>
+  <CodeVariant label="Cast at the call site">
+    <div data-mark-color="red">
+
+    ```ts {5}
+    export const archiveInvoice = async (formData: FormData) => {
+      const session = await auth.api.getSession({ headers: await headers() });
+      if (!session) return err('unauthorized', 'Sign in to continue.');
+
+      const ownerId = session.user.id as UserId;
+      return invoiceQueries.archive(ownerId, formData.get('invoiceId'));
+    };
+    ```
+
+    </div>
+    The cast fixes the type here and enforces nothing elsewhere, allowing exactly the substitution the brand was meant to prevent. A teammate copies the handler, forgets the cast, and the type checker stays quiet.
+  </CodeVariant>
+
+  <CodeVariant label="Unbrand at the boundary">
+    <div data-mark-color="red">
+
+    ```ts {1}
+    const archive = async (ownerId: string, invoiceId: string) => {
+      return db.update(invoices)
+        .set({ archivedAt: new Date() })
+        .where(and(eq(invoices.ownerId, ownerId), eq(invoices.id, invoiceId)));
+    };
+    ```
+
+    </div>
+    Drop the brand from the signature and every downstream caller now accepts any string. Repeat that once per function and soon nothing in the codebase takes a `UserId`, only `string`.
+  </CodeVariant>
+</CodeVariants>
+
+The fix is to make `session.user.id` *be* a `UserId` at the type level, right at the seam where the library publishes its session shape.
+Then every caller inherits the correct type for free, the cast disappears, and the brand stays intact.
+That is what `declare module` exists for.
+
+## The `declare module` mechanism
+
+```ts
+// types/example.d.ts
+import type { UserId } from '@/lib/branded';
+
+declare module 'some-library' {
+  interface User {
+    id: UserId;
+  }
+}
+```
+
+A `declare module 'some-library' { ... }` block merges its contents into the types `'some-library'` already publishes.
+This is <Term definition="TypeScript's rule that multiple declarations of the same `interface` in the same module merge into one combined declaration. Only interfaces merge; `type` aliases refuse.">declaration merging</Term>, and applying it to a third-party package is <Term definition="The pattern of extending a third-party module's published types from a project-owned `.d.ts` file using `declare module 'pkg' { ... }`.">module augmentation</Term>.
+The merge is build-time only: the `.d.ts` ships no runtime code, so `some-library` runs exactly as before and only its exported types change.
+
+The `interface` keyword is load-bearing.
+A `type` alias has nothing to merge into, so a library publishes its extensible surface as `interface`.
+Chapter 4's rule still holds, `type` is the default in app code; `interface` is the form a library reaches for at its extension points.
+
+The `import type { UserId }` line is also load-bearing.
+`declare module 'x' { ... }` only augments when the file is a module, which a top-level `import` or `export` makes it.
+Drop the import and the file becomes a global <Term definition="A `.d.ts` declaration that participates in the type checker without any runtime code. Global ambient declarations are at the top level of a file with no imports/exports; module ambient declarations live inside a `declare module 'pkg' { ... }` block.">ambient declaration</Term>, so `declare module 'next-intl'` now declares a non-existent global module of that name: the augmentation silently never fires, with no editor warning.
+
+<VideoCallout videoId="USi8khln7YI" videoTitle="Module Augmentation in TypeScript — Pedro Figueiredo">
+  Pedro Figueiredo (require lx meetup, 17 min) walks the mechanism end to end: the `.d.ts` file, the import-or-export rule that makes it a module, and how TypeScript resolves a `declare module 'react'` block against a package's published types.
+</VideoCallout>
+
+### The file convention
+
+Augmentations live in a top-level `types/` directory, one file per package, named to match the package's import specifier.
+
+<FileTree>
+
+- types/
+  - next-intl.d.ts
+  - drizzle.d.ts
+- src/
+  - app/
+  - lib/
+- tsconfig.json
+
+</FileTree>
+
+The package name as the filename, `types/next-intl.d.ts` rather than a catch-all `types/global.d.ts`, makes each augmentation easy to find from a call site, to review on a library upgrade, and to delete once the upstream library adds the field natively.
+
+Keep the directory outside `src/`: a `types/` folder reads as type-only seams to third-party packages, while the same files beside `src/lib/` blur into application code.
+
+`tsconfig.json`'s `include` array matches `**/*.d.ts`, so it picks these files up automatically and the augmentation takes effect project-wide on save.
+Your editor's TypeScript language server only sees a newly added file after you restart the TS server, the *TypeScript: Restart TS Server* command in VS Code.
+
+<VideoCallout videoId="zu-EgnbmcLY" videoTitle="Don't put your types in .d.ts files — Matt Pocock">
+  Matt Pocock (Total TypeScript, 4 min) on why `.d.ts` files are the wrong place for regular app types and the right place for global-scope alterations like these augmentations.
+</VideoCallout>
+
+## When to reach for `declare module`
+
+Module augmentation has a cost: the `.d.ts` file must be reviewed on every library upgrade, and it breaks silently when the library reorganizes the interface it merges into.
+Three questions justify paying it.
+
+1. **Does the third-party type appear in five or more places without the augmentation?** Below that, casting at each call site is cheaper than a `.d.ts` file to keep current.
+2. **Does the augmentation tie a branded ID or domain type to the third-party shape?** When the cast you would otherwise write erases a brand the project authored, augmentation makes the brand permanent at the seam instead of restating it at every call site.
+3. **Does the library document the type as extendable?** Docs that name `declare module` (`next-intl`'s `AppConfig`, Auth.js's `Session`) mark augmentation as supported. Augmenting a type the library treats as internal is risky: a minor-version bump can change the shape and break the augmentation.
+
+Before any of these, ask **question zero**: does the library already ship its own extension contract?
+A generic type parameter (Drizzle's schema generic), an inference helper (`typeof auth.$Infer.Session`), or a builder's return type is the preferred path, because the runtime shape and the type shape both derive from the config you wrote and stay in sync.
+Reach for `declare module` only when the library ships no such mechanism, or when it documents augmentation as the path, as `next-intl` does for typed messages.
+
+## Canonical site 1: `next-intl` typed messages
+
+`next-intl` documents `declare module 'next-intl'` as the supported way to tie its message keys to your translation JSON.
+With it in place, `useTranslations('home')` autocompletes the keys under `home` and `t('title')` is type-checked against the JSON's shape.
+
+<AnnotatedCode lang="ts" code={`
+// types/next-intl.d.ts
+import type messages from '@/messages/en.json';
+
+declare module 'next-intl' {
+  interface AppConfig {
+    Messages: typeof messages;
+  }
+}
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    One file per package, outside `src/`, named for the specifier it augments, so anyone asking "where do we type next-intl?" finds it on the first guess.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{2} "import type"`} color="violet">
+    A type-only import of the English messages, your source of truth. The top-level `import` makes the file module ambient so the augmentation fires, and `import type` keeps it out of the runtime bundle.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{4} "AppConfig"`} color="green">
+    `AppConfig` is the interface `next-intl` publishes for projects to extend; its docs name the keys it accepts (`Messages`, `Locale`, `Formats`). Whatever you declare inside `interface AppConfig { ... }` merges into it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{5} "typeof messages"`} color="orange">
+    `typeof messages` derives the type from `en.json`. Add a key and the type updates; rename a key and every stale `t('...')` call turns into a red squiggle, the moment the augmentation pays for itself.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The rest of the `next-intl` setup comes in the internationalization chapter.
+
+## Canonical site 2: narrowing a Drizzle relation
+
+Drizzle's `relations()` helper infers relation types from your schema.
+When the foreign-key column is nullable, the inferred relation is `Customer | null`, even on a query path that **always** joins the customer.
+Every consumer then narrows it with `?.` or a non-null assertion, for a guarantee the query already enforces.
+Module augmentation moves that narrowing to one place.
+
+<CodeVariants>
+  <CodeVariant label="Inferred (nullable)">
+    ```ts
+    type InvoiceWithCustomer = typeof db.query.invoices.findFirst.$inferResult;
+    //   { id: string; customer: Customer | null; ... }
+    ```
+    The FK column allows null, so Drizzle widens the relation to nullable. Every consumer reads `result.customer?.name` or asserts non-null, and the real invariant, that this path always joins, stays implicit.
+  </CodeVariant>
+
+  <CodeVariant label="Narrowed via augmentation">
+    ```ts
+    // types/drizzle.d.ts — sketch, names depend on the Drizzle version
+    import type { Customer } from '@/db/schema';
+
+    declare module 'drizzle-orm' {
+      // <RelationsInterfaceFromDrizzle> — placeholder for the published
+      // interface that carries the inferred relation shape. Look up the
+      // real name in your installed `drizzle-orm` types before writing this.
+      interface RelationsInterfaceFromDrizzle {
+        customer: Customer;
+      }
+    }
+    ```
+    The augmentation collapses the relation to non-null at the interface where Drizzle publishes the inferred shape. Consumers read `result.customer.name`: the narrowing is paid once at the seam and disappears from every call site.
+  </CodeVariant>
+</CodeVariants>
+
+The exact interface depends on the Drizzle version and relation shape, so look it up in your installed types.
+The **pattern** is what carries over: narrow at the seam where the inference is published, not at every call site that reads the result.
+
+This is narrowing, not lying: it holds because the query path enforces the join.
+Add a future path that skips the join and the type still claims non-null, so the bug ships as an `undefined.name` crash at runtime.
+That is the cost: one centralized assertion plus the debt of remembering the invariant whenever you add a query path.
+
+## Counter-example: Better Auth's `$Infer`, not `declare module`
+
+The drifting-cast bug at the top of this lesson was a Better Auth bug, and the obvious fix is to `declare module 'better-auth'` and brand `Session.user.id` as `UserId`.
+That works, but it is the wrong reach.
+
+Better Auth extends the session shape through an `additionalFields` config plus the `typeof auth.$Infer.Session` inference helper.
+The config goes on the server `auth` instance:
+
+```ts
+// lib/auth.ts
+import 'server-only';
+
+import { betterAuth } from 'better-auth';
+
+export const auth = betterAuth({
+  user: {
+    additionalFields: {
+      orgId: { type: 'string', input: false },
+      role: { type: 'string', input: false },
+    },
+  },
+  // ... database adapter, plugins, etc.
+});
+
+export type Session = typeof auth.$Infer.Session;
+```
+
+Consumers import `Session` from `lib/auth.ts`, and `orgId` and `role` are typed on it:
+
+```ts
+import type { Session } from '@/lib/auth';
+
+const readSession = (session: Session) => {
+  // session.user.id, session.user.orgId, session.user.role — all typed
+  return { tenant: session.user.orgId, role: session.user.role };
+};
+```
+
+`additionalFields` is Better Auth's published extension contract: the library hydrates those fields onto the runtime session from the database, and <Term definition="Better Auth's type-inference helper that derives the session type from the runtime config (`typeof auth.$Infer.Session`). Keeps the type and the runtime shape in sync because both derive from the same source.">`$Infer`</Term> picks them up into the `Session` type.
+A `declare module 'better-auth' { interface Session { ... } }` augmentation would instead claim the field exists while the library never hydrates it, so the type would say `string` where the value was `undefined`: a lie that reintroduces the bug the brand was meant to prevent.
+
+So for the opening bug, brand `session.user.id` at the **query boundary**, where the bare `string` from the session crosses into application code, using the brand factory from chapter 5:
+
+```ts
+const archiveInvoice = async (session: typeof auth.$Infer.Session, formData: FormData) => {
+  const ownerId = userId(session.user.id); // re-brand at the boundary
+  return invoiceQueries.archive(ownerId, formData.get('invoiceId'));
+};
+```
+
+The full setup lands in the Better Auth chapter; here, `declare module 'better-auth'` is the wrong tool because the library already ships a better one.
+
+## Augmentation anti-patterns
+
+Three misuses look like augmentation but defeat its purpose.
+
+<Aside type="caution" title="Augmenting to bypass a strict type">
+If the library publishes `string | undefined` and you augment it to `string` to skip the narrowing, the type lies: the value can still be `undefined` at runtime, and your code crashes. Augmentation narrows behind a real runtime guarantee, like the Drizzle join; it can't erase the library's safety. Narrow at the call site with a real check instead.
+
+```ts del={3}
+declare module 'some-lib' {
+  interface User {
+    email: string;
+  }
+}
+```
+</Aside>
+
+<Aside type="caution" title="Augmenting your own application types">
+Augmentation is for **third-party** modules; edit your own types in place. A `declare module '@/lib/branded'` block in `types/` is a code smell: open `lib/branded.ts` and change the type there.
+
+```ts del={1}
+declare module '@/lib/branded' {
+  interface UserId { extra: string }
+}
+```
+</Aside>
+
+<Aside type="caution" title="`declare global` for ambient values in app code">
+The `declare global { interface Window { dataLayer: unknown[] } }` form fits third-party scripts that install browser globals, like Google Tag Manager. But in app code every value should enter through an `import`, and most SDKs ship type packages, so install those first. Reach for `declare global` only when a script installs a global the type checker can't otherwise see.
+
+```ts del={1-3}
+declare global {
+  var myAppConfig: { apiUrl: string };
+}
+```
+</Aside>
+
+## Practice: pick the right tool
+
+These six scenarios drill both decisions from this lesson: augment versus narrow, and augment versus the library's own extension path.
+
+<Buckets instructions="Sort each scenario by the right tool for the job.">
+  <Bucket name="augment" label="Augment via `declare module`" description="The library documents augmentation as the path." />
+  <Bucket name="library-path" label="Use the library's own extension mechanism" description="The library ships `$Infer`, a generic, or a config-driven shape." />
+  <Bucket name="narrow" label="Narrow at the call site" description="No augmentation; check or assert where the value is read." />
+
+  <Item bucket="augment">`next-intl` doesn't autocomplete my message keys</Item>
+  <Item bucket="library-path">Better Auth's `session.user` needs a custom `role` field</Item>
+  <Item bucket="narrow">A library's `fetchUser` returns `User | undefined`, my call site assumes it exists</Item>
+  <Item bucket="augment">Drizzle infers a relation as nullable, but my query always joins</Item>
+  <Item bucket="narrow">My own `User` type from `@/lib/types` is missing an `email` field</Item>
+  <Item bucket="library-path">A third-party analytics SDK installs `window.posthog` — I need to call it from a Client Component</Item>
+</Buckets>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    href="https://www.typescriptlang.org/docs/handbook/declaration-merging.html"
+    title="TypeScript Handbook — Declaration Merging"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The canonical reference for interface merging and the `declare module` form. Covers the module-vs-global ambient distinction and the rules around what merges."
+  />
+  <ExternalResource
+    href="https://www.totaltypescript.com/books/total-typescript-essentials/modules-scripts-and-declaration-files"
+    title="Total TypeScript Essentials — Modules, Scripts & Declaration Files"
+    icon="lucide:book-open"
+    iconColor="#0F62FE"
+    description="Matt Pocock's deep walkthrough of how TypeScript decides between module, script, and ambient mode — the foot-gun this lesson calls out, treated end-to-end."
+  />
+  <ExternalResource
+    href="https://next-intl.dev/docs/workflows/typescript"
+    title="next-intl — TypeScript augmentation"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The library's own docs for the `AppConfig` augmentation walked through in this lesson, including the `Messages`, `Locale`, and `Formats` keys."
+  />
+  <ExternalResource
+    href="https://better-auth.com/docs/concepts/typescript"
+    title="Better Auth — TypeScript & $Infer"
+    icon="simple-icons:betterauth"
+    iconColor="#000000"
+    description="The library's extension contract for the counter-example in this lesson: `additionalFields` plus `typeof auth.$Infer.Session` instead of `declare module`."
+  />
+</CardGrid>
