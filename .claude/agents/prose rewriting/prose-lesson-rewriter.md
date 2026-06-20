@@ -86,9 +86,9 @@ Make the edits necessary to keep the lesson coherent; be surgical.
 
 ## Step 10 - Terminology pass
 
-Spawn one prose-terminologist agent and pass it the current lesson MDX path, chapter number and lesson number.
+Skip this step if this is a 2nd pass or if running in Blitz mode.
 
-Skip this step if this is a 2nd pass.
+Spawn one prose-terminologist agent and pass it the current lesson MDX path, chapter number and lesson number.
 
 ## Step 11 - Verification
 
