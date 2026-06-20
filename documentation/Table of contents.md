@@ -103,7 +103,7 @@
 - 3 CORS and the preflight request (Teaches CORS as the opt-in that loosens same-origin, the simple-vs-preflighted decision, the `Access-Control-Allow-*` response-header palette, the wildcard-with-credentials trap, and the canonical browser error messages with their fixes.)
 - 4 Quiz
 
-### Chapter 013 — Cookies and the trust model
+### Chapter 013 — Cookies and Set-Cookie attributes
 - 1 Set-Cookie attributes and the safe default (Reads the `Set-Cookie` header attribute by attribute — `HttpOnly`, `Secure`, `SameSite`, `Path`, `Domain`, `Max-Age`, the `__Host-` prefix, and the `Partitioned` (CHIPS) attribute — names the senior default (`HttpOnly; Secure; SameSite=Lax; Path=/`), maps each attribute to the failure mode it prevents, and threads the Next.js `cookies()` helper and the 2026 third-party-cookie reality.)
 - 2 Quiz
 
