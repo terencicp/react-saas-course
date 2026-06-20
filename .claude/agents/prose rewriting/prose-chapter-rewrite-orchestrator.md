@@ -42,6 +42,8 @@ Update the relevant section of 'documentation/Table of contents.md' to be cohere
 
 ## Step 6 - Commit
 
+Skip commits in Blitz mode.
+
 Make sure every relevant file has been edited.
 Commit changes to files in your chapter plus any `documentation/rewriting/glossary.md` edits, with the message `Prose rewrite: Chapter <XXX>`.
 
