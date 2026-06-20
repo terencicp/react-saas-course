@@ -1,0 +1,368 @@
+---
+title: JSON at the wire boundary
+tagline: How values cross the wire as JSON, and why a parsed value stays unknown until a schema proves its shape.
+chapter-id: 9
+course-progress: 0.0702
+rewrites: 2
+sidebar:
+  order: 1
+  label: JSON at the boundary
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
+import CodeReview from '../../../components/exercises/code-review/CodeReview.astro';
+import ReviewFile from '../../../components/exercises/code-review/ReviewFile.astro';
+import ReviewIssue from '../../../components/exercises/code-review/ReviewIssue.astro';
+import ReviewWhy from '../../../components/exercises/code-review/ReviewWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import FourDirections from '../../../components/lessons/009/1/FourDirections.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Every web app sends and receives JSON at four sites: an incoming Server Action body, an outgoing route handler response, a webhook POSTed by a third party, and a `localStorage` round-trip in the browser. Each uses a different transport, but every one sits on the same line:
+
+```ts
+const data = JSON.parse(req.body);
+return chargeInvoice(data.invoiceId, data.amount);
+```
+
+What is the type of `data`? Whatever `JSON.parse`'s signature claims, the honest answer is `unknown`, and that splits the work in two. First parse the string into a value whose shape you don't yet know. Then narrow that value to a domain type with a schema. Skip the second step and every malformed webhook, missing field, and string-where-a-number-belongs rides silently through to your database.
+
+This chapter closes Unit 1 with three disciplines at the boundary between in-memory values and the outside world: the JSON wire here, `class` next, and the `Date`-to-`Temporal` pivot last. Each answers the same question: what is a value's shape after it has crossed?
+
+## Four wire sites, one codec
+
+Every JSON crossing has the same three parts: a string on the <Term definition={"The serialized bytes that cross a process boundary, over HTTP, over a webhook, or into and out of localStorage. The codec sits between the wire and the in-memory value."}>wire</Term>, a value in memory, and the codec (`JSON.parse` and `JSON.stringify`) between them. The four sites move their bytes by different transports but share that one codec, so they share one discipline: the value out of `JSON.parse` is `unknown` until a schema narrows it.
+
+<Figure caption="Four wire sites, one codec. Whatever discipline you install at one site applies at every site.">
+  <FourDirections />
+</Figure>
+
+## Parse JSON to `unknown`, then narrow
+
+`JSON.parse(s)` returns whatever the string described, typed as `any` by its TypeScript signature. At the boundary `any` is a false promise: the compiler lets your code read fields off the result while the runtime hands back whatever the wire sent. Treat the result as `unknown` instead, and touch no field until a schema has narrowed the shape.
+
+<CodeVariants syncKey="parse-shape">
+  <CodeVariant label="Wrong">
+    <div data-mark-color="red">
+
+    ```ts
+    const raw = await req.text();
+    const data = JSON.parse(raw);
+    return chargeInvoice(data.invoiceId, data.amount);
+    ```
+
+    </div>
+
+    **`JSON.parse` returns `any`.** The compiler lets you read `data.invoiceId` and `data.amount` unchecked. A malformed webhook, a missing field, or a string where a number was expected goes uncaught until something deeper breaks: a Postgres type error, a charge for `NaN`, or a `null` tenant ID.
+  </CodeVariant>
+
+  <CodeVariant label="Right">
+    <div data-mark-color="green">
+
+    ```ts
+    const raw = await req.text();
+    const parsed: unknown = JSON.parse(raw);
+    const body = invoiceWebhookSchema.parse(parsed);
+    return chargeInvoice(body.invoiceId, body.amount);
+    ```
+
+    </div>
+
+    **Two steps.** First parse to `unknown`; the explicit annotation refuses the `any` from `JSON.parse`'s signature. Then narrow with a <Term definition={"The course's runtime validation library: schemas narrow unknown values into typed shapes. A later chapter covers Zod in full; here it is one line, schema.parse."}>Zod</Term> schema. The `body` that reaches business logic is both typed and validated, because the schema checks its runtime shape and pins its static type at once. A later chapter covers how `invoiceWebhookSchema` is built.
+  </CodeVariant>
+</CodeVariants>
+
+The discipline in one sentence: **the wire is `unknown` until validated.** Wrap `JSON.parse` in a helper whose return type is `unknown`, so the only path forward is the schema. There is no reading a field off the raw parse "just this once."
+
+`JSON.parse` throws `SyntaxError` on invalid JSON, and an empty or missing body throws too. Catch this once at the transport layer, in the route-handler or Server Action wrapper that also renders the 400, not at every call site.
+
+You'll often see fetch's body methods in place of `JSON.parse(await req.text())`. `Request.json()` and `Response.json()` call `JSON.parse` under the hood and return `Promise<any>`, so the same rule applies: pair every `.json()` with a Zod parse in the same expression, `const body = invoiceWebhookSchema.parse(await req.json())`.
+
+<VideoCallout videoId="o4h8PUVy5J8" videoTitle="Zod Goes Where TypeScript Can't">
+  Theo (t3.gg) shows why TypeScript's guarantees vanish at runtime, then parses an `unknown` value through a schema to recover a typed shape.
+</VideoCallout>
+
+## What `JSON.stringify` drops or coerces
+
+JSON's grammar carries six value types: object, array, string, number, boolean, and null. JavaScript carries richer values too: `undefined`, `Date`, `BigInt`, `NaN`, `Infinity`, `Map`, `Set`, `Symbol`, functions, and class instances. When `JSON.stringify` meets one the grammar can't carry, it either drops it or coerces it to the nearest thing the grammar can express. Four of those compromises bite often.
+
+<TabbedContent>
+  <TabbedItem label="undefined">
+    ```ts
+    JSON.stringify({ a: 1, b: undefined });    // '{"a":1}'
+    JSON.stringify([1, undefined, 3]);         // '[1,null,3]'
+    ```
+
+    **Object properties with `undefined` values are dropped; array elements become `null`.** That asymmetry is the trap: `{ a: undefined }` round-trips to `{}`, so a receiver checking `'a' in obj` gets the wrong answer. Use `null` for "explicitly absent in JSON" and `undefined` for "not set in TS," and let a schema enforce which fields carry each.
+  </TabbedItem>
+
+  <TabbedItem label="Date">
+    ```ts
+    const wire = JSON.stringify({ createdAt: new Date() });
+    // '{"createdAt":"2026-05-28T10:00:00.000Z"}'
+    const back = JSON.parse(wire);
+    typeof back.createdAt; // 'string' — not a Date
+    ```
+
+    **`stringify` calls the value's `toJSON()` method, which for `Date` returns an <Term definition={"The international standard for writing dates and times as text, like 2026-05-28T10:00:00.000Z: year-month-day, a T, then the time in UTC. The one date format JSON consumers agree on."}>ISO 8601</Term> string; `parse` hands that string back, not a `Date`.** The grammar has no date type, so the round-trip downgrades the value to a string and the receiver rebuilds the `Date` itself. The chapter's closing lesson installs that codec for the `Date`-to-`Temporal` pivot.
+  </TabbedItem>
+
+  <TabbedItem label="BigInt">
+    ```ts
+    JSON.stringify({ id: 9_007_199_254_740_993n });
+    // TypeError: Do not know how to serialize a BigInt
+    ```
+
+    **`stringify` throws `TypeError` on a `BigInt`.** Model the value as a `string` at the schema boundary: every Stripe ID and 64-bit Postgres id lives as a `string` in the domain type, the schema validates its format, and you never do arithmetic on it. Reach for an explicit `replacer` that calls `.toString()` on bigints only when you truly need arithmetic; the next section covers what a `replacer` is.
+  </TabbedItem>
+
+  <TabbedItem label="NaN / Infinity">
+    ```ts
+    JSON.stringify({ ratio: NaN, max: Infinity });
+    // '{"ratio":null,"max":null}'
+    ```
+
+    **Non-finite numbers serialize as `null`.** An analytics field that overflows to `NaN` serializes to `null`, indistinguishable from a real `null`. Validate at the math site, not the serializer: a Zod `.refine(Number.isFinite)` on numeric fields rejects the bad value before it reaches the wire.
+  </TabbedItem>
+</TabbedContent>
+
+A few more values drop silently. **Functions and `Symbol` keys or values** are dropped from objects, and functions become `null` in arrays. **`Map` and `Set`** serialize as `{}`, not their entries. **Cyclic references** throw a `TypeError`, so deep-clone with `structuredClone`, not `JSON.parse(JSON.stringify(...))`. **Class instances** serialize their own enumerable properties only, so methods, getters, and `#private` fields disappear; the next lesson covers when a `toJSON()` method earns its weight.
+
+## Where `reviver` and `replacer` belong
+
+`JSON.parse(s, reviver)` and `JSON.stringify(value, replacer, space)` each take a hook that walks the value bottom-up, visiting nested values before their parents. Both belong at the boundary, never in domain code. Two cases earn them.
+
+The first is `reviver` as a defense against prototype pollution.
+
+```ts
+const safeReviver = (key: string, value: unknown): unknown => {
+  if (key === '__proto__' || key === 'constructor') return undefined;
+  return value;
+};
+
+const parsed: unknown = JSON.parse(rawJson, safeReviver);
+```
+
+Crafted JSON can carry `__proto__` and `constructor` keys; an unguarded `Object.assign({}, parsed)` then mutates the prototype chain, and every object in the process inherits what the attacker injected. Returning `undefined` from the reviver deletes the property before any consumer sees the value. The next section's `parseJson` helper wraps this reviver once, so every call site is protected by default.
+
+The second is `replacer` for log-site field redaction.
+
+```ts
+const redact = (key: string, value: unknown): unknown =>
+  /password|token|secret|authorization/i.test(key) ? '[REDACTED]' : value;
+
+logger.info('webhook received', JSON.stringify(payload, redact));
+```
+
+The replacer substitutes redacted strings during serialization, keeping the redaction in one place rather than scattered `delete payload.password` lines. A later chapter on structured logging moves this into the logger itself; the inline form above covers projects that aren't there yet.
+
+Everything else is type reconstruction, such as parsing an ISO string back to a `Temporal.Instant`, and that contract belongs on the schema, where Zod's `.transform()` owns it. A reviver doing the same job duplicates the contract in a second place that drifts out of sync.
+
+## The `parseJson` helper
+
+The two-step seam, parse to `unknown` then narrow with Zod, lives once in `lib/json.ts`.
+
+<AnnotatedCode lang="ts" code={`import { z } from 'zod';
+
+const safeReviver = (key: string, value: unknown): unknown => {
+  if (key === '__proto__' || key === 'constructor') return undefined;
+  return value;
+};
+
+export const parseJson = <Schema extends z.ZodType>(
+  raw: string,
+  schema: Schema,
+): z.infer<Schema> => {
+  const parsed: unknown = JSON.parse(raw, safeReviver);
+  return schema.parse(parsed);
+};`}>
+  <AnnotatedStep meta="{3-6}" color="orange">
+    **The prototype-pollution defense lives at the seam.** Every parse runs through the same reviver that strips `__proto__` and `constructor`, and no call site can forget it because no call site writes its own `JSON.parse`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12}" color="blue">
+    **Parse to `unknown`.** The explicit `: unknown` annotation refuses the `any` from `JSON.parse`'s signature. An invalid string throws `SyntaxError` here, caught by the transport-layer wrapper; domain code lets the throw bubble.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13}" color="green">
+    **Narrow with the schema.** `schema.parse` throws `ZodError` on a mismatch, caught by the same wrapper. The return type is `z.infer<Schema>`, so `parseJson(raw, invoiceWebhookSchema)` returns the validated `Invoice` shape. This seam takes the throw because route handlers and Server Action wrappers own the response; the Zod chapter covers `safeParse` for callers that want the error as a value instead.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Every wire site reaches for this helper. A route handler calls `const body = parseJson(await req.text(), webhookSchema)`; a `localStorage` read calls `const draft = parseJson(localStorage.getItem('draft') ?? '{}', draftSchema)`. The Server Action site wraps `FormData` differently, but everywhere a JSON string crosses into the process, the seam is one import.
+
+## Common mistakes
+
+- **`JSON.parse(JSON.stringify(x))` is not deep-clone.** It loses `Date`, `Map`, `Set`, `Symbol`, `undefined`, and `BigInt`, and throws on cycles. Use `structuredClone(x)`.
+- **Don't catch `SyntaxError` at every call site.** The transport wrapper owns it; domain code calls `parseJson` and lets the throw bubble.
+- **`JSON.stringify(value, null, 2)` pretty-prints, but only in dev.** Production responses and logs omit the `space` argument; the extra whitespace inflates payload size for no benefit.
+- **Don't feed `JSON.stringify` output to a content hash.** Key order isn't specified, so different runtimes can order the same value differently and hash it to different digests. Use `fast-json-stable-stringify` or a sorted-key canonicalizer when the hash must be stable.
+- **JSON is fast enough.** MessagePack and Protobuf win only at the profiler level, not worth the complexity here.
+
+## Practice
+
+The first exercise drills the serialization holes; the second checks whether you spot an unsafe parse when you read it.
+
+### Exercise 1: What does `stringify` do?
+
+For each snippet, type the exact string `JSON.stringify` returns.
+
+<PredictOutput expected={`{"a":1,"c":3}`}>
+
+```ts
+console.log(JSON.stringify({ a: 1, b: undefined, c: 3 }));
+```
+
+<PredictWhy>Object properties with `undefined` values are dropped. The receiver sees `{"a":1,"c":3}`, not `{"a":1,"b":null,"c":3}`.</PredictWhy>
+
+</PredictOutput>
+
+<PredictOutput expected={`[1,null,3]`}>
+
+```ts
+console.log(JSON.stringify([1, undefined, 3]));
+```
+
+<PredictWhy>In arrays, `undefined` can't be dropped because positions matter, so it's coerced to `null`. The asymmetry between objects (drop) and arrays (null) is the hole.</PredictWhy>
+
+</PredictOutput>
+
+<PredictOutput expected={`{"ratio":null}`}>
+
+```ts
+console.log(JSON.stringify({ ratio: NaN }));
+```
+
+<PredictWhy>JSON's grammar has no representation for `NaN`, `Infinity`, or `-Infinity`. All three serialize as `null`, indistinguishable from a real `null`.</PredictWhy>
+
+</PredictOutput>
+
+<PredictOutput expected={`{}`}>
+
+```ts
+console.log(JSON.stringify(new Map([['a', 1]])));
+```
+
+<PredictWhy>`Map` serializes as `{}`: `JSON.stringify` writes only own enumerable properties, and `Map` keeps its entries in internal slots, not properties. Convert with `Object.fromEntries(map)` or `[...map]` first to ship the contents.</PredictWhy>
+
+</PredictOutput>
+
+<PredictOutput expected={`{"createdAt":"2026-05-28T00:00:00.000Z"}`}>
+
+```ts
+console.log(JSON.stringify({ createdAt: new Date('2026-05-28T00:00:00Z') }));
+```
+
+<PredictWhy>`stringify` calls the value's `toJSON()` method, and `Date.prototype.toJSON` returns an ISO 8601 string. The round-trip downgrades the type: `JSON.parse` hands back the string, not a `Date`.</PredictWhy>
+
+</PredictOutput>
+
+### Exercise 2: Spot the unsafe parse
+
+Each file below contains exactly one JSON-boundary defect, one of the three traps this lesson named: trusting the parse, a JSON round-trip used for deep-clone, or `BigInt` at the serializer. Click the offending line and leave the comment a senior reviewer would write.
+
+<CodeReview instructions="Click the line carrying the JSON-boundary defect and leave the review comment a senior reviewer would write.">
+  <ReviewFile name="app/api/stripe/webhook/route.ts">
+    ```ts
+    export const POST = async (req: NextRequest) => {
+      const raw = await req.text();
+      const data = JSON.parse(raw);
+      await chargeInvoice(data.invoiceId, data.amount);
+      return new Response(null, { status: 200 });
+    };
+    ```
+  </ReviewFile>
+
+  <ReviewFile name="lib/billing/audit.ts">
+    ```ts
+    const archived = JSON.parse(JSON.stringify(invoice));
+    archived.createdAt.getFullYear();
+    ```
+  </ReviewFile>
+
+  <ReviewFile name="lib/integrations/legacy.ts">
+    ```ts
+    const payload = { id: 9_007_199_254_740_993n, status: 'paid' };
+    const body = JSON.stringify(payload);
+    ```
+  </ReviewFile>
+
+  <ReviewIssue
+    file="app/api/stripe/webhook/route.ts"
+    line={3}
+    kernel="trusts the parse — JSON.parse returns any, the shape must be narrowed with a Zod schema before reading fields"
+  >
+    Wrap the parse with `parseJson(raw, webhookSchema)`. The wire is `unknown` until validated: reading `data.invoiceId` and `data.amount` off a raw parse lets a malformed webhook poison the database with whatever the wire sent.
+  </ReviewIssue>
+
+  <ReviewIssue
+    file="lib/billing/audit.ts"
+    line={1}
+    kernel="JSON round-trip for deep-clone — downgrades Date to string and drops undefined, BigInt, Map, Set, and methods"
+  >
+    `JSON.parse(JSON.stringify(...))` is not deep-clone. It downgrades `Date` to a string (which is why `getFullYear()` blows up on the next line), drops `undefined` and methods, and throws on cycles. Use `structuredClone(invoice)`, which preserves `Date`, `Map`, `Set`, `BigInt`, and typed arrays.
+  </ReviewIssue>
+
+  <ReviewIssue
+    file="lib/integrations/legacy.ts"
+    line={2}
+    kernel="JSON.stringify throws TypeError on a BigInt — model the ID as a string in the schema, or pass an explicit replacer"
+  >
+    `JSON.stringify` throws `TypeError` on a `bigint`. Model Stripe IDs and 64-bit Postgres ids as strings in the domain type: the schema validates the format, the wire stays text, no `bigint` ever reaches `stringify`. Fall back to an explicit `replacer` calling `.toString()` only when arithmetic is required.
+  </ReviewIssue>
+
+  <ReviewWhy>
+    The cure for all three traps lives at the seam: parse with a schema, clone with `structuredClone`, model 64-bit IDs as strings.
+  </ReviewWhy>
+</CodeReview>
+
+## What's next
+
+**The wire is `unknown` until validated.**
+
+The next lesson covers the three places where `class` still earns its weight, and lesson 3 closes the chapter with the `Date`-to-`Temporal` pivot.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON/parse"
+    title="MDN — JSON.parse"
+    description="The canonical reference for the parse signature, the reviver hook, and the SyntaxError behavior. Read it when you need the exact rules this lesson summarized."
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+  />
+  <ExternalResource
+    href="https://web.dev/articles/structured-clone"
+    title="Deep-copying in JavaScript using structuredClone"
+    description="web.dev's walkthrough of the structured-clone algorithm: what it preserves (Dates, Maps, Sets, cycles), what it drops (functions, prototype chain), and why it beats the JSON round-trip."
+    icon="simple-icons:google"
+    iconColor="#4285F4"
+  />
+  <ExternalResource
+    href="https://zod.dev/basics"
+    title="Zod — Basic usage"
+    description="Official docs for the schema library used at the parseJson seam. The later chapter on Zod owns the full surface; this page is the entry point if you want to read ahead."
+    icon="simple-icons:zod"
+    iconColor="#3068B7"
+  />
+  <ExternalResource
+    href="https://github.com/fastify/secure-json-parse"
+    title="fastify/secure-json-parse"
+    description="Production-grade drop-in replacement with prototype-poisoning protection: the library form of the safe reviver shown in this lesson. Reach for it when the threat model is strict; otherwise the inline reviver is enough."
+    icon="simple-icons:github"
+  />
+</CardGrid>

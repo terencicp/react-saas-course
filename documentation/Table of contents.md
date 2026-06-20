@@ -74,9 +74,9 @@
 - 2 Narrowing the catch and authoring domain errors (Teaches the `unknown`-in-catch narrow with `instanceof Error`, the realm-safe `Error.isError()` and `error.name` discriminants, the `ensureError` normalizer, small custom `Error` subclasses with literal-typed `name`, and `Error.cause` for re-wrap and chain walking.)
 - 3 Quiz
 
-### Chapter 009 — JSON, classes, and the Temporal pivot
+### Chapter 009 — JSON, classes, and Temporal dates
 - 1 JSON at the wire boundary (Teaches `JSON.parse`/`JSON.stringify`, the four serialization gotchas (`undefined`, `Date`, `BigInt`, `NaN`/`Infinity`), and the parse-to-`unknown`-then-validate-with-Zod discipline that closes the type story at every wire seam.)
-- 2 Classes, narrowly (Teaches the three sites where classes still earn their weight in 2026 SaaS code (custom `Error` subclasses, SDK adapters, the rare stateful domain class) and the minimum class surface (constructor, `readonly`/`#field`, arrow-field methods, static factory) — refusing inheritance hierarchies, abstract classes, mixins, decorators, and accessors.)
+- 2 When to use a class (Teaches the three sites where classes still earn their weight in 2026 SaaS code (custom `Error` subclasses, SDK adapters, the rare stateful domain class) and the minimum class surface (constructor, `readonly`/`#field`, arrow-field methods, static factory) — refusing inheritance hierarchies, abstract classes, mixins, decorators, and accessors.)
 - 3 Date's problems and the Temporal pivot (Teaches `Date`'s known design issues (zero-indexed months, in-place mutation, timezone as second-class, no real duration type, the `Invalid Date` sentinel) and the senior 2026 pivot to Temporal — Stage 4 March 2026, unflagged in Node 26, with `temporal-polyfill` for the Node 24 LTS line.)
 - 4 Quiz
 

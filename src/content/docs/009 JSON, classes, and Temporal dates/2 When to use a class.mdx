@@ -1,0 +1,448 @@
+---
+title: When to use a class in TypeScript
+tagline: The three triggers where a TypeScript class earns its place, and why records and functions are the default everywhere else.
+chapter-id: 9
+course-progress: 0.0721
+rewrites: 2
+sidebar:
+  order: 2
+  label: When to use a class
+---
+
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Picture a pull request that adds `class UserService` with five methods, two of them `static` and one that loses `this` inside a `.map` callback.
+The muscle memory is from Java, C#, or Python, where a service class is the obvious shape.
+The reviewer's first question is not how to fix it, but whether it needs a class at all.
+
+Usually it does not.
+Records and functions are the default; a `class` is a carve-out that earns its weight at exactly three triggers: a custom `Error` subclass, a third-party SDK adapter wrapper, and the rare stateful domain object.
+Everything else is a function over a typed record.
+This lesson covers that filter, the minimum surface to ship when a trigger fires, and the class features your prior language reaches for that this stack refuses.
+
+## The three triggers for a class
+
+**Trigger 1: custom `Error` subclasses.**
+You met this in the previous chapter on errors: `class ValidationError extends Error` with a literal `name` discriminant that `catch` reads to route the failure.
+The runtime contract earns the class: `throw` expects an `Error`, every framework boundary catches `Error`, and the literal `name` survives across realms when `instanceof` doesn't.
+
+**Trigger 2: third-party SDK adapter wrappers.**
+Stripe, Better Auth, Resend, and the Postgres driver each ship their surface as a class.
+Wrap the vendor class in a thin one of your own (`class BillingClient`, `class EmailSender`) to hide the vendor type from business logic, centralize construction (the `apiKey`, the `apiVersion`, the defaults), and expose application-shaped methods, so callers write `createCheckoutSession(input)` rather than `stripe.checkout.sessions.create({ ... })`.
+The trigger fires when you carry SDK state across calls behind a surface shaped like your application.
+
+**Trigger 3: the rare stateful domain object.**
+A long-lived in-memory entity with <Term definition={"A rule about an object's state that must always hold true, such as 'quantities for the same SKU are summed, never duplicated'. A method enforces it by routing every write through the same check; loose functions can only ask callers to remember it."}>invariants</Term> that only methods can enforce, like a `Cart` that totals itself or a token-bucket rate limiter that decrements and refills.
+Be suspicious here: most state lives in Postgres, Zustand, or React, and most "stateful objects" you reach for are really domain records the database owns.
+It fires only for genuine in-memory aggregates, whose invariants would otherwise rest on discipline rather than a guarantee.
+
+Walk the filter below to land on the right shape.
+
+<StateMachineWalker kind="decision" title="Does this earn a class?">
+  <Question
+    id="q1"
+    prompt="Does the runtime contract require an Error subclass?"
+    description="Code that needs `throw` to land in a framework `catch`, or that wants a literal `name` discriminant across realms."
+  >
+    <Branch label="Yes" to="error-subclass" />
+    <Branch label="No" to="q2" />
+  </Question>
+
+  <Question
+    id="q2"
+    prompt="Are you wrapping a third-party SDK to centralize state and present an app-shaped surface?"
+    description="A Stripe, Resend, or Better Auth handle that needs one apiKey and a curated set of application methods on top."
+  >
+    <Branch label="Yes" to="sdk-wrapper" />
+    <Branch label="No" to="q3" />
+  </Question>
+
+  <Question
+    id="q3"
+    prompt="Long-lived in-memory state with invariants only methods can enforce?"
+    description="An aggregate the database does *not* own: totaling its own data, dedup'ing on its own keys. Be suspicious here."
+  >
+    <Branch label="Yes" to="stateful-domain" />
+    <Branch label="No" to="module-of-functions" />
+  </Question>
+
+  <Leaf id="error-subclass" verdict="Custom Error subclass">
+    The canonical shape lives in the previous chapter on errors: a literal `name` discriminant, `cause` for chain walking, and no methods beyond `constructor`.
+  </Leaf>
+
+  <Leaf id="sdk-wrapper" verdict="SDK adapter wrapper">
+    Wrap the vendor class in your own to hide the vendor type, centralize construction, and expose application-shaped methods. Ship the minimum surface laid out later in this lesson.
+  </Leaf>
+
+  <Leaf id="stateful-domain" verdict="Stateful domain object — and reconsider once more">
+    This is a genuine in-memory aggregate with method-enforced invariants. Verify the database isn't a better owner before committing. The `Cart` example later in this lesson is the canonical shape.
+  </Leaf>
+
+  <Leaf id="module-of-functions" verdict="Module of typed functions over a record">
+    The default. Define the type next to the schema and export the verb-led functions from the feature module, with no class. This covers the vast majority of the code you write.
+  </Leaf>
+</StateMachineWalker>
+
+## Why records and functions are the default
+
+Two failure modes show up at the class boundary, and both vanish when the same code is a function over a record.
+
+**Failure mode one: `this` binding.**
+A method passed as a callback loses `this`, and the compiler stays silent.
+You find out at runtime, when a `.map` reaches for `this.normalize` and gets `undefined`.
+
+```ts
+const users = await listUsers();
+const normalized = users.map(svc.normalize);
+```
+
+If `svc.normalize` reads any field through `this`, `Array.prototype.map` invokes it with no receiver and the binding is gone.
+The class fix, declaring `normalize` as an arrow-field, breaks inheritance and allocates a closure per instance instead of sharing one method on the prototype.
+A function has no `this` to lose: `users.map(normalizeUser)` reads what it needs from its arguments.
+
+**Failure mode two: class instances don't cross the wire.**
+`JSON.stringify` writes only an instance's own enumerable properties, dropping methods, getters, and `#private` fields.
+Every wire boundary serializes to records, so a class instance crossing the network arrives record-shaped, its methods, privacy, and identity gone.
+Records and functions match that shape natively; classes fight it.
+
+:::tip
+This shape also makes the server/client split trivial.
+The function lives in `lib/users.ts`, the record type sits next to the schema, and nothing needs `'use client'` until React state enters.
+The wire boundary inherits the previous lesson's `unknown`-then-Zod discipline.
+:::
+
+## The minimum class surface
+
+When a trigger does fire, ship only these five primitives.
+
+1. **`constructor` with one options-object parameter.** The body is assignment only: no method calls, validation, or side effects. Anything more belongs in a `static` factory.
+2. **`readonly` on every field not mutated after construction.** Default to `readonly` unless mutation is the point. It blocks reassignment at compile time; the contents can still change (a `readonly` `Map` is still `.set()`-able).
+3. **`#private` (<Term definition={"The `#name` field syntax — runtime-enforced visibility. The field can't be read via bracket access, doesn't appear in `Object.keys`, and is skipped by `JSON.stringify`. Per-class scope, so two unrelated classes can both declare `#secret` without collision."}>hash-private</Term>), not TypeScript's `private`.** TS `private` is erased at compile time, so the field stays reachable at runtime; `#private` is enforced by the JavaScript runtime and survives the compile.
+4. **<Term definition={"A class field whose value is an arrow function (`method = (x) => { ... }`). `this` is bound to the instance at construction, so the method survives being passed as a callback. Costs one closure per instance instead of one method on the prototype."}>Arrow-field methods</Term> only when detachment matters.** Default to regular methods: one copy on the prototype, no per-instance allocation. Reach for the arrow-field shape (`method = (input) => { ... }`) only when the method is passed as a callback, stored in a `Map`, or attached as an event listener, where the `this` binding would otherwise be lost.
+5. **`static` factory methods for non-trivial construction.** When a class has multiple construction paths (`fromJson`, `fromRow`, `fromEnv`), make them `static` methods that return instances. The constructor stays one shape, and the call site reads `BillingClient.fromEnv(env)`.
+
+Here are the five primitives applied to the canonical Stripe-adapter example.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import 'server-only';
+import Stripe from 'stripe';
+
+type CheckoutInput = { priceId: string; customerId: string; successUrl: string };
+type CheckoutSession = { id: string; url: string };
+
+export class BillingClient {
+  readonly #stripe: Stripe;
+
+  constructor(options: { apiKey: string }) {
+    this.#stripe = new Stripe(options.apiKey, { apiVersion: '2026-04-22.dahlia' });
+  }
+
+  createCheckoutSession = async (input: CheckoutInput): Promise<CheckoutSession> => {
+    const session = await this.#stripe.checkout.sessions.create({
+      mode: 'subscription',
+      line_items: [{ price: input.priceId, quantity: 1 }],
+      customer: input.customerId,
+      success_url: input.successUrl,
+    });
+    return { id: session.id, url: session.url ?? '' };
+  };
+
+  static fromEnv(env: { STRIPE_KEY: string }): BillingClient {
+    return new BillingClient({ apiKey: env.STRIPE_KEY });
+  }
+}
+`}>
+  <AnnotatedStep meta="{10-12}" color="blue">
+    One options object instead of positional `apiKey, apiVersion, defaults`, and a body that is a single assignment, with no fetch and no validation. Construction work would move to a `static` factory.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{8} "readonly" "#stripe"`} color="green">
+    Two guarantees on one line. `readonly` is compile-time: the checker refuses any later `this.#stripe = ...`. `#stripe` is runtime: the engine refuses bracket access (`instance['#stripe']`) and reflection. The first protects the codebase, the second the running process.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{14-22} "createCheckoutSession ="`} color="orange">
+    An arrow field, not a method. The direct call `await billing.createCheckoutSession(input)` works fine with regular syntax; the arrow field earns its place when the method is detached, handed to a queue, a retry helper, or any utility that re-invokes it without a receiver.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{24-26} "static"`} color="violet">
+    `BillingClient.fromEnv(env)` reads better than a second constructor signature, for the same reason a discriminated union beats a boolean flag: the call site says what it means.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{1}" color="red">
+    `import 'server-only'` is a build-time barrier: if any client file imports this module, the build fails. The wrapper holds a secret, the Stripe key in `#stripe`, that the client must never see.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+One piece sits outside the surface.
+When the wrapper carries no per-request state, and most don't, export a configured singleton from the module:
+
+```ts
+export const billing = BillingClient.fromEnv(env);
+```
+
+Every importer reads the same instance, constructed once at module load.
+This <Term definition={"A single configured instance exported from a module — `export const billing = ...`. The rest of the app imports the instance, never the class. Use per-request instances only when the wrapper carries request-scoped state."}>module-level singleton</Term> is the default.
+Reach for per-request instances only when the wrapper carries request-scoped state, such as a per-tenant API key or a per-request idempotency context.
+
+## What the surface refuses
+
+Each primitive below is one your prior language reaches for; here is the one-line reason it stays out.
+
+1. **Class inheritance beyond `extends Error`.** Liskov-substitution traps and the brittle-base-class problem cost more than the reuse buys. For polymorphism use a discriminated union (`{ kind: 'circle'; radius: number } | { kind: 'square'; side: number }`); for behavior reuse, compose functions over a record.
+2. **`abstract class`.** The `abstract` keyword erases at compile time, leaving a class the compiler refuses to instantiate but the runtime can't enforce. Use a `type` and a discriminated union instead.
+3. **Mixins.** Stacked `Object.assign(C.prototype, M)` calls leave unreadable stack traces; they only exist to work around single inheritance, which composition solves cleanly.
+4. **Decorators.** Frameworks like NestJS and TypeORM lean on them, but Next.js, Drizzle, and Better Auth never ask for one.
+5. **Getters and setters.** They read like a field but run code: a `for` loop reading `cart.totalCents` ten thousand times runs the totaling logic ten thousand times. A method (`cart.totalCents()`) makes the cost visible at the call.
+6. **Class expressions (`const C = class { ... }`).** Anonymous classes muddy stack traces and rename badly. Write `class C { }` at module scope, exported by name.
+
+<VideoCallout videoId="hxGOiiR9ZKg" videoTitle="The Flaws of Inheritance — CodeAesthetic">
+  A ten-minute look at why inheritance hierarchies break under change, and how composition with interfaces replaces them.
+</VideoCallout>
+
+<MultipleChoice>
+  Which of these earns a `class` declaration?
+
+  <McqChoice>
+    A grouping of related read helpers (`getUser`, `listUsers`, `requireUser`) the feature module exports.
+  </McqChoice>
+
+  <McqChoice correct>
+    A wrapper around the Stripe SDK that hides the vendor type, centralizes `apiKey` and `apiVersion`, and exposes app-shaped methods.
+  </McqChoice>
+
+  <McqChoice>
+    A `User` data shape with fields and a `formatName` derived value.
+  </McqChoice>
+
+  <McqWhy>
+    The SDK wrapper is trigger two: Stripe ships a class, and the app wraps it to centralize state behind an app-shaped surface. The read helpers are just a module of functions; the `User` shape with `formatName` is a record paired with a function over it. Neither earns a class.
+  </McqWhy>
+</MultipleChoice>
+
+## `#private` vs TypeScript's `private`
+
+Of the five primitives, this is the one to get right.
+TypeScript's `private` is a compile-time hint that erases at runtime; `#private` is a guarantee the JavaScript engine enforces.
+
+The gap matters when the field holds a secret.
+A `private` field reads as private only while the type checker watches; at runtime anyone with the instance reaches it, and for an API key that is a leak.
+
+<CodeVariants syncKey="class-privacy">
+  <CodeVariant label="TS private">
+    <div data-mark-color="red">
+
+    ```ts {2} "(holder as any)['secret']"
+    class SecretHolder {
+      private secret = 'sk_live_xxx';
+    }
+
+    const holder = new SecretHolder();
+    (holder as any)['secret']; // 'sk_live_xxx' — works at runtime
+    ```
+
+    </div>
+    `private` is erased before the engine sees the code. The checker catches a static `holder['secret']`, but through `as any`, `Reflect.get`, or a computed key the field reads cleanly, and `Object.entries` and `JSON.stringify` expose it. The privacy is a naming convention, nothing more.
+  </CodeVariant>
+
+  <CodeVariant label="#private (preferred)">
+    <div data-mark-color="green">
+
+    ```ts {2} "holder['#secret']"
+    class SecretHolder {
+      #secret = 'sk_live_xxx';
+    }
+
+    const holder = new SecretHolder();
+    holder['#secret']; // undefined — the field is invisible to bracket access
+    ```
+
+    </div>
+    The runtime enforces `#secret`. Bracket access returns `undefined`, reflection can't reach it, and it never appears in `Object.keys`, `Object.entries`, or `JSON.stringify`. Reach for it whenever the field holds anything you wouldn't want read in a debugger or across a process boundary.
+  </CodeVariant>
+
+  <CodeVariant label="Per-class scope">
+    <div data-mark-color="blue">
+
+    ```ts "#secret"
+    class A {
+      #secret = 'a';
+      read() { return this.#secret; }
+    }
+
+    class B {
+      #secret = 'b';
+      read() { return this.#secret; }
+    }
+    ```
+
+    </div>
+    `#private` fields are scoped to their declaring class, so two unrelated classes can both declare `#secret` without colliding, each in its own per-class slot. TS `private` fields are plain string-keyed properties, so two that pick the same name share one slot and write through each other. `#private` is the only privacy the language gives you.
+  </CodeVariant>
+</CodeVariants>
+
+:::note
+`JSON.stringify` writes only own enumerable properties, so `#private` fields drop by construction, the wire-crossing problem from the previous lesson.
+`JSON.stringify(billing)` produces `{}`, since `BillingClient`'s only field is the hash-private `#stripe`, so the Stripe key can't leak through a stray log or `res.json(...)`.
+For a non-empty wire shape, implement `toJSON()`, as the `Cart` example below does.
+:::
+
+## The stateful domain object: a Cart aggregate
+
+A shopping cart is the canonical case: adding the same SKU twice merges the quantities into one line, the total derives from the lines, and the wire shape is those lines plus the total.
+
+```ts
+type CartLine = { sku: string; quantity: number; unitPriceCents: number };
+
+export class Cart {
+  readonly #lines = new Map<string, CartLine>();
+
+  addLine(line: CartLine): void {
+    const existing = this.#lines.get(line.sku);
+    const merged = existing
+      ? { ...existing, quantity: existing.quantity + line.quantity }
+      : line;
+    this.#lines.set(line.sku, merged);
+  }
+
+  removeLine(sku: string): void {
+    this.#lines.delete(sku);
+  }
+
+  totalCents(): number {
+    let total = 0;
+    for (const line of this.#lines.values()) {
+      total += line.quantity * line.unitPriceCents;
+    }
+    return total;
+  }
+
+  toJSON(): { lines: CartLine[]; totalCents: number } {
+    return { lines: [...this.#lines.values()], totalCents: this.totalCents() };
+  }
+}
+```
+
+The merge is the invariant, and it lives in `addLine`, so every write runs through it.
+Rewrite this as functions over a `Map<string, CartLine>` and each caller hand-threads the Map, with nothing stopping one from skipping the merge.
+The class makes the invariant a guarantee instead of a convention, and `#lines` keeps the state unreachable from outside.
+
+The four methods are regular methods, not arrow fields: each is called as `cart.method(...)`, never passed as a callback, so there is no `this` to preserve and each method is one copy on the prototype rather than a closure per instance.
+`totalCents()` is a method, not a getter, for the reason the surface refused getters: the call parentheses make the loop's cost visible where a `cart.totalCents` field would hide it.
+
+`toJSON()` is the wire seam, paying off the serialization debt from the chapter's first lesson.
+When a `Cart` crosses a Server Action response or an RSC payload, `JSON.stringify` calls `toJSON()` and writes the `{ lines, totalCents }` record it returns.
+The receiver reads that typed record and reconstructs a `Cart` only if it needs the methods.
+
+This shape is rare: most carts persist to the database or live in a Zustand store, and the in-memory class fires only when the data never persists and its invariants are non-trivial.
+The same reasoning fits a token-bucket rate limiter, an in-memory cache, or a tokenizer, a handful of times in a whole codebase.
+
+## Equality, `instanceof`, and the cross-realm trap
+
+Two rules from the errors chapter carry over to the non-error case.
+
+**Reference equality.**
+`===` compares identity, not value: `new Cart() === new Cart()` is `false` even when both are empty.
+When you need value equality, use a record, whose shape *is* its value.
+`Cart` stays a class to enforce an invariant, not to be compared.
+
+**`instanceof` and realms.**
+`instanceof` walks the prototype chain in the current <Term definition={"An isolated JavaScript execution context — an iframe, a Worker, a `vm.runInContext` sandbox. Each realm has its own copy of every built-in constructor, so a value from one realm fails `instanceof` against the same class from another."}>realm</Term>, so a value that crossed an iframe, Worker, or `vm.runInContext` boundary returns `false` even when the class name matches.
+Non-error triggers rarely cross realms: SDK wrappers are built once on the server, and domain objects stay put or get reconstructed across a serialization seam.
+So `instanceof` fits in-realm narrowing here; `name` discriminants stay the cross-realm cure for errors.
+
+## Watch-outs
+
+The five most likely PR-review findings on class code:
+
+:::caution
+- `private` (TypeScript) is erased at runtime, so bracket access still reads the field. Use `#private` where privacy matters.
+- Passing `instance.method` as a callback strips its `this`. Bind at the call site, or arrow-field the method at declaration.
+- `static` methods can't see instance fields. Watch this when turning an instance method into a factory: the body still references `this.x`, and the compiler doesn't always catch it.
+- `JSON.stringify(instance)` drops methods and `#private` fields. Implement `toJSON()` when the wire shape must differ from the in-memory shape; the `Cart` above is the template.
+- Grouping related functions in a class is a smell. The module is the grouping primitive; `class UserService` is the canonical anti-pattern.
+:::
+
+## Final reality-check
+
+Five claims about this lesson's decision filter — true or false?
+
+<TrueFalse instructions="Each claim is about when a `class` earns its place, and what its minimum form looks like.">
+  <Statement answer="false">
+    A `UserService` class with five `static` methods is the right shape for a feature's read helpers on this stack.
+    <TfWhy>Read helpers are a module of functions. Export `getUser(id)` and `listUsers(filter)` from the feature's `db/queries/users.ts` and you need no class. `UserService` is the anti-pattern this lesson refuses.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    `JSON.stringify` on a class instance preserves the instance's `#private` fields.
+    <TfWhy>`stringify` writes own enumerable properties only, so methods, getters, and `#private` fields all drop. The wire is records; if its shape matters, implement `toJSON()`.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    `extends Error` is the only inheritance this stack reaches for.
+    <TfWhy>The stack refuses inheritance hierarchies, except `extends Error`: the runtime contract for `throw` and `catch` *requires* an `Error`. Everything else composes.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    `readonly` and `#private` mean the same thing.
+    <TfWhy>`readonly` is compile-time immutability: the binding can't be reassigned, but its contents can still mutate. `#private` is runtime-enforced visibility: the field can't be read or written from outside the class. They solve different problems; reach for both.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    Arrow-field methods (`handle = () => { ... }`) are the right reach when the method is passed as a callback.
+    <TfWhy>An arrow field binds `this` at construction, so the method survives detachment; a regular method loses `this` when passed as a callback. Default to regular methods for cheaper memory, and reach for arrow fields when detachment is in the call path.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+The next lesson closes the chapter by replacing `Date` with `Temporal`.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    href="https://github.com/tc39/proposal-class-fields"
+    title="TC39 — Class fields proposal"
+    description="The source of `#private` semantics. The README's motivation section is the clearest one-page explanation of why hash-private exists and what it guarantees that TypeScript's `private` doesn't."
+    icon="simple-icons:github"
+  />
+  <ExternalResource
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Classes/Private_elements"
+    title="MDN — Private elements"
+    description="The reference for the `#field` syntax — declaration, access rules, static private elements, the `in` operator brand check, and the exact runtime errors thrown on bracket access."
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+  />
+  <ExternalResource
+    href="https://www.typescriptlang.org/docs/handbook/2/classes.html"
+    title="TypeScript Handbook — Classes"
+    description="Official reference for the TS-side primitives this lesson reaches for: `readonly`, parameter properties, `static`, and the soft-vs-hard private distinction at the language level."
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+  />
+  <ExternalResource
+    href="https://javascript.info/private-protected-properties-methods"
+    title="javascript.info — Private and protected properties"
+    description="A friendly walkthrough of the `#field` syntax against the older underscore-convention 'protected' pattern, with runnable examples showing where each enforcement boundary lives."
+    icon="simple-icons:javascript"
+    iconColor="#F7DF1E"
+  />
+</CardGrid>
