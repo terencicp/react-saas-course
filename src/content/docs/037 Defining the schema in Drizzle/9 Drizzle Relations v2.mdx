@@ -1,0 +1,414 @@
+---
+title: Drizzle Relations v2
+tagline: Drizzle's Relations v2 API, where defineRelations turns foreign keys into a graph the query builder walks for nested reads.
+chapter-id: 37
+course-progress: 0.3588
+rewrites: 2
+sidebar:
+  order: 9
+  label: Relations v2
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import GraphExplorer from '../../../components/figures/graph-explorer/GraphExplorer.astro';
+import GraphNode from '../../../components/figures/graph-explorer/GraphNode.astro';
+import GraphEdge from '../../../components/figures/graph-explorer/GraphEdge.astro';
+import Traversal from '../../../components/figures/graph-explorer/Traversal.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import TwoLayers from '../../../components/lessons/037/9/two-layers.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Every detail page wants an invoice *with* its line items and tags, handed over as one typed object you can render straight into the page. So you reach for the call that should give you exactly that:
+
+```ts
+const invoice = await db.query.invoices.findFirst({
+  with: { lineItems: true, tags: true },
+});
+```
+
+It doesn't work yet. You've already declared the foreign keys: `invoiceLineItems.invoiceId` points at `invoices.id`, and the `invoiceTags` junction points at both `invoices` and `tags`. The links exist in the database, so why can't the query builder follow them?
+
+Because a foreign key and a traversal are two different things, declared for two different audiences. In this lesson you'll write `db/relations.ts`, the file that turns those inert links into a graph the query builder can walk. You write the map, not the queries that read it; those come next chapter.
+
+## A foreign key guards writes; a relation enables reads
+
+A foreign key is a rule Postgres enforces on every write. When you wrote `.references(() => organizations.id, { onDelete: 'restrict' })`, you told it to reject any invoice whose `organizationId` doesn't match a real organization, and to govern what happens on delete. It guards writes and says nothing about how to *read* across the link.
+
+The relational query builder, the `db.query.…` API you reached for above, needs that second thing: a TypeScript declaration of which edges it may walk and how. The foreign key lives in the database, the query builder in your Node process; neither sees the other's world, so you declare the traversal separately.
+
+That gives the data layer two files that look like they overlap but don't:
+
+- `db/schema.ts`: **what's in the database.** Tables, columns, foreign keys. This is the only file Postgres ever sees, and every constraint you've written lives here.
+- `db/relations.ts`: **how the query builder walks it.** A pure-TypeScript graph that never touches Postgres and emits no SQL. Its one consumer is the `db.query` builder.
+
+<TwoLayers />
+
+The foreign key and the relation are two declarations of the same edge, for two different audiences, and declaring one never declares the other. This is the most common Drizzle mistake: `db.query.invoices.findFirst({ with: { tags: true } })` returns `tags: undefined` while the foreign keys sit right there in the junction table. Nothing is wrong with them; the relation was simply never declared.
+
+## The relations file and `defineRelations`
+
+The `db/` folder already holds `schema.ts` (your tables), `columns.ts` (the shared column helpers), and `index.ts` (the client). Add a fourth file beside them: `db/relations.ts`. Its shape is small and fixed.
+
+Import the tables from `./schema`, pass them into <Term definition="The Relations v2 API. Declares the entire traversal graph in a single call, keyed by table name.">`defineRelations`</Term>, and export what it returns as a single `relations` const:
+
+```ts
+import { defineRelations } from 'drizzle-orm';
+import * as schema from './schema';
+
+export const relations = defineRelations(schema, (r) => ({
+  // one entry per table, each listing that table's relations
+}));
+```
+
+`defineRelations` takes two arguments.
+
+The **first** is the schema object — every table passed together: `organizations`, `invoices`, `invoiceLineItems`, `users`, `tags`, `invoiceTags`, and `memberships`. Handing over the whole module gives the builder its knowledge of every table and column, and is where autocomplete comes from next.
+
+The **second** is a callback, `(r) => ({ … })`, returning a map keyed by **table name** where each value describes that table's relations. The `r` parameter is the relation builder, used three ways: `r.one.<table>(…)` for a relation that resolves to a single row, `r.many.<table>(…)` for one that resolves to an array, and `r.<table>.<column>` to point at a specific column when you spell out the join.
+
+The relations feed the <Term definition="The relational query builder — the db.query.* findMany / findFirst API that reads the relations graph to assemble nested objects.">relational query API</Term>. You hand them to the client when you create it:
+
+```ts
+export const db = drizzle(client, { relations });
+```
+
+That option carries the graph into the `db.query` builder; without it, every `with` comes back empty. The rest of the client setup is a later chapter's job. Now fill the callback in, starting with the simplest edge.
+
+## One-to-many: an organization and its invoices
+
+One organization, many invoices, the relationship behind most of a real schema. The foreign key already exists: `invoices.organizationId` references `organizations.id`. A relationship has two ends, so you declare it on both tables, one entry per side.
+
+From the organization's side it has many invoices; from an invoice's side it belongs to one organization. The code transcribes those two sentences:
+
+<AnnotatedCode lang="ts" code={`
+export const relations = defineRelations(schema, (r) => ({
+  organizations: {
+    invoices: r.many.invoices(),
+  },
+  invoices: {
+    organization: r.one.organizations({
+      from: r.invoices.organizationId,
+      to: r.organizations.id,
+    }),
+  },
+}));
+`}>
+  <AnnotatedStep meta="{2-4}" color="blue">
+    The `organizations` key lists one relation: `invoices: r.many.invoices()`. `r.many` resolves to an *array*, since an org has many invoices, and the call names the target table. That's the whole declaration on this side, no columns.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5-10}" color="green">
+    The `invoices` key holds its `organization` relation. `r.one` resolves to a *single object*, not an array, because an invoice belongs to exactly one org. The braces hold what the `many` side didn't need: the explicit join.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"from: r.invoices.organizationId"`} color="orange">
+    `from` is the column on *this* table that holds the foreign key, `invoices.organizationId`, the same column you wrote `.references()` on. Read `from` as "the FK-holding side."
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"to: r.organizations.id"`} color="violet">
+    `to` is the column it points at, the referenced primary key `organizations.id`. `from → to` runs in the same direction as the foreign key itself: `organizationId → organizations.id`. The relation just restates that arrow for the query builder.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The `one` side is singular, `organization`; the `many` side is plural, `invoices`. Each key is the exact word you type inside `with: { … }`, so `with: { organization: true }` returns one object and `with: { invoices: true }` returns an array. Name them to match what comes back.
+
+`from` and `to` appear only on the `r.one` side, the table that holds the foreign key; Drizzle infers the reverse direction, so the `r.many` side needs no columns.
+
+## Pin the join once, declare both sides
+
+The previous API made you spell the join on both ends, the same two columns named twice in opposite order. v2 drops that: you pin the edge once, on the foreign-key side with `from`/`to`, and declare the reverse bare. Drizzle matches the two by table and infers the reverse direction, so the reverse side is just a name and a target:
+
+<CodeVariants>
+  <CodeVariant label="Bare reverse">
+    <div data-mark-color="green">
+
+    ```ts {2}
+    organizations: {
+      invoices: r.many.invoices(),
+    },
+    ```
+
+    </div>
+    **The common case.** With no `from`/`to`, Drizzle reads the forward `invoices.organization` declaration and infers this reverse join from it.
+  </CodeVariant>
+
+  <CodeVariant label="Explicit reverse">
+    <div data-mark-color="orange">
+
+    ```ts {2-5}
+    organizations: {
+      invoices: r.many.invoices({
+        from: r.organizations.id,
+        to: r.invoices.organizationId,
+      }),
+    },
+    ```
+
+    </div>
+    **Legal but redundant** once the other side pins the edge. Reach for it only on real ambiguity, like two foreign keys between the same pair of tables (see below).
+  </CodeVariant>
+</CodeVariants>
+
+The bare reverse is still a declaration: omit it and `organizations` has no `invoices` relation. That isn't a compile error, just a silent gap. Someone later writes `org.invoices` in a `with`, gets nothing back, and can't see why.
+
+### When one name isn't enough: `alias`
+
+Matching by table breaks when two foreign keys connect the same pair of tables, and your schema has a case of it. An invoice points at `users` through `assignedToId`, and as the app grows, potentially again through `createdById`. With two relations to `users`, table alone can't say which relation owns which column.
+
+You disambiguate with `alias`, a label on each relation:
+
+```ts
+invoices: {
+  assignee: r.one.users({
+    from: r.invoices.assignedToId,
+    to: r.users.id,
+    alias: 'assignee',
+  }),
+  creator: r.one.users({
+    from: r.invoices.createdById,
+    to: r.users.id,
+    alias: 'creator',
+  }),
+},
+```
+
+Each `alias` keeps the `with` keys distinct (`with: { assignee: true, creator: true }`).
+
+## Many-to-many with `.through()` on both sides
+
+The `invoiceTags` junction you built last lesson records that *this* invoice links to *this* tag, but nothing yet walks those links.
+
+There is no top-level `through:` option. Reaching an invoice's tags is *two* hops, into the junction and back out, so you name a junction column on each hop by chaining `.through()` onto both `from` and `to`:
+
+<AnnotatedCode lang="ts" code={`
+invoices: {
+  tags: r.many.tags({
+    from: r.invoices.id.through(r.invoiceTags.invoiceId),
+    to: r.tags.id.through(r.invoiceTags.tagId),
+  }),
+},
+`}>
+  <AnnotatedStep meta="{1-6}" color="blue">
+    Still `r.many`: an invoice has many tags, and the array shape is unchanged. What's new is inside the braces, where each side gains a `.through()` because the join now passes through a third table.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"from: r.invoices.id.through(r.invoiceTags.invoiceId)"`} color="orange">
+    The entry hop. Read it as: from `invoices.id`, into the junction via `invoiceTags.invoiceId`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"to: r.tags.id.through(r.invoiceTags.tagId)"`} color="violet">
+    The exit hop. Arrive at `tags.id`, coming out through `invoiceTags.tagId`. Both sides chain `.through()`, each naming its own foreign-key column in the junction: `invoiceId` in, `tagId` out.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+You declare nothing on `invoiceTags` itself; the `.through()` calls reach into it from the outside. The reverse side, an invoice list on each tag, is the mirror image with the two hops swapped: `tags: { invoices: r.many.invoices({ … }) }`.
+
+:::note
+This is why the course uses the v2 API. v1 made you declare relations *on the junction table* and chain two `with` clauses to hop through it; v2's `.through()` collapses that into one direct `invoices.tags` relation, keeping the junction invisible at the call site. You'll meet v1 in older codebases: recognize the double-hop shape, and write v2.
+:::
+
+The payoff comes next chapter: `db.query.invoices.findFirst({ with: { tags: true } })` returns the invoice with a `tags: Tag[]` array, the junction nowhere in sight.
+
+### The junction that became an entity
+
+How you query a linking table depends on which kind it is. A **pure junction** like `invoiceTags` is nothing but two foreign keys, so you reach *through* it with `.through()`: it carries no data you'd want on its own.
+
+`memberships` is a **promoted entity**. It grew a `role`, a surrogate `id`, and its own timestamps, so you relate *to* it directly like any table: one-to-many from each parent into `memberships`, then `r.one` back to each parent. You query the membership itself, because its `role` is data you want. Pure junction, reach *through*; promoted entity, relate *to*, the querying half of the decision you made when you gave it an `id`.
+
+## Your relations as a graph
+
+The edges you wrote pair by pair form a graph: tables are nodes, relations are edges, and the query builder walks it just as the explorer below does. Click a table or edge to read it, then press a walk button to trace a nested read the way `db.query` would.
+
+<GraphExplorer
+  title="The domain as a traversal graph"
+  direction="LR"
+  placeholder="Click a table or an edge label to read it — or press a walk button below to trace a nested read the way db.query would."
+>
+  <GraphNode id="organizations" label="organizations">
+    The tenant root. Has **many** `invoices` and **many** `memberships`. Every other row in the domain ultimately hangs off an organization.
+  </GraphNode>
+  <GraphNode id="invoices" label="invoices">
+    The center of the domain. It belongs to **one** `organizations`, has **many** `invoice_line_items`, has **many** `tags` (through the junction), and points at `users`.
+  </GraphNode>
+  <GraphNode id="lineItems" label="invoice_line_items">
+    Owned rows under an invoice (`onDelete: 'cascade'`). Relates back to its **one** `invoices`; the detail-page read fans out into this array.
+  </GraphNode>
+  <GraphNode id="tags" label="tags">
+    Reusable labels. **Many** invoices carry **many** tags, the many-to-many the `invoice_tags` junction wires up.
+  </GraphNode>
+  <GraphNode id="invoiceTags" label="invoice_tags">
+    The **pure junction**: two foreign keys, composite PK, no data of its own. It holds **no relations**; the `.through()` calls reach *into* it from `invoices` and `tags`.
+  </GraphNode>
+  <GraphNode id="users" label="users">
+    People. An invoice's `assignee` (and, later, `creator`) are two edges to the same table, so each needs an `alias`. A user is also a member of orgs *via* `memberships`.
+  </GraphNode>
+  <GraphNode id="memberships" label="memberships">
+    A **promoted entity**: it carries a `role` and its own `id`, so you relate *to* it directly (an `r.one` back to each parent) and never reach *through* it.
+  </GraphNode>
+
+  <GraphEdge from="organizations" to="invoices" label="has many">
+    One-to-many. The foreign key lives on the FK-holder side, so `from`/`to` go on `invoices.organization` (`from: r.invoices.organizationId`); the reverse `organizations.invoices` is the bare, inferred side.
+  </GraphEdge>
+  <GraphEdge from="invoices" to="lineItems" label="has many">
+    One-to-many: `invoiceLineItems.invoiceId → invoices.id`. This is the detail-page read, where `with: { lineItems: true }` returns the array.
+  </GraphEdge>
+  <GraphEdge from="invoices" to="invoiceTags" label="entry hop">
+    The first half of the many-to-many: `from: r.invoices.id.through(r.invoiceTags.invoiceId)`, the `.through()` going *into* the junction.
+  </GraphEdge>
+  <GraphEdge from="invoiceTags" to="tags" label="exit hop">
+    The second half: `to: r.tags.id.through(r.invoiceTags.tagId)`, the `.through()` coming *out* of the junction. Together these two edges **are** the single `invoices.tags` relation you declared.
+  </GraphEdge>
+  <GraphEdge from="invoices" to="users" label="assignee">
+    `r.one`, `from: r.invoices.assignedToId`. As one of potentially two edges to `users`, it needs an `alias: 'assignee'` to stay distinct.
+  </GraphEdge>
+  <GraphEdge from="organizations" to="memberships" label="has many">
+    A promoted entity related *to* directly, not reached *through*. The org has many memberships; each membership relates `r.one` back.
+  </GraphEdge>
+  <GraphEdge from="users" to="memberships" label="has many">
+    The membership's other parent. A user has many memberships; `memberships` relates `r.one` back to both `users` and `organizations`.
+  </GraphEdge>
+
+  <Traversal id="lineItemsWalk" label="invoice → line items" sequence="invoices,lineItems" />
+  <Traversal id="tagsWalk" label="invoice → tags (through junction)" sequence="invoices,invoiceTags,tags" />
+</GraphExplorer>
+
+## Self-referential relations
+
+A table can relate to *itself*: a comment that replies to another comment, a category nested under a parent. The same table sits on both ends of the edge.
+
+You declare it with the same `from`/`to` you already know, except both columns live on one table:
+
+```ts
+comments: {
+  parent: r.one.comments({
+    from: r.comments.parentId,
+    to: r.comments.id,
+  }),
+  replies: r.many.comments({
+    from: r.comments.id,
+    to: r.comments.parentId,
+  }),
+},
+```
+
+With a `parentId` pointing at `comments.id`, `parent` walks *up* to a comment's one parent and `replies` walks *down* to its many children. Both connect `comments` to `comments`, so this is the two-edges-same-pair case from earlier: a second self-edge needs an `alias`. Fetching a whole tree to arbitrary depth is recursion, a query concern that belongs with the next chapter.
+
+## When to skip the relations layer
+
+Now that nested reads are effortless, it's worth saying plainly when *not* to reach for them.
+
+The relational API earns its keep when the read is a **tree**: an entity and its children, shaped as a nested object. "An invoice with its line items and tags," "an organization with its members" — that's the shape `defineRelations` and `db.query.…({ with })` exist for, and the safe default when a read fans out across related tables.
+
+It is *not* the tool for reads that aren't trees. Aggregates (a `COUNT` of invoices per org), filters that select *on* a joined table, and projections pulling a few columns from several tables are hand-written joins (`db.select(...).leftJoin(...)`), coming in the next chapter. The relational builder plans its SQL toward nested objects, not arbitrary result sets.
+
+One caveat: a deeply nested `with` can emit a heavier query than the short call suggests. The `logger: true` option from the earlier `pgTable` lesson prints the generated SQL; read it, and later run `EXPLAIN ANALYZE`, to catch a `with` whose cost grew out of hand.
+
+## Check your understanding
+
+<MultipleChoice>
+  You run `db.query.invoices.findFirst({ with: { tags: true } })` and get back an invoice where `tags` is `undefined` — even though `invoiceTags` has both foreign keys, both with `onDelete: 'cascade'`. What's the cause?
+
+  <McqChoice correct>No `tags` relation was declared in `db/relations.ts`. The foreign keys guarantee writes; they don't tell the query builder how to walk the join.</McqChoice>
+  <McqChoice>The two foreign keys need an index before `with` can follow them.</McqChoice>
+  <McqChoice>`with` only resolves one-to-one relations; many-to-many has to be a hand-written join.</McqChoice>
+  <McqChoice>The junction needs a surrogate `id` column before it can be traversed.</McqChoice>
+
+  <McqWhy>The foreign keys are a write-time guarantee Postgres keeps; the traversal is a separate TypeScript declaration the query builder reads. The relation was never written, so `db.query` has no edge to walk and returns nothing for `tags`. Add the `invoices.tags` relation with its `.through()` chain and it resolves.</McqWhy>
+</MultipleChoice>
+
+Now fill the four blanks in this many-to-many declaration: the two `.through()` hops and the columns they connect.
+
+<Dropdowns answers={[
+  { answer: 'r.invoices.id', options: ['r.invoices.id', 'r.invoices.organizationId', 'r.invoiceTags.invoiceId'] },
+  { answer: 'r.invoiceTags.invoiceId', options: ['r.invoiceTags.invoiceId', 'r.invoiceTags.tagId', 'r.invoices.id'] },
+  { answer: 'r.tags.id', options: ['r.tags.id', 'r.tags.slug', 'r.invoiceTags.tagId'] },
+  { answer: 'r.invoiceTags.tagId', options: ['r.invoiceTags.tagId', 'r.invoiceTags.invoiceId', 'r.tags.id'] },
+]}>
+```ts
+invoices: {
+  tags: r.many.tags({
+    from: ___.through(___),
+    to: ___.through(___),
+  }),
+},
+```
+</Dropdowns>
+
+Finally, match each piece of the relations API to what it means.
+
+<Matching instructions="Match each part of the Relations v2 API to what it does.">
+  <Pair>
+    <Fragment slot="left">`r.one`</Fragment>
+    <Fragment slot="right">Relation resolves to a single object</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`r.many`</Fragment>
+    <Fragment slot="right">Relation resolves to an array</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`.through()`</Fragment>
+    <Fragment slot="right">Walk a junction table on the way across</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`from`</Fragment>
+    <Fragment slot="right">The column on the foreign-key-holding side</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`to`</Fragment>
+    <Fragment slot="right">The referenced primary key it points at</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">`alias`</Fragment>
+    <Fragment slot="right">Disambiguates two relations between the same pair of tables</Fragment>
+  </Pair>
+</Matching>
+
+## v2 versus the legacy v1 API
+
+Everything in this lesson is the **v2** relations API: `defineRelations`, the single-call graph, `from`/`to`/`through`, shipping in `drizzle-orm@1.0.0-beta`.
+
+You'll still meet **v1** in older repos. Recognize its shape: a per-table `relations(invoices, ({ one, many }) => …)` helper imported from `drizzle-orm/_relations`, queried through `db._query` instead of `db.query`, with the `_` prefixes marking it legacy. You write none of it.
+
+<VideoCallout videoId="N4-VDia4NcI" videoTitle="Drizzle's new relational API is nuts!">
+  Nev the Dev migrates a real project from v1 to the v2 `defineRelations` API live (14 min), collapsing the per-table v1 shape into the single-call graph this lesson teaches.
+</VideoCallout>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle Relations v2"
+    href="https://orm.drizzle.team/docs/relations-v2"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The canonical from / to / through reference for defineRelations."
+  />
+  <ExternalResource
+    title="Drizzle relational queries (RQB v2)"
+    href="https://orm.drizzle.team/docs/rqb-v2"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="What these relations unlock — the db.query.…({ with }) API, covered next chapter."
+  />
+  <ExternalResource
+    title="Migrating relations v1 → v2"
+    href="https://orm.drizzle.team/docs/relations-v1-v2"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="For when you hit the older per-table relations() shape in the wild."
+  />
+</CardGrid>

@@ -315,7 +315,7 @@
 - 4 The serverless driver and the pooled URL (Teaches the `@neondatabase/serverless` driver, the HTTP-vs-WebSocket decision for reads vs. transactions, PgBouncer transaction-mode pooling, and the two-DB-clients pattern with pooled and unpooled connection strings.)
 - 5 Quiz
 
-### Chapter 037 — Schema as source of truth with Drizzle
+### Chapter 037 — Defining the schema in Drizzle
 - 1 Principle #2: schema is the source of truth (Establishes Architectural Principle #2 by naming `db/schema.ts` as the canonical root from which row types, insert types, Zod validators, form fields, and RLS column names all derive.)
 - 2 pgTable and the snake_case bridge (Introduces the `db/` folder layout, the minimal `pgTable` call, column builders, and the `casing: 'snake_case'` config that maps TS camelCase to SQL snake_case.)
 - 3 Postgres data types, the 2026 subset (Surveys the durable `pg-core` types — `text`, `numeric` for money, `timestamptz`, `uuid`, `jsonb` with `$type<…>`, `pgEnum`, arrays — with a "reach for it when" rule per type.)

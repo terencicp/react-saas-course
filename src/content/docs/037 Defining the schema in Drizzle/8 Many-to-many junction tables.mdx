@@ -1,0 +1,422 @@
+---
+title: Many-to-many junction tables
+tagline: Model many-to-many relationships in Drizzle with junction tables, and tell when a link becomes its own entity.
+chapter-id: 37
+course-progress: 0.357
+sidebar:
+  order: 8
+  label: Junction tables
+rewrites: 2
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import DrizzleSchemaCoding from '../../../components/live-coding/DrizzleSchemaCoding/DrizzleSchemaCoding.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import HalfIndexedJunction from '../../../components/lessons/037/8/HalfIndexedJunction.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You have the `invoices` and `tags` tables from the last lesson, each tag carrying a slug that's unique across the table. Now wire them together the way the domain works: an invoice carries many tags (`urgent`, `paid`, `q3`), and each tag applies to many invoices. A column can't express that "many on both sides" shape, because it holds *one* value: an invoice can't store a list of tag ids, and a tag can't store a list of invoice ids. The relationship lives in a third table whose only job is to record the pairings.
+
+## Why a column can't store this relationship
+
+The first instinct is a `tagId` column on `invoices`. But that's the one-to-many you built in the foreign-key lesson: a column is a single slot, so it reads "this invoice has *one* tag." An `invoiceId` column on `tags` has the mirror problem. A single foreign-key column can only express one-to-many.
+
+The second instinct is an array column, `text().array()`, on the invoice: one invoice, a list of tag slugs. But the strings in that array aren't database rows, so they can't carry a foreign key, and Postgres won't enforce that each one points at a tag that exists. Delete the `urgent` tag and every invoice that listed it holds a dangling string. Nor can you efficiently ask the question you'll ask constantly, "which invoices have this tag?", because there's no row to index or join against; you'd scan every invoice and pattern-match inside its array. Arrays stop being enough once the elements need foreign keys or need to be queried from both directions.
+
+The relationship belongs to neither table; it belongs *between* them, so you give it its own table. Each row records exactly one pairing, *this* invoice linked to *this* tag, and a row can hold foreign keys, be indexed, and be joined. This is the <Term definition="A table whose only job is to record links between two other tables. One row = one link between one row on each side.">junction table</Term>, the one correct shape for many-to-many.
+
+In the diagram below, the junction table `invoice_tags` sits in the middle holding nothing but two foreign keys, one back to `invoices` and one back to `tags`. Each parent has a plain one-to-many relationship *into* the junction: two one-to-many relationships you already know, aimed inward at a table in the middle.
+
+<Figure>
+```d2
+direction: right
+
+**.style.font-size: 28
+
+invoices: {
+  shape: sql_table
+  id: uuid { constraint: primary_key }
+  amount_due: numeric
+}
+
+invoice_tags: {
+  shape: sql_table
+  invoice_id: uuid { constraint: [primary_key; foreign_key] }
+  tag_id: uuid { constraint: [primary_key; foreign_key] }
+}
+
+tags: {
+  shape: sql_table
+  id: uuid { constraint: primary_key }
+  slug: text
+}
+
+invoices.id -> invoice_tags.invoice_id: "1 → many"
+tags.id -> invoice_tags.tag_id: "1 → many"
+```
+  <Fragment slot="caption">
+    Each row of `invoice_tags` is one link between one invoice and one tag, and the pair `(invoice_id, tag_id)` serves as its composite primary key.
+  </Fragment>
+</Figure>
+
+## The junction table: two foreign keys and a composite key
+
+A pure junction is exactly two foreign keys and a primary key built from them, nothing more. Every line below is a decision you've already made in this chapter, now assembled into the standard shape.
+
+<AnnotatedCode lang="ts" code={`
+import { pgTable, primaryKey, uuid } from 'drizzle-orm/pg-core';
+import { invoices } from './invoices';
+import { tags } from './tags';
+
+export const invoiceTags = pgTable(
+  'invoice_tags',
+  {
+    invoiceId: uuid()
+      .notNull()
+      .references(() => invoices.id, { onDelete: 'cascade' }),
+    tagId: uuid()
+      .notNull()
+      .references(() => tags.id, { onDelete: 'cascade' }),
+  },
+  (t) => [primaryKey({ columns: [t.invoiceId, t.tagId] })],
+);
+`}>
+  <AnnotatedStep meta="{6}" color="blue">
+    The table is named `invoice_tags`, both parents' names joined.
+    The naming rule is the next section.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8-10}" color="green">
+    The first foreign key, pointing back at `invoices` with the `.references(() => invoices.id)` shape from the foreign-key lesson.
+    It's `.notNull()` because a link with a missing endpoint isn't a link.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11-13}" color="green">
+    The second foreign key, pointing at `tags`.
+    These two columns and nothing else are what make the junction "pure."
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"'cascade'"`} color="orange">
+    Reuse the foreign-key lesson's question: *if the parent is gone, is the child garbage?*
+    For a junction the answer is yes on both sides: a link to a deleted invoice is garbage, and so is a link to a deleted tag.
+    Delete either endpoint and the link rows go with it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{15}" color="violet">
+    The composite primary key over `(invoiceId, tagId)`, the mechanic from the primary-key lesson.
+    This one line buys three things at once, listed next.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That last line, the <Term definition="A primary key built from two or more columns. The combination must be unique; either column alone may repeat.">composite primary key</Term>, makes the *pair* the table's identity, and that one declaration earns three guarantees:
+
+- **The pair is unique.** Postgres rejects a second row with the same `(invoiceId, tagId)`, so you cannot tag the same invoice twice with the same tag, enforced by a constraint rather than by application discipline.
+- **Both columns are `NOT NULL`, for free.** A primary key can't contain a null, so once these two columns *are* the key, neither can ever be null. The explicit `.notNull()` on each is redundant insurance.
+- **An index on `(invoiceId, tagId)`, for free.** Every primary key is backed by an index, so lookups by invoice ("the tag links for this invoice") are fast out of the box.
+
+Why a composite key here, and not a surrogate `id` like every other table? Because the pair *is* the identity: "the link between invoice X and tag Y" is already a complete, unique description of the row. A surrogate `id` costs an extra column and an extra index, and *still* leaves you needing a separate `unique(invoiceId, tagId)` to stop duplicate pairs, so you pay more for the same guarantee. Composite primary keys belong on junction tables and almost nowhere else. The one reason to add the `id` anyway is the subject of the next section.
+
+### Naming the junction
+
+A **pure junction** uses `{parent1}_{parent2}`, alphabetized: `invoice_tags`, not `tag_invoices`, so every junction in the codebase reads the same way. Use plural snake_case like every table, and let the exported `const` mirror it in camelCase: `invoiceTags`.
+
+A junction that has become **a real entity**, the subject of the next section, drops the mashed-together name for the noun the business actually uses: `memberships`, not `users_organizations`; `subscriptions`, not `customers_plans`. The name is a tell: if you'd say the noun out loud in a product conversation ("add them to the membership"), it's an entity, not a pure link.
+
+```ts
+// Pure junction → both parents, alphabetized
+pgTable('invoice_tags', /* ... */);
+
+// Entity the business names → the domain noun
+pgTable('memberships', /* ... */);
+```
+
+## When a junction becomes an entity
+
+The mechanics are routine; the judgment is the skill: spotting the moment a link stops being a link and becomes an entity, because at that moment its shape changes.
+
+Two questions decide it, in order.
+
+1. **Does the relationship carry its own data?** A `role`, a `joinedAt`, a `quantity`, a `status`: data that belongs to *the link itself*, not to either endpoint. A tag on an invoice carries nothing, so the pairing is the whole story. But a person's place in an organization carries a *role*, owner, admin, or member, and that role belongs to neither side: the same person can be an admin of one org and a plain member of another. It's a property of the *membership*. Once such a column exists, the link has data of its own.
+2. **Would anything else point a foreign key *at* the relationship?** The sharper test. An `invitations` table, where each invitation becomes a specific membership, must reference *that membership row*; an audit log records "this membership's role changed." Once another table needs a foreign key *to* the link, the link has to be a row that other rows can address, and a pairing can't play that part cleanly.
+
+Answer "yes" to either and you promote it; "no" to both and it stays a pure junction.
+
+Promotion changes the schema in four ways, each forced by one of the two questions. The two tables below are the *same relationship*: a pure junction on the left, the entity it becomes on the right.
+
+<CodeVariants>
+  <CodeVariant label="Pure junction">
+    <div data-mark-color="violet">
+
+    ```ts {12}
+    export const invoiceTags = pgTable(
+      'invoice_tags',
+      {
+        invoiceId: uuid()
+          .notNull()
+          .references(() => invoices.id, { onDelete: 'cascade' }),
+        tagId: uuid()
+          .notNull()
+          .references(() => tags.id, { onDelete: 'cascade' }),
+      },
+      (t) => [primaryKey({ columns: [t.invoiceId, t.tagId] })],
+    );
+    ```
+
+    </div>
+    **A pure link.** Two foreign keys and a composite primary key. The pair *is* the row's identity, the table holds no data of its own, and nothing points a foreign key at it, so it never needs a surrogate `id`.
+  </CodeVariant>
+
+  <CodeVariant label="Promoted to entity">
+    ```ts ins={6, 13, 14, 18} del={17}
+    export const memberRole = pgEnum('member_role', ['owner', 'admin', 'member']);
+
+    export const memberships = pgTable(
+      'memberships',
+      {
+        id: uuid().primaryKey().default(sql`uuidv7()`),
+        userId: uuid()
+          .notNull()
+          .references(() => users.id, { onDelete: 'cascade' }),
+        organizationId: uuid()
+          .notNull()
+          .references(() => organizations.id, { onDelete: 'cascade' }),
+        role: memberRole().notNull().default('member'),
+        ...timestamps,
+      },
+      (t) => [
+        primaryKey({ columns: [t.userId, t.organizationId] }),
+        unique('memberships_user_org_unique').on(t.userId, t.organizationId),
+      ],
+    );
+    ```
+
+    **A first-class entity.** The same two foreign keys, plus a surrogate `id` so other rows can point at a membership, a `role` the link carries, lifecycle `...timestamps`, and the old composite primary key demoted to a named `unique` so a user still can't join the same org twice.
+  </CodeVariant>
+</CodeVariants>
+
+The surrogate `id` is the second test made concrete: you can't cleanly aim a foreign key at a composite key, so a link that needs to be *referenced*, by an invitation or audit row, needs a single-column identity to be referenced by. The composite key didn't disappear, it was demoted: `id` takes the primary-key slot, and the *no user joins the same org twice* rule survives as the named `unique`. The `role` column is the data that made this an entity, and the `...timestamps` are the subtler tell: a pure link just exists or doesn't, while an entity is created and changes over time, so `createdAt` on a membership *is* the "joined at."
+
+This `memberships` table is the foundation the course later builds organizations and multi-tenancy on; you meet it here as a pure data-modeling call before any access-control concerns arrive.
+
+## Two limits: no traversal, and only half-indexed
+
+**The junction is data only; it doesn't give you traversal yet.** `.references()` declares a database *constraint*, not a query path, so you can't yet write `db.query.invoices.findFirst({ with: { tags: true } })`; reading "an invoice and its tags" still means a manual join through the junction. To make Drizzle walk the relationship you declare a separate Relations layer, the next lesson.
+
+**The composite primary key only half-indexes the junction.** That free index covers `(invoiceId, tagId)` *in that order*, and a composite B-tree serves any query filtering on a *left prefix* of its columns. So `WHERE invoiceId = …` ("the tags on this invoice") is fast, but `WHERE tagId = …` ("the invoices with this tag") isn't a prefix, so Postgres scans the whole table. The fix is a second index leading with `tagId`, covered in a later indexing chapter.
+
+<HalfIndexedJunction />
+
+One guardrail: a junction with **three or more foreign keys** is almost always two relationships disguised as one table. A table mashing user, invoice, and tag together is really an `invoice_tags` junction *plus* an actor column on an entity, and that third foreign key is the tell.
+
+## Practice: model the link, then promote it
+
+You'll build both shapes back to back: first the pure junction, then the promotion, modeling the user-to-organization relationship as an entity because it carries a role. The starter spells out snake_case column names because the sandbox has no `casing` client and the probe SQL must match them. Watch the probes: the requirements read the *shape* of your composite primary key and unique, but only an `INSERT` proves a duplicate is rejected and only a `DELETE` proves the cascade fires.
+
+<DrizzleSchemaCoding
+  instructions="Two declarations, back to back. First model the invoice↔tag link as a pure junction `invoice_tags`: two .notNull() foreign keys with onDelete: 'cascade' and a composite primary key on (invoice_id, tag_id). Then perform the promotion — model the user↔organization relationship as an entity `memberships`, because it carries a role: a surrogate id primary key, the two foreign keys, a role column, and a named composite unique on (user_id, organization_id) so a user can't join the same org twice. The requirements read the shape of your PK and your unique; the probes insert and delete rows to prove the constraints actually fire. The column names are spelled out in snake_case because there's no casing client in scope."
+  maxHeight={520}
+  starter={`export const invoices = pgTable('invoices', {
+  id: uuid('id').primaryKey(),
+  amount_due: numeric('amount_due', { precision: 12, scale: 2 }).notNull(),
+});
+
+export const tags = pgTable('tags', {
+  id: uuid('id').primaryKey(),
+  slug: text('slug').notNull().unique(),
+});
+
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey(),
+  email: text('email').notNull(),
+});
+
+export const organizations = pgTable('organizations', {
+  id: uuid('id').primaryKey(),
+  name: text('name').notNull(),
+});
+
+// 1. The PURE JUNCTION: two FKs that both cascade + a composite PK.
+//    The pair (invoice_id, tag_id) IS the row's identity — no surrogate id.
+export const invoiceTags = pgTable('invoice_tags', {
+  // Add invoice_id → invoices.id and tag_id → tags.id here.
+  // Both .notNull(), both { onDelete: 'cascade' }.
+}, (t) => [
+  // Add the composite primary key on (invoice_id, tag_id) here.
+]);
+
+// 2. The PROMOTED ENTITY: it carries a role, so it gets a surrogate id,
+//    and the composite PK is demoted to a named composite unique.
+export const memberships = pgTable('memberships', {
+  // Add: id (surrogate PK), user_id → users.id, organization_id →
+  // organizations.id (both .notNull(), both cascade), and a role column.
+}, (t) => [
+  // Add a NAMED composite unique on (user_id, organization_id) here,
+  // e.g. unique('memberships_user_org_unique').on(...).
+]);
+`}
+  requirements={[
+    {
+      name: 'invoice_tags',
+      columns: [
+        {
+          name: 'invoice_id',
+          type: 'uuid',
+          notNull: true,
+          references: { table: 'invoices', column: 'id' },
+        },
+        {
+          name: 'tag_id',
+          type: 'uuid',
+          notNull: true,
+          references: { table: 'tags', column: 'id' },
+        },
+      ],
+      primaryKey: ['invoice_id', 'tag_id'],
+    },
+    {
+      name: 'memberships',
+      columns: [
+        { name: 'id', type: 'uuid', primaryKey: true },
+        {
+          name: 'user_id',
+          type: 'uuid',
+          notNull: true,
+          references: { table: 'users', column: 'id' },
+        },
+        {
+          name: 'organization_id',
+          type: 'uuid',
+          notNull: true,
+          references: { table: 'organizations', column: 'id' },
+        },
+        { name: 'role', notNull: true },
+      ],
+      uniques: [['user_id', 'organization_id']],
+    },
+  ]}
+  seedSQL={`-- Parent rows with fixed UUID literals so the probes have referents.
+-- The gradeable id columns have no default in the sandbox, so every row
+-- spells its id out. Each probe is handed disjoint rows.
+INSERT INTO invoices (id, amount_due) VALUES
+  ('00000000-0000-7000-8000-0000000000a1', '100.00'),
+  ('00000000-0000-7000-8000-0000000000a2', '200.00');
+
+INSERT INTO tags (id, slug) VALUES
+  ('00000000-0000-7000-8000-0000000000b1', 'urgent'),
+  ('00000000-0000-7000-8000-0000000000b2', 'paid');
+
+INSERT INTO users (id, email) VALUES
+  ('00000000-0000-7000-8000-0000000000c1', 'ada@probe.test'),
+  ('00000000-0000-7000-8000-0000000000c2', 'grace@probe.test');
+
+INSERT INTO organizations (id, name) VALUES
+  ('00000000-0000-7000-8000-0000000000d1', 'Acme'),
+  ('00000000-0000-7000-8000-0000000000d2', 'Globex');`}
+  probes={[
+    {
+      description: 'Composite PK fires — the same (invoice_id, tag_id) pair cannot be inserted twice',
+      mustSucceed: false,
+      sql: `INSERT INTO invoice_tags (invoice_id, tag_id) VALUES
+  ('00000000-0000-7000-8000-0000000000a1', '00000000-0000-7000-8000-0000000000b1'),
+  ('00000000-0000-7000-8000-0000000000a1', '00000000-0000-7000-8000-0000000000b1');`,
+    },
+    {
+      description: 'Foreign key fires — a tag_id that points at no real tag is rejected',
+      mustSucceed: false,
+      sql: `INSERT INTO invoice_tags (invoice_id, tag_id) VALUES
+  ('00000000-0000-7000-8000-0000000000a1', '00000000-0000-7000-8000-0000000000bf');`,
+    },
+    {
+      description: 'cascade fires on both sides — deleting the invoice removes its link rows',
+      mustSucceed: true,
+      sql: `INSERT INTO invoice_tags (invoice_id, tag_id) VALUES
+  ('00000000-0000-7000-8000-0000000000a2', '00000000-0000-7000-8000-0000000000b2');
+DELETE FROM invoices WHERE id = '00000000-0000-7000-8000-0000000000a2';
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM invoice_tags WHERE invoice_id = '00000000-0000-7000-8000-0000000000a2') THEN
+    RAISE EXCEPTION 'the invoice was deleted but its link row survived — onDelete cascade did not fire';
+  END IF;
+END $$;`,
+    },
+    {
+      description: 'Demoted unique still guards the pair — a user cannot join the same org twice',
+      mustSucceed: false,
+      sql: `INSERT INTO memberships (id, user_id, organization_id, role) VALUES
+  ('00000000-0000-7000-8000-0000000000e1', '00000000-0000-7000-8000-0000000000c1', '00000000-0000-7000-8000-0000000000d1', 'member'),
+  ('00000000-0000-7000-8000-0000000000e2', '00000000-0000-7000-8000-0000000000c1', '00000000-0000-7000-8000-0000000000d1', 'admin');`,
+    },
+  ]}
+/>
+
+<details>
+<summary>Reveal the answer</summary>
+
+```ts title="db/schema.ts"
+// 1. The pure junction — two cascading FKs, identity IS the pair.
+export const invoiceTags = pgTable('invoice_tags', {
+  invoice_id: uuid('invoice_id')
+    .notNull()
+    .references(() => invoices.id, { onDelete: 'cascade' }),
+  tag_id: uuid('tag_id')
+    .notNull()
+    .references(() => tags.id, { onDelete: 'cascade' }),
+}, (t) => [
+  // The pair is the identity: unique + NOT NULL on both + an index, from one line.
+  primaryKey({ columns: [t.invoice_id, t.tag_id] }),
+]);
+
+// 2. The promotion — the link grew a role, so it became a thing.
+export const memberships = pgTable('memberships', {
+  id: uuid('id').primaryKey(),
+  user_id: uuid('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  organization_id: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  role: text('role').notNull().default('member'),
+}, (t) => [
+  // The composite key didn't disappear — it was demoted from PK to a named unique.
+  unique('memberships_user_org_unique').on(t.user_id, t.organization_id),
+]);
+```
+
+The pure junction's `primaryKey({ columns: [t.invoice_id, t.tag_id] })` makes the *pair* the identity, so probe 1's doubled `(a1, b1)` row is rejected as a duplicate. The two `cascade` foreign keys reject probe 2's orphan `tag_id` and, in probe 3, sweep the link row away when its invoice is deleted — the `DO` block raises only if the row survived, so the probe passing *is* the cascade firing. In `memberships`, the surrogate `id` takes the primary-key slot so a foreign key could later point at a membership, and the no-double-join rule survives the demotion as the named `unique('memberships_user_org_unique')` that rejects probe 4's second `(c1, d1)` pair. (`role` is plain `text` here; a `pgEnum('member_role', [...])` is the production choice and grades the same way.)
+
+</details>
+
+## External resources
+
+Drizzle's "Indexes & Constraints" page is the one official reference behind every builder in this lesson: the composite `primaryKey` that made the pair the identity, the named `unique` it demoted to when the link became an entity, and the `references(... { onDelete })` foreign keys that both junction columns ride on. The two guides below go the other way and teach the *modeling judgment* the schema encodes, including the exact "when does a junction grow into an entity?" call that the middle of this lesson turns on. The Beekeeper Studio guide lets you run the SQL in the browser as you read.
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle ORM — Indexes & Constraints"
+    href="https://orm.drizzle.team/docs/indexes-constraints"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="Official reference for the composite primaryKey, the named unique, and the references onDelete foreign keys this lesson uses."
+  />
+  <ExternalResource
+    title="Many-to-Many Relationships: An Interactive SQL Guide"
+    href="https://www.beekeeperstudio.io/blog/many-to-many-database-relationships-complete-guide"
+    icon="simple-icons:beekeeperstudio"
+    iconColor="#FAD83B"
+    description="Walks the junction pattern with browser-runnable SQL, including the pure-link vs. junction-with-attributes split this lesson centers on."
+  />
+  <ExternalResource
+    title="Many-to-Many Relationships: A Guide to Database Design"
+    href="https://www.datacamp.com/blog/many-to-many-relationship"
+    icon="simple-icons:datacamp"
+    iconColor="#03EF62"
+    description="Composite keys, associative entities, and the trade-offs behind promoting a junction — the modeling judgment, written up at length."
+  />
+</CardGrid>

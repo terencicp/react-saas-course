@@ -1,0 +1,476 @@
+---
+title: NOT NULL, defaults, and generated columns
+chapter-id: 37
+course-progress: 0.3503
+tagline: Chain Drizzle modifiers so your Postgres schema, not app code, decides each column's nullability, default, and derived value.
+sidebar:
+  order: 4
+  label: Modifiers & defaults
+rewrites: 2
+---
+
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import DrizzleSchemaCoding from '../../../components/live-coding/DrizzleSchemaCoding/DrizzleSchemaCoding.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ColumnAnatomy from '../../../components/lessons/037/4/ColumnAnatomy.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson you picked each column's Postgres type: `text` for a name, `numeric` for money, `timestamp` for a date.
+The type is the first decision a column needs, not the last.
+For every column you settle three more, in order:
+
+1. **Can it be null?** Is "we don't have this value yet" a state the column may hold?
+2. **Does it have a default?** When you insert a row without this column, something fills it in, and *who* fills it in matters.
+3. **Is it derived?** Does Postgres compute the value from other columns, so you never set it yourself?
+
+You already have the type, so this lesson covers the other three.
+The syntax is the same for each: chain a method onto last lesson's builder, so `text()` becomes `text().notNull()`.
+Chaining is the easy part; the judgment is knowing which method to add, and what the wrong one costs you downstream.
+
+Along the way you build two things the rest of the course reuses: a `db/columns.ts` file holding the columns every table needs (`id`, `createdAt`, `updatedAt`), written once and spread into each table, and the first half of a case-insensitive email setup that the unique-constraints lesson finishes.
+
+<ColumnAnatomy />
+
+## Default every column to `NOT NULL`
+
+One fact trips up almost everyone: a bare column in Drizzle is **nullable**. Write this:
+
+```ts
+name: text(),
+```
+
+and you have told Postgres the column may hold a string or nothing at all. "An organization has a name" means every organization has one, so a row without a name is a bug you want the database to refuse.
+
+The fix is one method:
+
+<div data-mark-color="green">
+
+```ts ".notNull()"
+name: text(),            // nullable — a row with no name is allowed
+name: text().notNull(),  // required — Postgres rejects a row without one
+```
+
+</div>
+
+`.notNull()` adds a `NOT NULL` constraint, so an insert that omits `name` fails at the database before a bad row lands.
+
+:::tip
+Put `.notNull()` on every column, unless absence is a genuinely meaningful state for that column. The builder defaults to nullable because nullable is the loosest option; tightening it is your job. Reach for nullability deliberately, never by forgetting.
+:::
+
+Nullability costs you more in the code that reads the column than in the database. The column becomes a field on the inferred row type, and its nullability flows straight through. Hover the two versions:
+
+<CodeTooltips tooltips={{
+  name: 'Inferred field: name: string | null. The nullable column forces every read of org.name to handle the null.',
+}}>
+```ts
+export const orgsLoose = pgTable('orgs_loose', {
+  name: text(),
+});
+```
+</CodeTooltips>
+
+<CodeTooltips tooltips={{
+  name: 'Inferred field: name: string. .notNull() removes the | null, so read sites get a plain string.',
+}}>
+```ts
+export const orgsStrict = pgTable('orgs_strict', {
+  name: text().notNull(),
+});
+```
+</CodeTooltips>
+
+That `| null` is enforced at every read site: anywhere you touch `org.name` you must handle the missing case with a `?.`, a guard, a fallback, or a non-null assertion. You cannot remove it at the read site, because it was generated upstream from the schema. The only place to remove it is the column declaration: add `.notNull()` once, and the `| null` never appears.
+
+### When `null` is the right answer
+
+Make a column nullable when absence is itself a meaningful state, distinct from any real value.
+
+The clearest example is <Term definition="Marking a row as deleted by stamping a timestamp instead of physically removing it — the row stays in the table, queries filter it out.">soft delete</Term>:
+
+```ts
+deletedAt: timestamp({ withTimezone: true }),
+```
+
+Here `null` means the row is live, and a timestamp means it was deleted at that moment. That is the test: if you can finish "`null` here means \_\_\_" with something real about your domain, the column should be nullable; if the only meaning is "missing," use `.notNull()`.
+
+Optional relationships are the other common case:
+
+```ts
+assignedToId: uuid(),  // null = unassigned, a real state
+```
+
+`null` means "nobody owns this yet," again a deliberate, meaningful state.
+
+## SQL-side vs app-side defaults
+
+The second checklist question: when you insert a row and leave a column out, what fills it in? That value is a **default**. The easy part is the value; the decision that matters is *who computes it*, Postgres or your app, because that determines whether the default still fires when something writes to the table without going through Drizzle.
+
+Drizzle gives you three ways to declare one.
+
+```ts
+status: text().default('draft'),
+createdAt: timestamp({ withTimezone: true }).defaultNow(),
+id: uuid().$defaultFn(() => uuidv7()),
+```
+
+- **`.default(value)`** is a constant, like `'draft'` or `1`. Drizzle emits a SQL <Term definition="The DEFAULT expression Postgres attaches to a column. Postgres evaluates it on insert whenever the column is omitted, independent of any application code.">`DEFAULT` clause</Term>, so **Postgres** fills it in.
+- **`.defaultNow()`** emits `DEFAULT now()`, so **Postgres** stamps the insert time. This is the standard `createdAt`.
+- **`.$defaultFn(() => …)`** is a value your *app* computes in TypeScript just before the insert, running inside Drizzle in your Node process. Reach for it when the value needs JavaScript, like a generated UUIDv7 id or a slug derived from a title.
+
+The `$` is a deliberate signal: a `$`-method runs in the *client*, in JavaScript, not in SQL. That split decides where the default runs, and it stays silent until something other than your Drizzle code writes a row, which in a real app it eventually does: a `psql` session, a raw SQL seed, a coworker's script.
+
+<CodeVariants>
+  <CodeVariant label="SQL-side · .default / .defaultNow">
+    <div data-mark-color="green">
+
+    ```ts {2}
+    createdAt: timestamp({ withTimezone: true }).defaultNow(),
+    // → emits  created_at timestamptz DEFAULT now()  in the table itself
+    ```
+
+    </div>
+    **Fires for everyone.** The `DEFAULT` lives in Postgres, so it fills in on a Drizzle insert, a raw `INSERT` in psql, and a migration seed alike. Anything that touches the table gets the value.
+  </CodeVariant>
+
+  <CodeVariant label="App-side · .$defaultFn">
+    <div data-mark-color="orange">
+
+    ```ts {2}
+    id: uuid().$defaultFn(() => uuidv7()),
+    // → no DEFAULT in the table; Drizzle calls uuidv7() before each insert
+    ```
+
+    </div>
+    **Fires only through Drizzle.** The table has no `DEFAULT`, so the value appears only when your Drizzle code does the insert. A raw `INSERT` writes the row with no `id`, and if `id` is required, Postgres rejects it.
+  </CodeVariant>
+</CodeVariants>
+
+:::tip
+Prefer a **SQL-side** default whenever Postgres can compute the value, a constant or `now()`: it survives every code path that touches the table. Reach for `.$defaultFn(...)` only when the value genuinely needs TypeScript.
+:::
+
+A default also makes the column **optional** in the insert type, so when a later lesson generates `$inferInsert`, you can omit any column you gave a default to.
+
+:::caution
+`.defaultNow()` is correct **only** on a `timestamptz` (`timestamp({ withTimezone: true })`). On a plain `timestamp` it stores the server's *local* time with no zone, a bug that stays hidden until your server moves regions or your team spans time zones. Always pair `.defaultNow()` with `withTimezone: true`.
+:::
+
+## Re-stamping `updatedAt` on every write
+
+`createdAt` is set once and never changes. `updatedAt` records the row's last change, so it must be re-stamped on every update, not just set at insert. That takes one extra modifier.
+
+Every SaaS table you build will have an `updatedAt` shaped like this:
+
+<AnnotatedCode lang="ts" code={`
+updatedAt: timestamp({ withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date()),
+`}>
+  <AnnotatedStep meta={`"timestamp({ withTimezone: true })"`} color="blue">
+    A timestamp stored as UTC, the same `timestamptz` as `createdAt`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`".defaultNow()"`} color="blue">
+    On insert Postgres stamps `now()`, so a new row's `updatedAt` equals its `createdAt`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`".notNull()"`} color="blue">
+    A row always has a last-changed time, so this is never absent.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`".$onUpdate(() => new Date())"`} color="orange">
+    Before every Drizzle `update`, Drizzle calls this and re-stamps the column with the current time.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Note the `$` again: like `$defaultFn`, `.$onUpdate(...)` runs inside Drizzle, with the same catch.
+
+:::caution
+`.$onUpdate(...)` runs at the Drizzle layer only. A raw `UPDATE` in psql, a bulk migration, or another service writing your table leaves `updatedAt` stale, because none of them call Drizzle's function. It is only as trustworthy as your promise that every write goes through Drizzle.
+:::
+
+The reliable fix lives in the database, where nothing can route around it: a Postgres `BEFORE UPDATE` trigger that stamps `updated_at` on every change. A later chapter adds it. Until then `.$onUpdate(...)` is correct as long as every write goes through Drizzle, which early on it does; reach for the trigger once another writer appears.
+
+## Define your boilerplate columns once
+
+The same `createdAt` and `updatedAt` lines belong on `organizations`, `invoices`, line items, tags, and every other table. Hand-writing the four-modifier chain into each one invites drift: mistype one table, leave `.notNull()` off its `updatedAt`, and it quietly diverges from the rest with nothing to warn you.
+
+So define them once. Next to your schema, make `db/columns.ts` that exports the boilerplate columns as plain objects:
+
+```ts title="db/columns.ts"
+import { timestamp } from 'drizzle-orm/pg-core';
+
+export const timestamps = {
+  createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp({ withTimezone: true })
+    .defaultNow()
+    .notNull()
+    .$onUpdate(() => new Date()),
+};
+
+export const softDelete = {
+  deletedAt: timestamp({ withTimezone: true }),
+};
+```
+
+`timestamps` carries the two lifecycle columns; `softDelete` carries the deliberately nullable `deletedAt`, present only on tables that opt into soft delete. Spread either into a table's column map with `...`:
+
+<CodeVariants>
+  <CodeVariant label="Hand-written">
+    ```ts
+    export const organizations = pgTable('organizations', {
+      id: uuid().primaryKey(),
+      name: text().notNull(),
+      createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+      updatedAt: timestamp({ withTimezone: true })
+        .defaultNow()
+        .notNull()
+        .$onUpdate(() => new Date()),
+    });
+    ```
+    Every table restates the same four lines, and one eventually forgets a modifier.
+  </CodeVariant>
+
+  <CodeVariant label="Spread from columns.ts">
+    <div data-mark-color="green">
+
+    ```ts {4}
+    export const organizations = pgTable('organizations', {
+      id: uuid().primaryKey(),
+      name: text().notNull(),
+      ...timestamps,
+    });
+    ```
+
+    </div>
+    `...timestamps` drops `createdAt` and `updatedAt` into the column map. Change the shape once in `columns.ts` and every table updates together, so drift becomes impossible.
+  </CodeVariant>
+</CodeVariants>
+
+If `timestamps` is one shared object, do all your tables share the same column instances? No: spreading copies the builders into each table's map, so the `createdAt` on `organizations` and on `invoices` are independent. You reuse the recipe, not one live column.
+
+:::note
+The `id` above is a placeholder, a bare `.primaryKey()`. Which kind of id and how it gets generated is the whole subject of the next lesson, so `columns.ts` leaves it out and each table declares its own until then.
+:::
+
+## Generated columns: let Postgres compute the value
+
+The last checklist question is the one you'll reach for least often: **is this column derived?** A **generated column** is one Postgres computes from the other columns in the same row. You never write it; you write the inputs, and the database keeps the derived value in sync.
+
+Say a row has `firstName` and `lastName`, and you want a `fullName` that is always the two joined:
+
+<div data-mark-color="blue">
+
+```ts {3-5}
+firstName: text().notNull(),
+lastName: text().notNull(),
+fullName: text().generatedAlwaysAs(
+  () => sql`${users.firstName} || ' ' || ${users.lastName}`,
+),
+```
+
+</div>
+
+You hand `.generatedAlwaysAs()` a SQL expression, and `fullName` becomes read-only: Postgres fills it in on insert and recomputes it whenever a name changes, so the value can never disagree with its parts. Write the expression with the <Term definition="A tagged template from Drizzle that builds a safe SQL fragment. A column reference interpolates that column's real SQL name; a value is parameterized.">`sql` tag</Term>, interpolating sibling columns by their TypeScript reference so Drizzle emits the right names. Wrapping it in a callback (`() => sql\`…\``) defers reading those references until the table is fully defined, avoiding a circular-reference error.
+
+### `STORED` vs `VIRTUAL`
+
+A generated column is either **stored** (computed on write, saved to disk, and indexable) or **virtual** (computed on read, stored nowhere, and not indexable). You index any value you'll filter or sort by, so stored is usually what you want.
+
+**Drizzle's Postgres builder always emits `STORED`.** There's no mode argument to flip; the `{ mode }` option you may have seen exists only in Drizzle's MySQL and SQLite builders. One change worth recognizing: Postgres 18 made `VIRTUAL` the default for a bare `GENERATED ALWAYS AS` in raw SQL, so a hand-written column now comes out non-indexable unless you say `STORED`.
+
+### A real one: case-insensitive email
+
+Emails are case-insensitive in practice, so `Ada@Example.com` and `ada@example.com` are the same person. Postgres compares text exactly, so to the database they are two different strings. To stop two users from signing up with the "same" email, you need a normalized form to compare against, and a generated column gives you one:
+
+<AnnotatedCode lang="ts" code={`
+export const users = pgTable('users', {
+  email: text().notNull(),
+  emailLowercased: text().generatedAlwaysAs(
+    () => sql\`lower(\${users.email})\`,
+  ),
+});
+`}>
+  <AnnotatedStep meta="{2}" color="blue">
+    The address exactly as the user typed it, casing and all. `.notNull()` because every user has an email.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-5}" color="green">
+    A column Postgres derives by running `lower()` on the email, so `ada@…` and `Ada@…` produce the same value. It stays in sync automatically and you never write it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"emailLowercased"`} color="orange">
+    A real column, not just an index expression, gives the next lesson a **unique index on `emailLowercased`** to enforce "no two users with the same email, ignoring case" with zero application code.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+You keep `email` as typed for display and sending mail, and `emailLowercased` as the normalized version Postgres maintains. On its own it does nothing yet; the payoff comes when the **unique constraints** lesson puts a unique index on it, and sign-ups with `Ada@example.com` and `ada@example.com` collide on the normalized column.
+
+### Generated columns are read-only
+
+Because Postgres owns the value, you can never supply it: a raw `INSERT` that writes it is rejected, and when a later lesson generates the insert type, the column is omitted entirely, so TypeScript won't even offer it.
+
+`STORED` carries two costs. Every update to an input rewrites the value, so changing `email` recomputes and rewrites `emailLowercased` too; usually negligible, occasionally worth noticing on a hot column. And the expression sees only its own row: no other tables, no subqueries, no aggregates, so it's the wrong tool for a value computed across rows.
+
+## Practice: finish the columns
+
+First, sort each column by where its value comes from.
+
+<Buckets twoCol instructions="Each item describes a column from the invoicing domain. Sort it by what fills the column in.">
+  <Bucket name="sqlDefault" label="SQL-side default" description="`.default(...)` / `.defaultNow()` — Postgres fills it" />
+  <Bucket name="appDefault" label="App-side default" description="`.$defaultFn(...)` — Drizzle fills it in TS" />
+  <Bucket name="generated" label="Generated" description="`.generatedAlwaysAs(...)` — Postgres derives it" />
+  <Bucket name="noDefault" label="No default" description="you always supply it (or it's nullable)" />
+
+  <Item bucket="sqlDefault">An invoice's `status`, which always starts at `'draft'`</Item>
+  <Item bucket="sqlDefault">A `createdAt` that records the insert time</Item>
+  <Item bucket="sqlDefault">A line item's `quantity`, defaulting to `1`</Item>
+  <Item bucket="appDefault">An `id` set to a freshly generated UUIDv7 in TS at insert</Item>
+  <Item bucket="appDefault">A URL `slug` computed from the invoice title in app code on insert</Item>
+  <Item bucket="generated">`emailLowercased`, always `lower(email)`</Item>
+  <Item bucket="noDefault">An invoice's `amount`, which the user must enter every time</Item>
+  <Item bucket="noDefault">A user's `deletedAt` (null until the row is soft-deleted)</Item>
+</Buckets>
+
+Now write the modifiers: the starter schema below has correct types but no modifiers, so run the checklist on each column and add them.
+
+<DrizzleSchemaCoding
+  instructions="Run the checklist on every column. In users, email is required, and email_lowercased is a generated column whose value is always lower(email). In invoices, amount is required, status defaults to 'draft', created_at is stamped by Postgres on insert, and deleted_at stays nullable. Leave each id as the bare .primaryKey() placeholder."
+  starter={`export const users = pgTable('users', {
+  id: uuid('id').primaryKey(),
+  email: text('email'),
+  emailLowercased: text('email_lowercased'),
+});
+
+export const invoices = pgTable('invoices', {
+  id: uuid('id').primaryKey(),
+  amount: numeric('amount', { precision: 12, scale: 2 }),
+  status: text('status'),
+  createdAt: timestamp('created_at', { withTimezone: true }),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+});`}
+  requirements={[
+    {
+      name: 'users',
+      columns: [
+        { name: 'id', type: 'uuid', primaryKey: true },
+        { name: 'email', type: 'text', notNull: true },
+        { name: 'email_lowercased', type: 'text' },
+      ],
+    },
+    {
+      name: 'invoices',
+      columns: [
+        { name: 'id', type: 'uuid', primaryKey: true },
+        { name: 'amount', type: 'numeric', notNull: true },
+        { name: 'status', type: 'text', notNull: true, hasDefault: true },
+        { name: 'created_at', type: 'timestamp', notNull: true, hasDefault: true },
+        { name: 'deleted_at', type: 'timestamp' },
+      ],
+    },
+  ]}
+  probes={[
+    {
+      description: "An invoice inserted with no status is accepted — the column has a default to fall back on",
+      sql: `INSERT INTO invoices (id, amount) VALUES ('00000000-0000-0000-7000-000000000010', 100.00);`,
+      mustSucceed: true,
+    },
+    {
+      description: "That invoice's status defaulted to 'draft', filled in by Postgres",
+      sql: `DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM invoices
+    WHERE id = '00000000-0000-0000-7000-000000000010' AND status = 'draft'
+  ) THEN
+    RAISE EXCEPTION 'status did not default to draft';
+  END IF;
+END $$;`,
+      mustSucceed: true,
+    },
+  ]}
+/>
+
+:::note
+The checker can't see inside a generated column's expression, so `email_lowercased` is checked only for being a `text` column that exists. Compare your `.generatedAlwaysAs(...)` against the reference below.
+:::
+
+<details>
+<summary>Reference solution</summary>
+
+```ts
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey(),
+  email: text('email').notNull(),
+  emailLowercased: text('email_lowercased').generatedAlwaysAs(
+    () => sql`lower(${users.email})`,
+  ),
+});
+
+export const invoices = pgTable('invoices', {
+  id: uuid('id').primaryKey(),
+  amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+  status: text('status').notNull().default('draft'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+});
+```
+
+`deletedAt` is the only column without `.notNull()`, because `null` is its meaningful "live row" state. The rest are `.notNull()`; `status` and `created_at` add SQL-side defaults; `email_lowercased` is derived, so Postgres owns its value.
+
+</details>
+
+## Wrapping up
+
+Every column answers four questions in order: what type, can it be null, does it have a default, is it derived. Next you'll settle the `id` you've been leaving as a placeholder: what makes a good primary key, and why this course reaches for UUIDv7.
+
+## Keep exploring
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle — Generated Columns"
+    href="https://orm.drizzle.team/docs/generated-columns"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The generatedAlwaysAs API across Postgres, MySQL, and SQLite — note the mode argument is MySQL/SQLite only."
+  />
+  <ExternalResource
+    title="Drizzle — Postgres column types"
+    href="https://orm.drizzle.team/docs/column-types/pg"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="Every pg-core builder and the modifiers (.notNull, .default, .$defaultFn, .$onUpdate) you chain onto them."
+  />
+  <ExternalResource
+    title="PostgreSQL 18 — Generated Columns"
+    href="https://www.postgresql.org/docs/18/ddl-generated-columns.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The STORED vs VIRTUAL distinction from the source, including the Postgres 18 default change."
+  />
+  <ExternalResource
+    title="11 Lessons to learn when using NULLs in PostgreSQL"
+    href="https://ftisiot.net/posts/postgresql-isnull/"
+    icon="lucide:circle-slash"
+    iconColor="#E2007A"
+    description="Worked examples of the traps a nullable column springs — at query, join, and aggregate time — the downstream cost this lesson warns about."
+  />
+  <ExternalResource
+    title="PostgreSQL — citext"
+    href="https://www.postgresql.org/docs/current/citext.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The built-in case-insensitive text type — the alternative to the lower() generated column for case-insensitive email."
+  />
+</CardGrid>

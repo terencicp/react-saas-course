@@ -1,0 +1,440 @@
+---
+title: Postgres data types, the 2026 subset
+description: The roughly eight Postgres column types a 2026 SaaS app actually uses, and the tempting wrong type that shadows each one.
+tagline: Choosing the right Postgres column type for each kind of data in your Drizzle schema, from money to timestamps.
+chapter-id: 37
+course-progress: 0.3482
+rewrites: 2
+sidebar:
+  order: 3
+  label: Postgres data types
+---
+
+import { CardGrid, Card } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import DrizzleSchemaCoding from '../../../components/live-coding/DrizzleSchemaCoding/DrizzleSchemaCoding.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import DefaultsTable from '../../../components/lessons/037/3/DefaultsTable.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson you wrote `uuid()`, `text()`, `integer()`, and `timestamp()` into your first table without asking why. This lesson answers that.
+
+Postgres ships around forty built-in types, but a 2026 web app reaches for about eight day to day. You need to know those eight cold, along with the one tempting-but-wrong type that shadows each. Most "we stored money as a float and the books don't balance" incidents trace back to a type that merely looked right.
+
+A web app's columns come in a handful of kinds: a name, a price, a timestamp, an ID, a status, a flexible payload, a list of tags, an IP address. For each you'll learn the correct Postgres type, the Drizzle builder that maps to it, and the trap in the obvious alternative. We keep building last lesson's `organizations` and `invoices`, adding the columns a real invoice needs: an amount, a status, dates, a tag list, a webhook payload.
+
+## Names and free text: `text` is the default
+
+Start with the simplest column there is: a name, a note, any human-readable string.
+
+**Strings are `text`, with no length number.**
+
+If you've written SQL before, your hand is reaching for `VARCHAR(255)`. That reflex is muscle memory from MySQL and SQL Server, where an unbounded string carries a real cost. In Postgres it doesn't: `text` and `varchar(n)` have **identical performance and identical storage**, because Postgres stores them the same way under the hood. The cap buys you nothing.
+
+<CodeVariants>
+  <CodeVariant label="varchar(n) — the reflex">
+    <div data-mark-color="red">
+
+    ```ts "varchar({ length: 255 })"
+    name: varchar({ length: 255 }),
+    ```
+
+    </div>
+
+    **Feels safe, buys nothing.** The 255 is arbitrary: it makes nothing faster or smaller, and the day the business wants 300 characters you ship a migration to lift a limit that never earned its keep.
+  </CodeVariant>
+
+  <CodeVariant label="text — the default">
+    <div data-mark-color="green">
+
+    ```ts "text()"
+    name: text(),
+    ```
+
+    </div>
+
+    **Variable length, same performance.** No cap to maintain, no migration when the limit changes.
+  </CodeVariant>
+</CodeVariants>
+
+A real maximum length is a **user-experience concern**, not a storage one. "Names must be 100 characters or fewer" exists to give the user a friendly form error, not to make Postgres truncate data mid-word. So the cap belongs in the validation layer, which you'll build with <Term definition="A TypeScript-first schema validation library. You declare the shape and rules of incoming data once, and it validates and types it at your API boundary.">Zod</Term> in a later chapter. The database type says what *can* be stored; the validator says what's *allowed* in. The column stays `text`, and the rule lives in Zod.
+
+## Money and numbers: the four-way decision
+
+This is the highest-stakes column choice in the lesson. A wrong text column makes a name slightly too long; a wrong money column makes your numbers quietly, permanently incorrect with nothing crashing to tell you.
+
+Four number types are in play: `integer` and `bigint` for whole numbers of different sizes, `numeric` for money and anything where exactness is the point, and the floating-point pair (`real` and `double precision`) that you keep *away* from money. Start with the costliest mistake.
+
+Store a price as a float and you get the arithmetic behind JavaScript's `0.1 + 0.2 === 0.30000000000000004`: floats store the nearest binary approximation, so summing thousands of invoice lines lets the cents drift until the total no longer matches the rows. Nothing throws; the answer is just wrong, and nobody notices until an accountant does. The fix is a type built for exact decimals.
+
+<CodeVariants>
+  <CodeVariant label="Float — silent corruption">
+    <div data-mark-color="red">
+
+    ```ts "doublePrecision()"
+    amountDue: doublePrecision(),
+    ```
+
+    </div>
+
+    **Looks fine, runs fine, wrong.** `doublePrecision` (and its smaller sibling `real`) store binary floating point: the math runs without error, the totals are subtly off, and the bug ships because nothing complains. Never use it for money.
+  </CodeVariant>
+
+  <CodeVariant label="numeric — exact">
+    <div data-mark-color="green">
+
+    ```ts "numeric({ precision: 12, scale: 2 })"
+    amountDue: numeric({ precision: 12, scale: 2 }).notNull(),
+    ```
+
+    </div>
+
+    **Exact decimal, the course default for prices.** <Term definition="The exact decimal type, Postgres NUMERIC / DECIMAL. Stores the actual digits, not a binary float, so there is no rounding error.">`numeric`</Term> stores the literal digits, so nothing rounds. `precision: 12, scale: 2` means twelve significant digits total with two after the decimal point, so ten before and two after, which covers any SaaS invoice amount.
+  </CodeVariant>
+</CodeVariants>
+
+Last lesson you stubbed `amountDue` as an `integer` placeholder; now `numeric({ precision: 12, scale: 2 })` is the standing default for any price column.
+
+Two new words: <Term definition="The total number of significant digits stored, both sides of the decimal point combined.">precision</Term> is the total count of significant digits the column stores, and <Term definition="The number of digits stored after the decimal point.">scale</Term> is how many of those sit after the decimal point.
+
+### The surprise: `numeric` comes back as a string
+
+When you read a `numeric` column, Drizzle hands it to TypeScript as a **`string`**, not a `number`.
+
+That feels wrong until you see why. A JavaScript `number` *is* a 64-bit float, the very thing `numeric` exists to avoid, so handing you one would push your exact decimal back through floating-point math and reintroduce the bug. Instead Drizzle gives you the digits faithfully as a string, and you do money math with a decimal library, never `parseFloat` and `+`.
+
+This is the TypeScript-vs-SQL boundary from last lesson, where `amountDue` and `amount_due` differ by *name*. Here they differ by *runtime type*, the one type that disagrees on purpose.
+
+### `integer` versus `bigint`
+
+Not every number is money. For plain counts, a quantity, a seat count, a retry counter, reach for `integer`, a 32-bit signed integer that tops out around ±2.1 billion. That covers almost anything you'd count in an app.
+
+When a value can outgrow two billion, like a high-volume event counter or a millisecond Unix timestamp, step up to `bigint`, the 64-bit integer. That range exceeds what JavaScript's `number` holds safely, so Drizzle's `bigint` builder takes a `mode`: `bigint({ mode: 'number' })` returns an ordinary `number` (safe to about 2⁵³), while `bigint({ mode: 'bigint' })` returns a JavaScript `BigInt` for the full range. Default to `mode: 'number'`; switch only when you need the top end.
+
+## Booleans: two flags or one enum
+
+Use `boolean` for a true-or-false value:
+
+```ts
+isArchived: boolean().notNull().default(false),
+```
+
+The choice gets interesting when a row holds more than one true/false fact: several booleans, or one column with a fixed set of values? Ask whether the facts are independent. On an invoice, `isPaid` and `isSent` are orthogonal: it can be sent but unpaid, paid but never sent, both, or neither. Every combination is a real state, so two booleans is right.
+
+The invoice's *status* is different: it is exactly one of `draft`, `sent`, `paid`, or `void` at any moment. Model those as booleans (`isDraft`, `isPaid`, `isVoid`) and nothing stops two being `true` at once, an impossible state your database now permits. A set of mutually exclusive states wants one column holding exactly one value, which is an enum, covered a few sections down.
+
+## Time: `timestamptz` is the only timestamp
+
+Every timestamp in this course follows one hard rule:
+
+**Every timestamp is `timestamp({ withTimezone: true })`.**
+
+That maps to <Term definition="Postgres timestamp with time zone. Stores an absolute instant in UTC and converts on input and output, so it means the same moment everywhere.">`timestamptz`</Term>, which stores an absolute instant in UTC and converts on the way in and out. Postgres also has a plain `timestamp` without the time-zone option, and it is *never* the right answer. A plain `timestamp` stores "2pm" with no record of *2pm where*: correct on the one machine that wrote it, off by hours once you deploy across regions or a user in another timezone reads the row. It type-checks and passes every test on one machine, so the bug stays invisible until production. It is the single most common timezone bug in Drizzle codebases.
+
+<CodeVariants>
+  <CodeVariant label="Plain timestamp — the hidden bug">
+    <div data-mark-color="red">
+
+    ```ts "timestamp()"
+    createdAt: timestamp(),
+    ```
+
+    </div>
+
+    **A wall-clock with no zone.** Stores "2pm" with no record of *2pm where*. Correct on one machine, wrong the day you deploy across regions or a user in another timezone reads it.
+  </CodeVariant>
+
+  <CodeVariant label="timestamptz — always">
+    <div data-mark-color="green">
+
+    ```ts "{ withTimezone: true }"
+    createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+    ```
+
+    </div>
+
+    **Stores an absolute instant in UTC,** converting on read so it means the same moment in every timezone. The only timestamp shape the course writes, and the canonical `createdAt` line. (`.defaultNow()` and `.notNull()` are covered next lesson.)
+  </CodeVariant>
+</CodeVariants>
+
+`timestamptz` is the only type that records *which* real instant something happened at. The one honest exception is a recurring **local** time of day: "the store opens at 9am local time" is 9am in Tokyo and 9am in Berlin, different moments, not a single instant. Model that as a `time` column plus a separate `timezone` text column.
+
+<VideoCallout videoId="jyfQmtISr3Y" videoTitle="TIMESTAMP vs TIMESTAMPTZ - What's the difference? Which should I use?">
+  CockroachDB walks through the `timestamp` vs `timestamptz` choice in 3 min, showing the same row render differently per session zone.
+</VideoCallout>
+
+### Calendar dates and time-only
+
+A `date` is a calendar day with no time and no zone: a due date, a billing date, a birthday. Reach for it whenever the answer is "a day." **Don't model a calendar day as a `timestamptz` at midnight,** because midnight in which zone? The instant "2026-03-14 00:00" lands on different calendar days depending on the reader's zone, so a birthday can shift by a day; a `date` means the same day everywhere.
+
+Two more to recognize: `time` is a time of day with no date, and `interval` is a span of time (three days, two hours).
+
+Every SaaS table tends to carry both a `createdAt` and an `updatedAt`, and typing those by hand on every table gets repetitive. The next lesson factors them into a reusable set of columns.
+
+## IDs: `uuid` for surrogate keys
+
+Every row needs a <Term definition="A primary key with no business meaning, generated solely to identify the row, as opposed to a natural key like an email.">surrogate key</Term>: an ID that names the row and carries no business meaning. The type for it is `uuid`, a 128-bit <Term definition="Universally Unique Identifier: a 128-bit value, written as 32 hex digits, designed to be unique without a central coordinator.">UUID</Term> that **maps to a TypeScript `string`**.
+
+A `uuid` column can generate its own default, and you'll see two generators in the wild. Either goes on the `id` column.
+
+<div data-mark-color="blue">
+
+```ts ".defaultRandom()" "uuidv7()"
+id: uuid().defaultRandom(),
+id: uuid().default(sql`uuidv7()`),
+```
+
+</div>
+
+`.defaultRandom()` calls Postgres's `gen_random_uuid()` and produces a fully-random <Term definition="A UUID whose bits are essentially all random. The classic, fully-random UUID.">UUIDv4</Term>. The second produces a <Term definition="UUID version 7: its leading bits are a timestamp, so v7 IDs sort in creation order. Native in Postgres 18.">UUIDv7</Term>, whose leading bits encode a timestamp, so the IDs sort by creation time. Postgres 18, which this course pins to, ships `uuidv7()` natively.
+
+Which generator to use, and whether to use `uuid` at all instead of a `bigint` identity, is a real trade-off a later lesson returns to. For now, recognize the type: it surfaces as a string with these two default generators.
+
+## A fixed set of choices: `pgEnum`
+
+Recall the invoice `status`, exactly one of `draft`, `sent`, `paid`, or `void`. That's the textbook case for an enum, which Drizzle spells with `pgEnum`.
+
+```ts
+export const invoiceStatus = pgEnum('invoice_status', [
+  'draft',
+  'sent',
+  'paid',
+  'void',
+]);
+
+export const invoices = pgTable('invoices', {
+  // ...
+  status: invoiceStatus().notNull().default('draft'),
+});
+```
+
+`pgEnum('invoice_status', [...])` does two things at once: it declares a named Postgres enum type, and it returns a column builder. You `export` the builder alongside your tables, then call `invoiceStatus()` in the column map, just as you'd call `text()` or `uuid()`. Declare once, use as a column.
+
+The payoff comes when you read rows back: the allowed values arrive in TypeScript as the union `'draft' | 'sent' | 'paid' | 'void'`, so a typo like `'snet'` won't compile. Invalid states become unrepresentable, enforced right at the database boundary.
+
+Reach for `pgEnum` when the set of values is small, stable, and mutually exclusive. The alternative is a **lookup table**, a separate table with one row per allowed value. Promote to a lookup table the moment the values need their own data, like a display label, color, or sort order, or the moment non-engineers need to add and remove values at runtime.
+
+One watch-out decides most borderline cases: **enum values are easy to add and painful to remove.** Adding `archived` later is small, but dropping a value is a harder migration, since you first have to prove no row still uses it. So enums are for genuinely stable sets.
+
+## A flexible blob: `jsonb` with `$type`
+
+Sometimes a column's shape isn't yours to define: a Stripe webhook body, the details bag on an audit-log entry, a grab-bag of per-tenant settings. For data that's genuinely shapeless or dictated by a third party, Postgres has `jsonb`, which stores structured JSON in a binary, indexable, queryable form.
+
+The rule is short: **`jsonb`, never `json`.** Plain `json` keeps the raw document text; `jsonb` parses it into a binary form the database can index and query into. Nothing you build needs plain `json`.
+
+By default a JSON column reads back as `unknown`, so every read site casts first. Annotating the column with `.$type<WebhookEvent>()` fixes that.
+
+<AnnotatedCode lang="ts" code={`
+import { jsonb, pgTable } from 'drizzle-orm/pg-core';
+import type { WebhookEvent } from '@/lib/webhooks';
+
+export const webhookDeliveries = pgTable('webhook_deliveries', {
+  // ...
+  payload: jsonb().$type<WebhookEvent>().notNull(),
+});
+`}>
+  <AnnotatedStep meta={`"jsonb()"`} color="blue">
+    The builder. Binary, indexable JSON; the course never uses plain `json`. On its own, a read lands as `unknown`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`".$type<WebhookEvent>()"`} color="blue">
+    The annotation. It tells Drizzle the TypeScript shape inside, so reads come back as `WebhookEvent` and you skip the cast.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`".$type<WebhookEvent>()"`} color="orange">
+    The catch. `$type` is a **compile-time promise, not a runtime check.** Postgres stores whatever bytes you write, so if the real payload doesn't match `WebhookEvent`, nothing catches it and your reads hand you the wrong type. Enforcing the actual shape on the way in is Zod's job at the boundary.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Reach for `jsonb` for data that is shapeless or third-party-defined: webhook bodies, audit-log details, flexible metadata. **Skip it for anything you'll filter, sort, or join on.** Once you reach *into* the JSON inside a `WHERE` clause more than occasionally, that field wanted to be a real column. A `jsonb` value you keep querying into is **normalization debt**; promote it to a column the database can index.
+
+## A small ordered list: `text().array()`
+
+Postgres has native array columns, exposed by chaining `.array()` onto a builder: `text().array()` is an ordered list of strings in one column, `integer().array()` a list of integers, and so on. The classic case is a `tags` column:
+
+```ts
+tags: text().array().notNull().default([]),
+```
+
+This is the lightweight option for a small, ordered list of plain scalars where a separate table would be overkill. Its limit is also the signal for when to stop: **array elements aren't real rows.** They can't be foreign keys, can't be `JOIN`ed, and get no referential integrity. Postgres sees a bag of strings, not connections to anything.
+
+So the array has outlived its use the moment those tags need their own id, color, and owner, or the moment you need "every invoice tagged `urgent`" answered efficiently at scale. The test is one question: would I ever `JOIN` on these, or give them attributes of their own? If yes, the data wanted a <Term definition="A table whose job is to connect rows of two other tables, one row per link.">**junction table**</Term> all along.
+
+## Network addresses: `inet`
+
+To store an IP address, like an audit log's actor IP, the easy default is `text`. Postgres has a real type for it:
+
+```ts
+actorIp: inet().notNull(),
+```
+
+<Term definition="The Postgres type for an IP address, both IPv4 and IPv6, that the database understands as a network rather than plain text.">`inet`</Term> stores IPv4 and IPv6 addresses as genuine network values, so the database can sort them correctly and run subnet and range queries (such as "is this IP inside that block?") that a plain string can't.
+
+## Types left out on purpose
+
+A few useful Postgres types belong to later chapters or a different layer of the stack; they're left out of the table below on purpose.
+
+<CardGrid>
+  <Card title="Geographic data" icon="map">
+    `point`, `polygon`, and `geography` are the PostGIS family for maps and spatial queries. Out of scope for this course.
+  </Card>
+  <Card title="Full-text search" icon="magnifier">
+    `tsvector`, built as a generated column, powers search across text. A later chapter on querying covers it.
+  </Card>
+  <Card title="Binary blobs" icon="document">
+    `bytea` stores raw bytes, but this course keeps files out of Postgres: they go to object storage (R2) and the table holds a `text` URL or key.
+  </Card>
+</CardGrid>
+
+## The per-column defaults table
+
+The lookup to keep: the kind of column on the left, the Drizzle builder on the right.
+
+<Figure caption="Pick the type from the left column. Modifiers (.notNull(), defaults, keys) come in the next two lessons; this table is only about choosing the type.">
+  <DefaultsTable />
+</Figure>
+
+The modifiers on a few rows, like `.defaultNow()`, and the `uuid()` v4-versus-v7 choice get their own lessons; here, just pick the type.
+
+## Practice: type each column
+
+Reading the table is one thing; reaching for the right builder yourself is the skill. The `organizations` table is done for you; complete `invoices`, whose columns force every major decision from this lesson.
+
+<DrizzleSchemaCoding
+  instructions="Complete the invoices table — aim for an all-green checklist. Pick the correct Postgres type for each column: the grader reads the emitted SQL type, so an integer where money belongs, or a timestamp without a time zone, will fail. Write the keys in camelCase. The invoiceStatus enum is already declared for you; use it for the status column."
+  starter={`import {
+  date,
+  jsonb,
+  numeric,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+} from 'drizzle-orm/pg-core';
+
+export const invoiceStatus = pgEnum('invoice_status', [
+  'draft',
+  'sent',
+  'paid',
+  'void',
+]);
+
+export const organizations = pgTable('organizations', {
+  id: uuid().primaryKey(),
+  name: text().notNull(),
+});
+
+export const invoices = pgTable('invoices', {
+  id: uuid().primaryKey(),
+  // Add the following columns, choosing the correct type for each.
+  // All of them must be not-null (chain .notNull()):
+  //  - customerName: a free-text name
+  //  - amountDue: a money amount (exact, two decimal places)
+  //  - status: the invoice status (use the invoiceStatus enum)
+  //  - createdAt: the creation instant (must carry a time zone)
+  //  - dueDate: the calendar day it's due (no time, no zone)
+  //  - payload: a flexible JSON blob for the raw source document
+  //  - tags: a small ordered list of text labels
+});
+`}
+  requirements={[
+    {
+      name: 'invoices',
+      columns: [
+        { name: 'id', type: 'uuid', primaryKey: true },
+        { name: 'customerName', type: 'text', notNull: true },
+        { name: 'amountDue', type: 'numeric', notNull: true },
+        { name: 'status', type: 'invoice_status', notNull: true },
+        { name: 'createdAt', type: 'timestamp with time zone', notNull: true },
+        { name: 'dueDate', type: 'date', notNull: true },
+        { name: 'payload', type: 'jsonb', notNull: true },
+        { name: 'tags', type: 'text[]', notNull: true },
+      ],
+    },
+  ]}
+/>
+
+## Quick check: sort each column to its type
+
+This drill is faster: recognize a type from a description without summoning the builder. Drag each real-world column to the Postgres type a 2026 SaaS would reach for.
+
+<Buckets twoCol instructions="Sort each column into the Postgres type a 2026 SaaS would reach for.">
+  <Bucket name="numeric" label="numeric" description="exact decimal — money" />
+  <Bucket name="timestamptz" label="timestamptz" description="timestamp with time zone" />
+  <Bucket name="text" label="text" description="variable-length string" />
+  <Bucket name="jsonb" label="jsonb" description="flexible JSON payload" />
+  <Bucket name="enum" label="pgEnum" description="fixed set of states" />
+  <Bucket name="date" label="date" description="calendar day, no time" />
+
+  <Item bucket="numeric">An invoice's total amount</Item>
+  <Item bucket="numeric">A product's unit price</Item>
+  <Item bucket="timestamptz">When a row was created</Item>
+  <Item bucket="timestamptz">When an email was sent</Item>
+  <Item bucket="text">A customer's name</Item>
+  <Item bucket="text">A free-form note on an order</Item>
+  <Item bucket="jsonb">A third-party webhook's raw body</Item>
+  <Item bucket="jsonb">A per-tenant settings blob</Item>
+  <Item bucket="enum">Invoice status: draft / sent / paid / void</Item>
+  <Item bucket="date">An invoice's due date</Item>
+  <Item bucket="date">A user's birthday</Item>
+</Buckets>
+
+One last question covers the sharpest trap, the one that silently corrupts data.
+
+<MultipleChoice>
+  An invoice amount should be `numeric`, never `double precision`. What goes wrong if you store it as `double precision`?
+
+  <McqChoice correct>The math runs without complaint, but each value is stored as the nearest binary approximation of the decimal, so summed amounts drift by fractions of a cent and totals stop matching the rows.</McqChoice>
+  <McqChoice>`double precision` can't hold a number large enough for a realistic invoice total, so big amounts overflow.</McqChoice>
+  <McqChoice>Postgres rejects the insert outright, because `double precision` columns refuse any value with digits after the decimal point.</McqChoice>
+  <McqChoice>`double precision` truncates every value to a whole number on write, silently dropping the cents.</McqChoice>
+
+  <McqWhy>The damage is silent and cumulative. Each float keeps only the closest binary approximation of the decimal; across many rows those approximations add up, the cents drift, and the books stop balancing — and nothing throws, which is exactly what makes it dangerous. `numeric` stores the literal digits instead. (Floats happily hold cents and span an enormous range, so neither overflow nor truncation is the real problem.)</McqWhy>
+</MultipleChoice>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle ORM — PostgreSQL column types"
+    href="https://orm.drizzle.team/docs/column-types/pg"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The canonical builder reference for every type in this lesson."
+  />
+  <ExternalResource
+    title="PostgreSQL 18 — data types"
+    href="https://www.postgresql.org/docs/18/datatype.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The official type reference, including the native uuidv7() generator new in Postgres 18."
+  />
+  <ExternalResource
+    title="Why floats can't represent money"
+    href="https://0.30000000000000004.com/"
+    icon="lucide:badge-dollar-sign"
+    description="A short, language-by-language demonstration of the floating-point rounding that makes numeric mandatory for currency."
+  />
+  <ExternalResource
+    title="PostgreSQL wiki — Don't Do This"
+    href="https://wiki.postgresql.org/wiki/Don%27t_Do_This"
+    icon="lucide:triangle-alert"
+    iconColor="#E8A33D"
+    description="The community's anti-pattern list, independently reaching the same verdicts: text over varchar(n), timestamptz over timestamp, never floats for money."
+  />
+</CardGrid>

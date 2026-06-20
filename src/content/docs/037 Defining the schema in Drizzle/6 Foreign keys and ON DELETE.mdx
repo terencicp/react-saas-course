@@ -1,0 +1,355 @@
+---
+title: Foreign keys and ON DELETE
+tagline: Declare Drizzle foreign keys so Postgres enforces the links between tables, and pick the ON DELETE rule for each relationship.
+chapter-id: 37
+rewrites: 2
+course-progress: 0.3536
+sidebar:
+  order: 6
+  label: Foreign keys
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import DrizzleSchemaCoding from '../../../components/live-coding/DrizzleSchemaCoding/DrizzleSchemaCoding.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Your `invoiceLineItems` table has an `invoiceId` column meant to point at a row in `invoices`, but it's just a `uuid` that nothing enforces. You can insert a line item whose `invoiceId` matches no invoice, and when an invoice is deleted its line items linger, pointing at a row that no longer exists. A foreign key fixes both: it makes Postgres enforce the link on every write, and it lets you decide what happens to the children when the parent is deleted. That second part is a per-relationship choice between four options, and most of this lesson is about it.
+
+## A foreign key is a promise the database keeps
+
+Here is the whole declaration, attached to the column it lives on:
+
+```ts title="db/schema.ts"
+organizationId: uuid().notNull().references(() => organizations.id, { onDelete: 'restrict' }),
+```
+
+Three parts, left to right: the column, a `uuid` matching the type of the key it points at; `.references(() => organizations.id, …)`, which names the target table and column; and the `onDelete` option, which sets the deletion policy. The next section covers `onDelete`, so ignore `'restrict'` for now and focus on the link.
+
+The reference is a *callback*, `() => organizations.id`, not `organizations.id`. When two tables reference each other, whichever module loads second hasn't finished defining its tables, so reaching for the value directly throws a "cannot access before initialization" error. Wrapping it in a function defers the lookup until both tables exist.
+
+Declaring it buys you three guarantees:
+
+1. Postgres **rejects any insert or update** whose `organizationId` doesn't match an existing `organizations.id`, so an <Term definition="A child row whose referenced parent row no longer exists — a line item whose invoice is gone, a task assigned to a deleted user.">orphan row</Term> can never be created. The check moves out of your application code: without the key, every path that inserts a line item must first confirm the invoice exists, and the one path that forgets ships the bug.
+2. The **foreign-key type must match the referenced primary key**: a `uuid` points at a `uuid`, a `bigint` at a `bigint`. Get it wrong and the schema fails to apply up front, not at runtime.
+3. The **column is not indexed automatically**. The constraint is a rule, not an index, so cascade deletes and "find every invoice for this org" lookups degrade to full-table scans as the table grows. Adding that index is the first thing we do in the indexing chapter.
+
+For a key spanning multiple columns, use the table-level `foreignKey({ columns, foreignColumns })` helper instead of `.references()`; since every table here keys on a single `id`, you'll always want the single-column form.
+
+This guarantee, that every foreign-key value points at a real row, is <Term definition="The database guarantee that every foreign-key value points at a row that actually exists. Postgres enforces it on every insert, update, and delete.">referential integrity</Term>, the floor every relational schema stands on.
+
+## The four ON DELETE rules, and a decision tree for picking one
+
+With the link in place, `onDelete` controls one moment: what Postgres does to the **child** rows when the **parent** they point at is deleted. The four rules, named by the relationship they fit:
+
+- **`cascade`** — delete the children too (a line item under an invoice).
+- **`set null`** — keep the child, clear its pointer; **requires a nullable column** (an invoice's assignee, who can be unassigned).
+- **`restrict`** — block the delete while any child exists (an organization that still has invoices).
+- **`set default`** — point the child at a column default. Know the name; you'll almost never use it.
+
+The right one falls out of the *meaning* of the relationship, so ask the questions in order: ownership, then blockability, then nullability.
+
+<StateMachineWalker title="Which onDelete rule does this relationship want?">
+  <Question id="ownership" prompt="Does the child row mean anything once its parent is deleted?"
+    description="Start from the meaning of the relationship, not the syntax. This answer eliminates two of the four rules.">
+    <Branch label="No — the parent owns it" to="leaf-cascade"
+      rationale="A line item under an invoice, a junction row under either endpoint." />
+    <Branch label="Yes — it can stand on its own" to="blockable" />
+  </Question>
+
+  <Question id="blockable" prompt="Should deleting the parent be allowed while children still exist?"
+    description="The child outlives the parent, so the question is now the parent's deletion, not the child's fate.">
+    <Branch label="No — block it; the parent shouldn't vanish under live children" to="leaf-restrict"
+      rationale="An organization that still has invoices." />
+    <Branch label="Yes — but clear the child's pointer" to="nullable" />
+  </Question>
+
+  <Question id="nullable" prompt="Is the foreign-key column nullable?"
+    description="Clearing a pointer writes a null, so the column has to allow one.">
+    <Branch label="Yes — the relationship is optional" to="leaf-set-null"
+      rationale="An invoice's assignee, who can be unassigned." />
+    <Branch label="No — it's required" to="leaf-contradiction" />
+  </Question>
+
+  <Leaf id="leaf-cascade" verdict="onDelete: 'cascade'">
+    The child is *owned*, worthless the moment the parent is gone, so it goes too. Example: `invoiceLineItems.invoiceId → invoices.id`. A cascade reaches far when the graph branches: deleting an org could sweep away its invoices, their line items, and their tags.
+  </Leaf>
+
+  <Leaf id="leaf-restrict" verdict="onDelete: 'restrict'">
+    The parent delete throws while any child exists. Example: `invoices.organizationId → organizations.id`. The caller must reassign or remove the children first, or soft-delete the parent (the next section) so the delete never runs. Writing *no* `onDelete` clause doesn't default to `restrict`; it defaults to <Term definition="Postgres's implicit ON DELETE default when no clause is written. Like restrict, it blocks the delete while children exist, but its check can be deferred to the end of the transaction. The course writes restrict explicitly instead.">`NO ACTION`</Term>, a near-twin that also blocks. The course writes `restrict` explicitly so the blocking intent is on the page.
+  </Leaf>
+
+  <Leaf id="leaf-set-null" verdict="onDelete: 'set null'">
+    Keep the child and clear its pointer, because the relationship is optional and orphaning is the goal. Example: `invoices.assignedToId → users.id`, where offboarding a user un-assigns their invoices instead of destroying them. This is why last lesson left `assignedToId` nullable. (`set default` is the rare sibling: point at a sentinel row instead of null.)
+  </Leaf>
+
+  <Leaf id="leaf-contradiction" verdict="Make it nullable first — or reconsider">
+    `set null` needs a column that can hold a null, and a `.notNull()` foreign key can't. If the relationship is genuinely required, you want `restrict` or `cascade`, not `set null`. "Required plus set null" is a modeling mistake, not a configuration to fix.
+  </Leaf>
+</StateMachineWalker>
+
+## Why `onUpdate` never fires here
+
+`references()` also takes an `onUpdate` policy that fires when the referenced primary-key value changes. Your primary keys are immutable surrogates (UUIDv7 or `bigint` identity), so they never change and `onUpdate` never fires. Reaching for it signals a mutable natural key, the anti-pattern last lesson steered you away from.
+
+## Hard delete vs. soft delete: which deletions actually happen
+
+`cascade` assumes the parent is **hard-deleted**, physically removed with a `DELETE`. In most web apps that's the rare path.
+
+The common path is **soft delete**: instead of removing the row, you stamp the nullable `deletedAt` column (already in your `db/columns.ts`) and let queries filter stamped rows out. The record is gone from the user's view but still recoverable, auditable, and safe to reference historically. Because no `DELETE` runs, **`onDelete` never fires**.
+
+So you choose per table. Reserve **hard delete with cascade** for true purges that must erase a whole relationship graph, such as a GDPR request or tenant offboarding. Use **soft delete** for almost everything user-facing, where "deleted" must stay recoverable. Declaring `onDelete: 'cascade'` doesn't conflict with this: you're defining what the rare purge does, not your everyday delete.
+
+:::note
+Choose `onDelete` for the purge that *might* happen; choose soft delete for the deletes that *actually* happen day to day. Query filtering and restore come in a later chapter.
+:::
+
+<VideoCallout videoId="lDYXtj95Jy8" videoTitle="Should you Delete or Soft Delete?">
+  Derek Comartin (CodeOpinion) argues in 7 minutes for modeling terminations and events instead of flipping an `isDeleted` flag, and shows how foreign-key constraints block a hard delete.
+</VideoCallout>
+
+## Wiring an invoice's relationships end to end
+
+Because the rule is per-edge, **one entity can carry three different `onDelete` rules at once**. Here are `invoices` and their line items, fully wired, with each step naming the edge, its rule, and why.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const invoices = pgTable('invoices', {
+  id: uuid().primaryKey().default(sql\`uuidv7()\`),
+  organizationId: uuid()
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  assignedToId: uuid()
+    .references(() => users.id, { onDelete: 'set null' }),
+  amountDue: numeric({ precision: 12, scale: 2 }).notNull(),
+});
+
+export const invoiceLineItems = pgTable('invoice_line_items', {
+  id: uuid().primaryKey().default(sql\`uuidv7()\`),
+  invoiceId: uuid()
+    .notNull()
+    .references(() => invoices.id, { onDelete: 'cascade' }),
+  description: text().notNull(),
+  amount: numeric({ precision: 12, scale: 2 }).notNull(),
+});
+`}>
+  <AnnotatedStep meta={`{3-5} "restrict"`} color="blue">
+    `organizationId → organizations.id`, **`restrict`**. The invoice means something without its org, and an org shouldn't vanish under live invoices, so the delete is blocked. `.notNull()`, because every invoice belongs to an org.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{6-7} "set null"`} color="orange">
+    `assignedToId → users.id`, **`set null`**. An optional pointer: deleting the user is allowed and the pointer just clears, so offboarding leaves the invoice unassigned, not deleted. No `.notNull()`, because `set null` needs a nullable column.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{13-15} "cascade"`} color="green">
+    `invoiceId → invoices.id`, **`cascade`**. A line item is pure ownership, so deleting the invoice takes its items in one declarative rule instead of cleanup code. `.notNull()`, because a line item with no invoice is the orphan the foreign key exists to forbid.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That `organizationId → organizations.id` `restrict` repeats on every tenant-owned table, and its check scans `invoices` until the column is indexed.
+
+## Practice: enforce the relationships
+
+Wire the three foreign keys yourself. The starter has the tables, primary keys, and bare foreign-key columns; add `.references(...)` with the right `onDelete` to each. The requirements only check that a foreign key exists, so the probes verify the rules: deleting an org with invoices must be blocked, deleting an invoice must take its line items, and deleting an assigned user must leave the invoice with a nulled pointer.
+
+<DrizzleSchemaCoding
+  instructions="Add the three foreign keys to `invoices` and `invoice_line_items`, each with the right `onDelete` rule. Derive the rule from the meaning of the relationship: an org with invoices must not be deletable, a line item is owned by its invoice, an assignee is an optional pointer that clears when the user goes. The requirements only check that each foreign key exists; the probes delete a parent and prove your rule fired, so a wrong rule turns one red."
+  maxHeight={440}
+  starter={`export const organizations = pgTable('organizations', {
+  id: uuid('id').primaryKey(),
+  name: text('name').notNull(),
+});
+
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey(),
+  email: text('email').notNull(),
+});
+
+export const invoices = pgTable('invoices', {
+  id: uuid('id').primaryKey(),
+  // An org with invoices must NOT be deletable out from under them.
+  // Add .references(() => organizations.id, { onDelete: '???' })
+  organization_id: uuid('organization_id').notNull(),
+  // Optional pointer: deleting the user should clear this, not block or delete.
+  // Add .references(() => users.id, { onDelete: '???' })
+  assigned_to_id: uuid('assigned_to_id'),
+  amount_due: numeric('amount_due', { precision: 12, scale: 2 }).notNull(),
+});
+
+export const invoiceLineItems = pgTable('invoice_line_items', {
+  id: uuid('id').primaryKey(),
+  // A line item is meaningless without its invoice — pure ownership.
+  // Add .references(() => invoices.id, { onDelete: '???' })
+  invoice_id: uuid('invoice_id').notNull(),
+  description: text('description').notNull(),
+  amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+});
+`}
+  requirements={[
+    {
+      name: 'organizations',
+      columns: [
+        { name: 'id', type: 'uuid', primaryKey: true },
+        { name: 'name', type: 'text', notNull: true },
+      ],
+    },
+    {
+      name: 'users',
+      columns: [
+        { name: 'id', type: 'uuid', primaryKey: true },
+        { name: 'email', type: 'text', notNull: true },
+      ],
+    },
+    {
+      name: 'invoices',
+      columns: [
+        { name: 'id', type: 'uuid', primaryKey: true },
+        {
+          name: 'organization_id',
+          type: 'uuid',
+          notNull: true,
+          references: { table: 'organizations', column: 'id' },
+        },
+        {
+          name: 'assigned_to_id',
+          type: 'uuid',
+          references: { table: 'users', column: 'id' },
+        },
+        { name: 'amount_due', type: 'numeric', notNull: true },
+      ],
+    },
+    {
+      name: 'invoice_line_items',
+      columns: [
+        { name: 'id', type: 'uuid', primaryKey: true },
+        {
+          name: 'invoice_id',
+          type: 'uuid',
+          notNull: true,
+          references: { table: 'invoices', column: 'id' },
+        },
+        { name: 'description', type: 'text', notNull: true },
+        { name: 'amount', type: 'numeric', notNull: true },
+      ],
+    },
+  ]}
+  seedSQL={`-- Each probe gets its own org so a parent delete in one probe can never
+-- disturb the rows another probe relies on.
+INSERT INTO organizations (id, name) VALUES
+  ('00000000-0000-7000-8000-000000000001', 'Probe 1 org'),
+  ('00000000-0000-7000-8000-000000000011', 'Probe 2 org'),
+  ('00000000-0000-7000-8000-000000000021', 'Probe 3 org');
+
+INSERT INTO users (id, email) VALUES
+  ('00000000-0000-7000-8000-000000000022', 'assignee@probe3.test');
+
+INSERT INTO invoices (id, organization_id, assigned_to_id, amount_due) VALUES
+  ('00000000-0000-7000-8000-000000000002', '00000000-0000-7000-8000-000000000001', NULL,                                   '100.00'),
+  ('00000000-0000-7000-8000-000000000012', '00000000-0000-7000-8000-000000000011', NULL,                                   '200.00'),
+  ('00000000-0000-7000-8000-000000000023', '00000000-0000-7000-8000-000000000021', '00000000-0000-7000-8000-000000000022', '300.00');
+
+INSERT INTO invoice_line_items (id, invoice_id, description, amount) VALUES
+  ('00000000-0000-7000-8000-000000000013', '00000000-0000-7000-8000-000000000012', 'Consulting', '200.00');`}
+  probes={[
+    {
+      description: 'restrict — deleting an org that still has an invoice is blocked',
+      mustSucceed: false,
+      sql: `DELETE FROM organizations WHERE id = '00000000-0000-7000-8000-000000000001';`,
+    },
+    {
+      description: "cascade — deleting an invoice removes its line item",
+      mustSucceed: true,
+      sql: `DELETE FROM invoices WHERE id = '00000000-0000-7000-8000-000000000012';
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM invoice_line_items WHERE invoice_id = '00000000-0000-7000-8000-000000000012') THEN
+    RAISE EXCEPTION 'the invoice was deleted but its line item is still here — cascade did not fire';
+  END IF;
+END $$;`,
+    },
+    {
+      description: 'set null — deleting the assigned user keeps the invoice and clears its assignee',
+      mustSucceed: true,
+      sql: `DELETE FROM users WHERE id = '00000000-0000-7000-8000-000000000022';
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM invoices
+    WHERE id = '00000000-0000-7000-8000-000000000023' AND assigned_to_id IS NULL
+  ) THEN
+    RAISE EXCEPTION 'the invoice should have survived with a null assignee — set null did not fire';
+  END IF;
+END $$;`,
+    },
+  ]}
+/>
+
+<details>
+<summary>Reveal the answer</summary>
+
+```ts title="db/schema.ts"
+export const invoices = pgTable('invoices', {
+  id: uuid('id').primaryKey(),
+  organization_id: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  assigned_to_id: uuid('assigned_to_id')
+    .references(() => users.id, { onDelete: 'set null' }),
+  amount_due: numeric('amount_due', { precision: 12, scale: 2 }).notNull(),
+});
+
+export const invoiceLineItems = pgTable('invoice_line_items', {
+  id: uuid('id').primaryKey(),
+  invoice_id: uuid('invoice_id')
+    .notNull()
+    .references(() => invoices.id, { onDelete: 'cascade' }),
+  description: text('description').notNull(),
+  amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+});
+```
+
+Each rule matches its edge: `organization_id` is **`restrict`** (block the org delete, probe 1 throws), `invoice_id` is **`cascade`** (the line item goes with its invoice, probe 2 finds no orphan), and `assigned_to_id` is **`set null`** (offboarding clears the optional pointer, probe 3 finds the invoice intact with a null assignee).
+
+</details>
+
+## External resources
+
+The reference pages for both ends of this lesson, Drizzle's foreign-key API and the Postgres referential actions beneath it, are worth a bookmark. The two essays below argue the soft-delete call from opposite sides.
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle ORM — Foreign keys"
+    href="https://orm.drizzle.team/docs/indexes-constraints#foreign-key"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The references() API and the onDelete / onUpdate options, including the table-level multi-column form."
+  />
+  <ExternalResource
+    title="PostgreSQL — Foreign key constraints"
+    href="https://www.postgresql.org/docs/current/ddl-constraints.html#DDL-CONSTRAINTS-FK"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The ON DELETE action semantics straight from the source: cascade, set null, restrict, no action."
+  />
+  <ExternalResource
+    title="The hard truth about soft deletion"
+    href="https://thoughtbot.com/blog/the-hard-truth-about-soft-deletion"
+    icon="lucide:archive-restore"
+    iconColor="#C0392B"
+    description="thoughtbot on the costs the lesson defers: query filtering, and the dependent-record trap where a soft-deleted parent hard-deletes its children."
+  />
+  <ExternalResource
+    title="Avoiding the soft delete anti-pattern"
+    href="https://www.cultured.systems/2024/04/24/Soft-delete/"
+    icon="lucide:trash-2"
+    iconColor="#E67E22"
+    description="The counter-argument: soft delete misleads the database, and lifecycle states or temporal tables often fit better. Read it to sharpen the call."
+  />
+</CardGrid>

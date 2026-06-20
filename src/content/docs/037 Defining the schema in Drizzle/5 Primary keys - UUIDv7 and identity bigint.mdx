@@ -1,0 +1,348 @@
+---
+title: 'Primary keys: UUIDv7 and identity bigint'
+tagline: Pick a primary-key strategy per Drizzle table, time-sortable UUIDv7, identity bigint, or a natural key.
+chapter-id: 37
+course-progress: 0.3521
+rewrites: 1
+sidebar:
+  order: 5
+  label: Primary keys
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import DrizzleSchemaCoding from '../../../components/live-coding/DrizzleSchemaCoding/DrizzleSchemaCoding.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import UuidByteLayout from '../../../components/lessons/037/5/UuidByteLayout.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Since your first table, every row has carried `id: ...primaryKey()` with the value left blank, a placeholder this chapter promised to finish. You finish it here, and it is the most permanent choice in the schema. A primary key is referenced by every foreign key that points at the row, baked into every URL and API response that names it, and effectively un-renameable once real data exists. Get a column type wrong and you fix it next week; get a primary key wrong and you live with it.
+
+So this lesson is about a decision, not syntax. The mechanics are three small shapes you half-know already; the real question is the one an experienced engineer asks first: which primary-key strategy does this table want, and what does the wrong one cost later? Hold onto one concrete fork: would you rather hand customers a URL that reads `/invoices/47` or one that reads `/invoices/0193b5a1-…`? Notice which one bothers you, and why.
+
+## What `.primaryKey()` guarantees
+
+You have written `.primaryKey()` all chapter. Before choosing what fills it, pin down what it does, because it gives you more than one constraint.
+
+A primary key is the column whose value uniquely names a row. It is the address other tables point at: every foreign key in your schema resolves to exactly one primary-key value, which is one row. `.primaryKey()` does that job by bundling three constraints into one call:
+
+```ts
+id: uuid().primaryKey(),
+```
+
+The column is implicitly `NOT NULL`, because a row with no name has no identity. It is implicitly `UNIQUE`, because two rows sharing one address would be a contradiction. And Postgres builds an index on it, because every join looks the address up and that has to be fast. That index is a <Term definition="Postgres's default index structure: a sorted tree. Lookups and ordered inserts are cheap; random inserts can force a page split.">B-tree</Term>, and the fact that it is *sorted* will matter two sections from now.
+
+:::caution
+Never add a separate `.unique()` or `.index()` to a primary-key column. Both are already there, so a second one is redundant, and in a diff it tells a reviewer the author did not know what `.primaryKey()` includes.
+:::
+
+The column's contract is now fixed. The rest of the lesson is about choosing the *value* that fills it.
+
+## Surrogate or natural: the first fork
+
+The first question applies to every table, before anything else:
+
+**Does the database mint this value, or does the outside world already own it?**
+
+A <Term definition="A primary key the database mints — a meaningless, system-owned value like a UUID or an auto-incrementing integer. The course default.">surrogate key</Term> is a value the database makes up. It carries no meaning beyond being unique: not the email, not the name, just an opaque identifier. A <Term definition="A primary key that is a real domain value — an email, a slug, a country code. The domain owns it, not the database.">natural key</Term> is a value that already identifies the thing in the world: an email address, a URL slug, a country code, an ISBN.
+
+The natural key tempts you because you already have the email, so why mint a second identifier? Here is the reason:
+
+:::danger
+Domain values change. When a primary key changes, the change has to propagate through every foreign key pointing at it.
+:::
+
+Suppose `email` is the primary key of your `users` table, and a hundred rows across the schema (invoices, sessions, audit entries) point at users by email. A user updates their email, a one-line edit. But that email *is* the value those hundred rows hold, so every one of them has to be rewritten in lockstep or its foreign key points at nothing. A routine profile edit becomes a schema-wide cascade. The same trap waits on a renamed slug or a reissued "permanent" code.
+
+So the default is to use a surrogate wherever a value is user-facing. The natural-key exception is narrow: genuinely *immutable, externally defined* identifiers like ISO country codes (`'US'`), currency codes (`'USD'`), and ISBNs, fixed by an outside authority and never reissued under you. Even then, choose a natural key only when you are certain you will never want to rename the value.
+
+One heuristic settles the call. Before you make any value a primary key, ask:
+
+> Would I be comfortable if this value changed, and every row pointing at it had to change too?
+
+If the answer is anything short of a confident yes, use a surrogate. A column type you can tighten later, but a primary key is a promise you can't take back.
+
+```ts del={1} ins={2}
+slug: text().primaryKey(),                     // bad — a slug gets renamed, and the rename cascades
+id: uuid().primaryKey(),                        // good — surrogate id, with a unique on slug instead
+```
+
+One mistake is worth naming now. Soon you will meet a way to make a primary key span *two* columns, and it is tempting to key an entity like a page by `(orgId, slug)`: a page is unique within its org, so why not? Resist it. A composite key on a first-class entity is a tenancy-modeling mistake. Give the entity a surrogate `id` and add a `unique(orgId, slug)` constraint instead. Composite primary keys have exactly one good home, and we will get there.
+
+## Why UUIDv4 scatters inserts and UUIDv7 doesn't
+
+Once you have settled that user-facing entities want a surrogate, one question remains: a UUID or a `bigint`? Start with the UUID, because the obvious UUID is a trap and a newer one isn't, and the difference stays invisible until it causes a serious problem in production.
+
+A <Term definition="Universally Unique Identifier — a 128-bit (16-byte) value, written as 32 hex digits. Generated to be globally unique without a central coordinator.">UUID</Term> is a 16-byte value, written as 32 hex digits. The two versions you care about look identical: same length, same hex, same `-` grouping. What differs is where a new one lands in the primary-key index, which is a sorted B-tree.
+
+**UUIDv4 is fully random.** Every byte is noise, so each new `id` lands at a random spot in the sorted tree. Insert a thousand rows and you scatter a thousand writes across the index, each one potentially splitting a page to wedge the value into place. On a small table whose index fits in memory you never notice. But this is <Term definition="One logical insert causing many physical page writes, because the new key lands in the middle of the index and forces a page to split.">write amplification</Term> that *compounds with table size*: free in development, brutal in a populated production table, expensive at the exact moment you can least afford to change it.
+
+**UUIDv7 makes the value time-sortable.** It prefixes the 16 bytes with a 48-bit millisecond timestamp, then fills the rest with randomness, which still gives you global uniqueness and non-guessability. Because of the prefix, a value minted now sorts *after* every value minted before it, so new `id`s all land at the *tail* of the index, appended in order like an auto-incrementing integer. You keep everything good about a UUID and recover sequence-like insert performance.
+
+<Figure caption="Same 16 bytes, same hex. Only the timestamp's position differs, and with it where new inserts land.">
+  <UuidByteLayout />
+</Figure>
+
+UUIDv7 was standardized by <Term definition="The 2024 IETF specification that standardized UUID versions 6, 7, and 8.">RFC 9562</Term> in May 2024, and Postgres 18, which your project runs on via Neon, ships a native `uuidv7()` function with no extension to install. Before the standard, libraries like ULID and KSUID solved the same problem and still appear in older codebases; on Postgres 18, `uuidv7()` is the answer.
+
+<VideoCallout videoId="DHtf_46OxY8" videoTitle="UUID vs INT: What's Better For Your Primary Key?">
+  Database Star walks through auto-increment, UUIDv4, and UUIDv7 in about ten minutes, backing the scatter-versus-tail story with a Postgres demo.
+</VideoCallout>
+
+:::caution
+Drizzle's `.defaultRandom()` generates a UUIDv4, the random one with the locality problem above, not the v7 path. Until a native v7 helper ships, reach for the SQL default in the next section, never `.defaultRandom()`.
+:::
+
+## The three canonical shapes
+
+The mechanics come down to three shapes, each paired with the trigger that should make you reach for it. The question to answer is *when* you write each one; the *how* is a single line every time.
+
+<CodeVariants>
+  <CodeVariant label="UUIDv7">
+    <div data-mark-color="green">
+
+    ```ts {1}
+    id: uuid().primaryKey().default(sql`uuidv7()`),
+    ```
+
+    </div>
+    **The default for any entity whose id is seen outside the database**, whether in a URL, an API response, or a client payload. The default fires SQL-side through `default(sql\`uuidv7()\`)`, so Postgres mints the id, and it does so for migrations, seed scripts, and a raw `psql` insert too, just as the previous lesson argued SQL-side defaults should. `sql` is the tagged template from the generated-columns work, imported from `drizzle-orm`.
+  </CodeVariant>
+
+  <CodeVariant label="identity bigint">
+    <div data-mark-color="blue">
+
+    ```ts {1}
+    id: bigint({ mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+    ```
+
+    </div>
+    **The choice for high-volume internal tables**: an auto-incrementing 8-byte integer minted by Postgres from a sequence. Reach for it only when *all* of these hold: the table is high-volume and internal (an event log, analytics rows, a junction nobody fetches by id), the id never crosses a system boundary, and sharding is not on the roadmap. A bigint wins here because 8 bytes instead of 16 gives a tighter index, and since no outsider enumerates these rows, the leak and locality arguments for UUIDs do not apply. `mode: 'number'` maps the column to a JS `number`, safe up to 2⁵³.
+  </CodeVariant>
+
+  <CodeVariant label="natural key">
+    <div data-mark-color="orange">
+
+    ```ts {1}
+    code: text().primaryKey(), // ISO-3166, e.g. 'US' — immutable, externally defined
+    ```
+
+    </div>
+    **The narrow exception**: a real domain value carrying `.primaryKey()` directly, for immutable external identifiers only. It belongs to a small, static reference table (countries, currencies) whose rows are owned by an outside authority and never renamed, never a user-facing entity. For anything a user creates or edits, use a UUID instead.
+  </CodeVariant>
+</CodeVariants>
+
+Two of the three are one decision seen from two sides: once you know the id is exposed, choose UUIDv7; once you know it stays internal, choose identity bigint. The natural key is the escape hatch, the rare case where the outside world already owns an immutable value worth keying on.
+
+Two footnotes. If your team is not on Postgres 18 and has no native `uuidv7()` to call, mint the value in app code instead: `id: uuid().primaryKey().$defaultFn(() => uuidv7())`, with `uuidv7` from the npm package of the same name. The result is the same id, but it runs app-side only, so it will *not* fire for a raw `psql` insert or a seed that bypasses Drizzle, which is why the native SQL-side version is this course's default. For the bigint, `generatedAlwaysAsIdentity()` is the modern SQL-standard <Term definition="A column whose values Postgres auto-generates from an internal sequence, per the SQL standard.">identity column</Term>; the legacy <Term definition="Postgres's older auto-incrementing 8-byte integer type. Superseded by the SQL-standard GENERATED ALWAYS AS IDENTITY.">bigserial</Term> still works, but write `generatedAlwaysAsIdentity` in new code.
+
+## The decision tree
+
+You have the three shapes. What transfers is the order to ask the questions in: which one to ask first, and what each answer rules out. Walk the tree one click at a time, committing to an answer before you read the next, so you feel the questions narrow.
+
+<StateMachineWalker title="Which primary key does this table want?">
+  <Question id="exposed" prompt="Does this row's id ever leave the database?"
+    description="A URL, an API response, a client payload — anywhere an outsider could see or hold the id.">
+    <Branch label="Yes — it's exposed somewhere outside the DB" to="owned" />
+    <Branch label="No — only the database ever joins on it" to="volume" />
+  </Question>
+
+  <Question id="owned" prompt="Is the id an immutable value the outside world already owns?"
+    description="A country code, a currency code, an ISBN — fixed by an authority outside your app, never reissued.">
+    <Branch label="Yes — it's externally owned and immutable" to="leaf-natural" />
+    <Branch label="No — it's ours to mint" to="leaf-uuid" />
+  </Question>
+
+  <Question id="volume" prompt="High volume, internal-only, and no sharding planned?"
+    description="An event log, analytics rows, a pure junction — rows nobody fetches by id, on a table that won't be sharded.">
+    <Branch label="Yes — all three hold" to="leaf-bigint" />
+    <Branch label="Not sure / it might get exposed later" to="leaf-uuid-doubt" />
+  </Question>
+
+  <Leaf id="leaf-natural" verdict="Natural key — text().primaryKey()">
+    The one case where a domain value is safe as the key: the world owns it and it never changes, so the value *is* the identity and there is no surrogate to mint. Reserve it for small reference tables like countries and currencies.
+  </Leaf>
+
+  <Leaf id="leaf-uuid" verdict="UUIDv7 — uuid().primaryKey().default(sql`uuidv7()`)">
+    Exposed but yours to mint, so you want a surrogate that is both non-enumerable and time-sortable. This is the day-one default for every user-facing entity: organizations, invoices, users.
+  </Leaf>
+
+  <Leaf id="leaf-bigint" verdict="identity bigint — bigint({ mode: 'number' }).primaryKey().generatedAlwaysAsIdentity()">
+    Nobody fetches these rows by id, so spend the fewest bytes and keep the tightest index. You earn this internal counter only when all three conditions hold.
+  </Leaf>
+
+  <Leaf id="leaf-uuid-doubt" verdict="When in doubt, UUIDv7">
+    Exposure creeps in, and retrofitting a UUID onto an integer key after launch means a migration on a live table. An unneeded UUID costs little; being wrong the other way costs that migration. Default to UUIDv7.
+  </Leaf>
+</StateMachineWalker>
+
+UUIDv7 is the default you land on unless you have a specific reason to step off it. `bigint identity` is an opt-in you can defend, not a per-table coin flip. When you genuinely can't decide, the tree decides UUIDv7 for you.
+
+## Composite primary keys for junction tables only
+
+A primary key can span more than one column. You will need this later in the chapter for the table that links invoices to tags, so here is the syntax and the boundary around it.
+
+You declare a composite key in the third argument of `pgTable`, the callback that returns table-level constraints:
+
+```ts title="db/schema.ts" {4}
+export const invoiceTags = pgTable('invoice_tags', {
+  invoiceId: uuid().notNull(),
+  tagId: uuid().notNull(),
+}, (t) => [primaryKey({ columns: [t.invoiceId, t.tagId] })]);
+```
+
+This `primaryKey` is the standalone import from `drizzle-orm/pg-core`, distinct from the `.primaryKey()` method you chain on a single column. It makes the *combination* of `invoiceId` and `tagId` the unique, indexed key, with the same three guarantees as a single-column key. An invoice can have many tags and a tag can sit on many invoices, but each pairing appears at most once. That is exactly the identity a join row has.
+
+:::danger
+Composite primary keys belong on junction tables and almost nowhere else. On a junction the pair *is* the row's identity, so there is nothing else to mint. A first-class entity is the modeling mistake from earlier: give it a surrogate `id` plus a unique constraint instead.
+:::
+
+The difference is whether the row has an identity of its own. A junction row exists only to connect two things, so "this invoice, that tag" is all it is. An invoice or an organization is a thing in its own right, and deserves its own opaque, stable id.
+
+## Practice: pick the key for each table
+
+Two passes: first sort each table into a strategy, then write the shapes.
+
+Start by sorting each table's `id` column into the strategy it should use. Ask the two questions in order: is the id exposed, and if not, is the table high-volume and internal?
+
+<Buckets instructions="Sort each table's id column into the primary-key strategy it should use.">
+  <Bucket name="uuid" label="UUIDv7" description="Exposed, ours to mint" />
+  <Bucket name="bigint" label="identity bigint" description="Internal, high-volume" />
+  <Bucket name="natural" label="natural key" description="Immutable, externally owned" />
+
+  <Item bucket="uuid">An `invoices` row shown at `/invoices/:id`</Item>
+  <Item bucket="uuid">A `users` row returned in an API response</Item>
+  <Item bucket="uuid">An `organizations` row whose id is in every client payload</Item>
+  <Item bucket="bigint">An append-only `audit_logs` row nobody fetches by id</Item>
+  <Item bucket="bigint">A high-volume `analytics_events` row, internal-only</Item>
+  <Item bucket="natural">An ISO-3166 country code (`'US'`)</Item>
+  <Item bucket="natural">An ISO-4217 currency code (`'USD'`)</Item>
+  <Item bucket="natural">A US state abbreviation (`'CA'`)</Item>
+</Buckets>
+
+Now write the shapes. The starter stubs the `id` (or `code`) column on three tables: `organizations` is user-facing, `auditLogs` is internal and high-volume, and `countries` is a reference table the outside world owns. Finalize each with the right shape from the variants above. Column names are passed as explicit snake_case strings because the editor has no `casing` client.
+
+:::note
+The checker reads the **shape** of each column: its type, its `.primaryKey()`, and whether it carries a database-side default. That catches the two real mistakes here: an `id` with no generated default, or `audit_logs` keyed on the wrong integer type. It can't see *which* default expression you wrote, since `uuidv7()` and the v4 `gen_random_uuid()` look identical to it, so the prose above is the grader for that part: `organizations.id` wants `uuidv7()`, never `.defaultRandom()`. The mini-Postgres running here predates native `uuidv7()`, so a correct shape shows a green checklist alongside a "function uuidv7() does not exist" note from the sandbox; real Postgres 18 runs it.
+:::
+
+<DrizzleSchemaCoding
+  instructions="Finalize each id with the primary-key strategy that table wants. organizations is user-facing — its id rides in every URL and API response. auditLogs is internal and high-volume — nobody ever fetches a row by its id. countries.code is an ISO-3166 value the outside world owns and never reissues. Write the canonical Drizzle shape for each; the column names are spelled out in snake_case because there's no casing client in scope."
+  maxHeight={400}
+  starter={`export const organizations = pgTable('organizations', {
+  id: uuid('id').primaryKey(), // TODO: this id appears in URLs and API responses
+  name: text('name').notNull(),
+});
+
+export const auditLogs = pgTable('audit_logs', {
+  id: integer('id').primaryKey(), // TODO: internal, high-volume, never fetched by id
+  action: text('action').notNull(),
+});
+
+export const countries = pgTable('countries', {
+  code: text('code').primaryKey(), // TODO: ISO-3166, e.g. 'US' — already correct?
+  name: text('name').notNull(),
+});
+`}
+  requirements={[
+    {
+      name: 'organizations',
+      columns: [
+        { name: 'id', type: 'uuid', primaryKey: true, hasDefault: true },
+        { name: 'name', type: 'text', notNull: true },
+      ],
+    },
+    {
+      name: 'audit_logs',
+      columns: [
+        { name: 'id', type: 'bigint', primaryKey: true, hasDefault: true },
+        { name: 'action', type: 'text', notNull: true },
+      ],
+    },
+    {
+      name: 'countries',
+      columns: [
+        { name: 'code', type: 'text', primaryKey: true },
+        { name: 'name', type: 'text', notNull: true },
+      ],
+    },
+  ]}
+/>
+
+<details>
+<summary>Reveal the answer</summary>
+
+```ts title="db/schema.ts"
+export const organizations = pgTable('organizations', {
+  // Exposed, ours to mint → UUIDv7. The SQL-side default fires for migrations,
+  // seeds, and psql too — not just inserts that go through Drizzle.
+  id: uuid('id').primaryKey().default(sql`uuidv7()`),
+  name: text('name').notNull(),
+});
+
+export const auditLogs = pgTable('audit_logs', {
+  // Internal, high-volume, never enumerated by an outsider → identity bigint.
+  // 8 bytes, a tighter index, and the id never crosses a system boundary.
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  action: text('action').notNull(),
+});
+
+export const countries = pgTable('countries', {
+  // Immutable, externally owned → the natural key is correct as-is. Don't
+  // "fix" it into a surrogate; the ISO code already names the row, forever.
+  code: text('code').primaryKey(),
+  name: text('name').notNull(),
+});
+```
+
+</details>
+
+## Where to read more
+
+Native UUIDv7 in Postgres is recent, so these primary and current sources are worth a look. They cover the Postgres 18 support and the locality argument in more depth than this lesson does.
+
+<CardGrid>
+  <ExternalResource
+    title="PostgreSQL 18 UUIDv7 support"
+    href="https://neon.com/postgresql/postgresql-18/uuidv7-support"
+    icon="simple-icons:neon"
+    iconColor="#00E599"
+    description="Neon's explainer on the native uuidv7() function, with the v4-scatter-vs-v7-locality argument in depth."
+  />
+  <ExternalResource
+    title="PostgreSQL 18 release announcement"
+    href="https://www.postgresql.org/about/news/postgresql-18-released-3142/"
+    icon="simple-icons:postgresql"
+    iconColor="#336791"
+    description="The primary source: the official release note introducing native uuidv7() generation."
+  />
+  <ExternalResource
+    title="UUIDv7 generator & decoder"
+    href="https://www.authgear.com/tools/uuidv7-generator/"
+    icon="lucide:fingerprint-pattern"
+    iconColor="#7C3AED"
+    description="Mint a UUIDv7 and watch the tool pull the timestamp back out — the byte layout figure, made interactive."
+  />
+  <ExternalResource
+    title="RFC 9562 — UUID specification"
+    href="https://datatracker.ietf.org/doc/html/rfc9562"
+    icon="lucide:scroll-text"
+    iconColor="#11556E"
+    description="The 2024 IETF standard itself; Section 5.7 is the formal UUIDv7 layout this lesson summarized."
+  />
+</CardGrid>
+
+Every `id` column now has a shape you can defend. Next come foreign keys: you write the `.references()` that points one row's column at another row's primary key, and decide what happens to the children when the parent is deleted.

@@ -1,0 +1,478 @@
+---
+title: Inferred row and insert types
+tagline: Derive your app's row and insert types straight from the Drizzle schema with $inferSelect and $inferInsert, so they can never drift from the database.
+chapter-id: 37
+course-progress: 0.3607
+rewrites: 1
+sidebar:
+  order: 10
+  label: Inferred row types
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import TypeCoding from '../../../components/live-coding/TypeCoding/TypeCoding.astro';
+import ReadWriteContainment from '../../../components/lessons/037/10/read-write-containment.astro';
+import Term from '../../../components/ui/Term.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Over the last several lessons you built the schema: the `organizations` and `invoices` tables, the line items, the tags, the junctions, the relations. Every column, type, and constraint now lives in one file. The chapter's promise was that `db/schema.ts` becomes the root of a derivation tree: every typed shape your app needs downstream is generated from it, not retyped by hand. A hand-written `type Invoice` copied across five files goes stale the instant someone renames a column.
+
+Say a Server Component needs an `Invoice[]` prop. That `Invoice` type comes from the schema in one line, not a hand-typed interface, and it cannot drift because it reads the table you already built. Two helpers do this: `$inferSelect` and `$inferInsert`.
+
+## `$inferSelect`: the row you read back
+
+Every table you've built carries a property called `$inferSelect`. It resolves to the TypeScript type of one row, exactly as you'd get it back from a <Term definition="db.select() reads rows out of the database.">`db.select()`</Term>. Drizzle derives it from the column definitions you already wrote, so you never compute or maintain it.
+
+`$inferSelect` lives at the **type level**, not the value level, so you reach it through `typeof`:
+
+```ts
+type Invoice = typeof invoices.$inferSelect;
+```
+
+There's no runtime value to read here; it's purely a type-side projection of the table. Read `typeof invoices.$inferSelect` as "the type of the rows in the `invoices` table."
+
+Anywhere you'd have hand-typed this:
+
+```ts
+type Invoice = {
+  id: string;
+  organizationId: string;
+  amountDue: string;
+  status: 'draft' | 'sent' | 'paid' | 'void';
+  assignedToId: string | null;
+  createdAt: Date;
+  tags: string[];
+};
+```
+
+You write this instead:
+
+```ts "typeof invoices.$inferSelect"
+type Invoice = typeof invoices.$inferSelect;
+```
+
+Both produce the same type today. The difference: the second re-derives itself the moment you touch the schema, while the first goes stale the moment someone else does.
+
+Every column maps to a TypeScript member by a fixed set of rules, driven by the per-column builders you chose for your data types. Here is the `invoices` table, one column at a time.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const invoices = pgTable('invoices', {
+  id: uuid().primaryKey().default(sql\`uuidv7()\`),
+  organizationId: uuid().notNull(),
+  amountDue: numeric({ precision: 12, scale: 2 }).notNull(),
+  status: invoiceStatus().notNull().default('draft'),
+  assignedToId: uuid(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  tags: text().array().notNull(),
+});
+
+type Invoice = typeof invoices.$inferSelect;
+// {
+//   id: string;
+//   organizationId: string;
+//   amountDue: string;
+//   status: 'draft' | 'sent' | 'paid' | 'void';
+//   assignedToId: string | null;
+//   createdAt: Date;
+//   tags: string[];
+// }
+`}>
+  <AnnotatedStep meta="{2-3,13-14}" color="blue">
+    The plain cases: `uuid()` becomes `string`, and a `.notNull()` column lands as the bare type, with no `| null`. Both `id` and `organizationId` are `string` on the read side.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4,15}" color="orange">
+    `numeric({ precision: 12, scale: 2 })` infers as `string`, not `number`. Money carries more precision than a JS `number` can hold without rounding, so it arrives as a string and a decimal library handles the math. Read `amountDue: string` as the precision guarantee.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5,16}" color="blue">
+    A `pgEnum` column lands as the string-literal union of its members, so `status` can only ever be one of the four.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6,17}" color="violet">
+    `assignedToId` is `uuid()` with no `.notNull()`, so it's nullable in the database, and that nullability shows up here as `string | null`. Every reader now has to handle the `null`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8,19}" color="blue">
+    `.array()` wraps the element type, so `text().array()` becomes `string[]` for the `tags` column.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The mapping is mechanical: `text → string`, `integer → number`, `boolean → boolean`, `uuid → string`, `timestamp({ withTimezone: true }) → Date`, a `pgEnum` to its literal union, `.array()` to `T[]`. A `.notNull()` column gives the bare type; a nullable column gives `T | null`. Two columns are worth pausing on: `numeric → string`, a precision choice rather than a defect, and `jsonb`, which the lesson returns to at the end.
+
+<CodeTooltips tooltips={{
+  string: 'numeric comes back as a string to preserve arbitrary precision.\nNever parseFloat money into a JS number; do the arithmetic with a decimal library and keep it a string end to end.',
+}}>
+```ts
+type Amount = Invoice['amountDue']; // string
+```
+</CodeTooltips>
+
+Now read one for yourself. The table is fixed; your job is to read the type the compiler infers. The `^?` query surfaces the resolved type, and the `@ts-expect-error` line proves `amountDue` is a `string`.
+
+<TypeCoding
+  ambient="drizzle"
+  instructions="The `invoices` table is given, so you don't need to touch it. Read the inferred `Invoice` type where the `^?` points: it should resolve to the full row, with `amountDue` as a `string`. The `@ts-expect-error` on the last line proves that string is not a number; leave it in place, and the checker stays quiet only while the assignment below it genuinely fails."
+  expectedQueries={[
+    { line: 13, contains: 'amountDue: string' },
+  ]}
+  starter={`import { pgTable, uuid, numeric, timestamp } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+
+const invoices = pgTable('invoices', {
+  id: uuid().primaryKey().default(sql\`uuidv7()\`),
+  organizationId: uuid().notNull(),
+  amountDue: numeric({ precision: 12, scale: 2 }).notNull(),
+  assignedToId: uuid(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+type Invoice = typeof invoices.$inferSelect;
+//   ^?
+
+declare const invoice: Invoice;
+
+// @ts-expect-error — numeric infers as string, not number
+const cents: number = invoice.amountDue;
+`}
+/>
+
+## `$inferInsert`: only what you must supply
+
+`$inferSelect` was the easy half: one row, exactly what's stored. Its sibling has a sharper edge.
+
+`$inferInsert` is the type that <Term definition="db.insert(invoices).values(...) adds a new row.">`db.insert(invoices).values(...)`</Term> accepts, the shape of a row you're *creating*. You reach it through `typeof`, the same way:
+
+```ts
+type NewInvoice = typeof invoices.$inferInsert;
+```
+
+`NewInvoice` is *not* the same as `Invoice`. It's narrower. A row you read back has `id`, `createdAt`, and `status` populated, but you don't supply those on insert, because the database fills them in. The insert type won't make you provide a value the database is going to generate.
+
+The asymmetry between read and write is just the schema's own facts projected into TypeScript. A column with a default, a column the database computes, and a column the app must provide are three different obligations, and `$inferInsert` encodes all three. Three rules govern how a column on `$inferSelect` becomes, or doesn't become, a member on `$inferInsert`, and they mirror the column modifiers you already know.
+
+**Rule 1, a column with a default becomes optional.** Any column with `.default(...)`, `.defaultNow()`, or `.$defaultFn(...)` is *optional* on insert: pass a value or skip it, and the database or Drizzle fills it. The clearest case is the primary key. `id: uuid().primaryKey().default(sql\`uuidv7()\`)` has a default, so it's optional on `$inferInsert`, and you let the database mint a fresh UUIDv7 rather than passing one. The same holds for `createdAt` (`defaultNow()`) and `status` (`.default('draft')`). A default comes two ways, a SQL `DEFAULT` clause the database applies or a `$defaultFn` Drizzle runs in JS before the insert; the mechanism differs but the column is optional either way.
+
+**Rule 2, a generated column is omitted entirely.** A column declared `.generatedAlwaysAs(...)` or `generatedAlwaysAsIdentity()` is *absent* from `$inferInsert`, not optional but gone. The database computes it from other columns, so passing your own is a type error. The `emailLowercased` column on `users` is `.generatedAlwaysAs(...)` computed from `email`, so it never appears on the insert type. **Optional is not omitted:** a defaulted column is there and you may skip it; a generated column isn't there at all.
+
+**Rule 3, a `.notNull()` column with no default is required.** That's everything left over: `NOT NULL` with no fallback value means the app must provide it. On `invoices`, that's `organizationId` and `amountDue`, and every insert has to carry both. Everything else falls out of Rules 1 and 2.
+
+One nuance is worth slowing down for. A defaulted column is **optional**, so `undefined` is fine and you may omit it. It does *not* become **nullable**: passing `null` is legal only if the column is itself nullable. So `createdAt?: Date` and `assignedToId: string | null` mean opposite things. `?: T` says "you don't have to provide this," while `: T | null` says "you may provide nothing on purpose."
+
+Now put the two shapes side by side. The example switches to the `users` table, which exercises all three rules at once: defaulted columns (`id`, `createdAt`), a required one (`email`), and the generated `emailLowercased` from earlier in the chapter.
+
+<CodeVariants maxLines={16}>
+  <CodeVariant label="$inferSelect">
+    <div data-mark-color="blue">
+
+    ```ts {3,5,6}
+    type User = typeof users.$inferSelect;
+    // {
+    //   id: string;
+    //   email: string;
+    //   emailLowercased: string;
+    //   createdAt: Date;
+    // }
+    ```
+
+    </div>
+    **Everything stored, fully known.** `id` and `createdAt` are required: read a row back and they're populated. `emailLowercased` is here too, because the database computed it and you read it.
+  </CodeVariant>
+
+  <CodeVariant label="$inferInsert">
+    <div data-mark-color="orange">
+
+    ```ts {3,5}
+    type NewUser = typeof users.$inferInsert;
+    // {
+    //   id?: string;
+    //   email: string;
+    //   createdAt?: Date;
+    // }
+    ```
+
+    </div>
+    **Only what the app must supply.** `id` and `createdAt` carry defaults, so they're optional (`?:`), by Rule 1. `emailLowercased` is generated, so it's gone, with no line to highlight, by Rule 2. `email` is `NOT NULL` with no default, so it's required, by Rule 3.
+  </CodeVariant>
+</CodeVariants>
+
+Three columns changed between read and write: `id` and `createdAt` went from required to optional because they have defaults, and `emailLowercased` vanished because it's generated. The one that didn't change, `email`, is the column the app must supply.
+
+The starter gives you the table and a `NewInvoice` type; complete the `draft` object so `tsc` passes. Two things are wrong: a required field is missing, and a field you're not allowed to supply is present. Fix both by reading the insert type.
+
+<TypeCoding
+  ambient="drizzle"
+  instructions="Complete the `draft` object so it satisfies `NewInvoice`. The object is missing a required field and is wrongly supplying one the database owns. Read the error, add the required field, and remove the `id` line: `id` carries a default, so you let the database mint it rather than passing one by hand."
+  starter={`import { pgTable, uuid, numeric, pgEnum, timestamp } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+
+const invoiceStatus = pgEnum('invoice_status', ['draft', 'sent', 'paid', 'void']);
+
+const invoices = pgTable('invoices', {
+  id: uuid().primaryKey().default(sql\`uuidv7()\`),
+  organizationId: uuid().notNull(),
+  amountDue: numeric({ precision: 12, scale: 2 }).notNull(),
+  status: invoiceStatus().notNull().default('draft'),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+type NewInvoice = typeof invoices.$inferInsert;
+
+const draft: NewInvoice = {
+  // organizationId is required and missing — add it
+  amountDue: '249.00',
+  id: crypto.randomUUID(), // remove: id has a default, you don't supply it by hand
+};
+`}
+/>
+
+## Why read and write are two shapes
+
+The rule in one line: **read returns everything stored; write accepts only the subset the app owns.** The database fills the rest, the values it defaults and the columns it computes. `$inferSelect` is the full row; `$inferInsert` is narrower because inserting is only your half of the work.
+
+A hand-written interface can't express this. To say "required when you read it, optional when you write it," you'd need two types, both maintained by hand, both drifting apart. The schema says it once. One `pgTable` declaration knows both shapes, because the facts that separate them, which columns have defaults, which are generated, which are `NOT NULL`, are facts the schema already records.
+
+<ReadWriteContainment />
+
+The same split returns one layer down: drizzle-zod, the library that generates runtime validators from the schema, ships `createSelectSchema` and `createInsertSchema` for exactly this reason.
+
+## Place the types next to the table, name them well
+
+Put the type exports directly under the table they derive from, in `db/schema.ts`:
+
+```ts
+export const invoices = pgTable('invoices', {
+  id: uuid().primaryKey().default(sql`uuidv7()`),
+  organizationId: uuid().notNull(),
+  amountDue: numeric({ precision: 12, scale: 2 }).notNull(),
+  status: invoiceStatus().notNull().default('draft'),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
+
+export type Invoice = typeof invoices.$inferSelect;
+export type NewInvoice = typeof invoices.$inferInsert;
+```
+
+The type and its source sit three lines apart, so nobody hunts for "where's the `Invoice` type." These two lines re-export a derived shape rather than hand-copy one: they restate zero field names. This is the one place where writing a `type` for a row is correct.
+
+The naming convention, which the project chapters reuse verbatim:
+
+- **The select type is the entity noun**: `Invoice`, `Organization`, `Membership`.
+- **The insert type is the noun with a `New` prefix**: `NewInvoice`, `NewOrganization`, `NewMembership`.
+
+Downstream files pull these in as type-only imports, `import type { Invoice } from '@/db/schema'`.
+
+:::note
+You'll see an older spelling in legacy code: `InferSelectModel<typeof invoices>` and `InferInsertModel<typeof invoices>`, imported from `drizzle-orm`. These generic helpers produce the exact same types as the `$inferSelect` / `$inferInsert` property form this course uses throughout. Read `InferSelectModel` as the same thing spelled the long way.
+:::
+
+## Compose new shapes without restating fields
+
+So far you've replaced hand-typed rows one-for-one. But most of the time you don't want the *whole* row: a list view wants three columns plus the org's name, an update form wants a partial. Rather than hand-type those narrower shapes, build them *from* the inferred types so they inherit the same can't-drift guarantee.
+
+The rule is that **every derived shape roots in `$inferSelect` or `$inferInsert`.** You never restate a field name; you compose with the utility types you already know. Here's the canonical example, a summary type for a dashboard list:
+
+<AnnotatedCode lang="ts" maxLines={14} code={`
+type InvoiceSummary = Pick<Invoice, 'id' | 'status' | 'amountDue'> & {
+  organizationName: Organization['name'];
+};
+
+// The 80% update shape — a partial of the insert type:
+type InvoiceUpdate = Partial<NewInvoice>;
+
+// The precise update shape — id required (which row?), the rest optional:
+type PreciseUpdate = { id: Invoice['id'] } & Partial<Omit<NewInvoice, 'id'>>;
+`}>
+  <AnnotatedStep meta={`"Pick<Invoice, 'id' | 'status' | 'amountDue'>"`} color="green">
+    `Pick` pulls those three members off the inferred `Invoice`, both their **names and types**, straight from the source. Rename `amountDue` in the schema and this line breaks at compile time. No field types restated.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"Organization['name']"`} color="blue">
+    Indexed access, `Type['field']`, reads one field's type out of the source. `organizationName` gets whatever `Organization.name` is, without you writing `string`; the join column borrows the type of the column it joins to.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="orange">
+    `Partial<NewInvoice>` makes every insert field optional, the 80% answer for an update payload where the caller sends only the columns that changed.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9}" color="violet">
+    The precise shape, for when the type must force you to say *which* row. Indexed access pins `id` as required, `Omit` drops `id` from the insert type, and `Partial` makes the remaining columns optional. Use it when the looseness of `Partial<NewInvoice>` actually causes a problem.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Nothing in that block is a hand-written type, no `string`, no `'draft' | 'sent' | …`. `Pick`, `Omit`, `Partial`, the `&` intersection, and `Type['field']` indexed access are the five composition tools you met in the TypeScript lessons, and here every shape they build is anchored to the schema. Rename a column and `InvoiceSummary`, `InvoiceUpdate`, and `PreciseUpdate` all break at the type checker, which is a bug you never shipped.
+
+`Partial<NewInvoice>` is the update shape you'll reach for most. The `id`-pinned variant is more correct, since it won't let you forget which row, but it costs more machinery; name the trade-off and pick the simple one until the precision pays off.
+
+Write `InvoiceSummary` from scratch so it resolves to the expected members, then prove the anchor holds: the `@ts-expect-error` line reaches for a field your summary leaves out (`organizationId`), and that access should fail.
+
+<TypeCoding
+  ambient="drizzle"
+  instructions="Write `InvoiceSummary` so it has `id`, `status`, `amountDue` (picked from `Invoice`) plus an `organizationName` (the type of `Organization.name`). Use `Pick` and indexed access, and restate no field types. The `@ts-expect-error` line confirms your summary really is anchored: reaching for a field the summary doesn't include (`organizationId`) should fail."
+  expectedQueries={[
+    { line: 25, contains: 'organizationName: string' },
+  ]}
+  starter={`import { pgTable, uuid, numeric, text, pgEnum } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+
+const invoiceStatus = pgEnum('invoice_status', ['draft', 'sent', 'paid', 'void']);
+
+const organizations = pgTable('organizations', {
+  id: uuid().primaryKey().default(sql\`uuidv7()\`),
+  name: text().notNull(),
+});
+
+const invoices = pgTable('invoices', {
+  id: uuid().primaryKey().default(sql\`uuidv7()\`),
+  organizationId: uuid().notNull(),
+  amountDue: numeric({ precision: 12, scale: 2 }).notNull(),
+  status: invoiceStatus().notNull().default('draft'),
+});
+
+type Invoice = typeof invoices.$inferSelect;
+type Organization = typeof organizations.$inferSelect;
+
+// Write InvoiceSummary here:
+type InvoiceSummary = unknown;
+
+declare const summary: InvoiceSummary;
+//            ^?
+
+// Once InvoiceSummary is correct, this line should error (organizationId isn't picked):
+// @ts-expect-error
+const _orgId: string = summary.organizationId;
+`}
+/>
+
+## Thread one type from schema to prop
+
+Watch a single name thread every layer. A Server Component reads invoices from the database and hands them to a Client Component to render. (The query itself is the next chapter's job; here, just picture its result.) Follow the `Invoice` type through it:
+
+<div data-mark-color="blue">
+
+```ts /\bInvoice\b/
+// db/schema.ts
+export type Invoice = typeof invoices.$inferSelect;
+
+// db/queries/invoices.ts — the next chapter owns the query body
+export const listInvoices = async (): Promise<Invoice[]> => {
+  // ...
+};
+
+// app/invoices/invoice-list.tsx
+type Props = { invoices: Invoice[] };
+
+export const InvoiceList = ({ invoices }: Props) => {
+  // render the rows
+};
+```
+
+</div>
+
+The same `Invoice` appears four times: the schema export, the query's return annotation, the component's `Props`, and the destructured parameter. It's one declaration the whole way down; the schema defines it and everything else borrows it. Run the counterfactual from the first lesson of this chapter. If `InvoiceList` hand-typed its own prop interface, a column rename in the schema would update the query but leave that prop quietly stale, no longer matching the data flowing into it, and the type checker would say nothing, because the two were never connected. Thread one type through instead, and the rename breaks every layer at once, which is how you find out *before* production does.
+
+The chain continues past the type: once you reach forms and Server Actions, the same `invoices` table also feeds the runtime validator that parses the action's input, so every layer aligns because every layer reads the same root.
+
+## When inference is too wide, and the relations gap
+
+Inference is excellent, but it has four known edges. None are defects; each is a behavior to expect.
+
+**`jsonb` without `$type` infers as `unknown`.** A bare `jsonb()` column tells the compiler nothing about its contents, so `$inferSelect` gives you `unknown`: correct, but useless to work with. The fix isn't a cast at the read site; it's upstream, on the column. Declare the shape with `$type<...>()`.
+
+<CodeVariants maxLines={14}>
+  <CodeVariant label="Without $type">
+    <div data-mark-color="red">
+
+    ```ts {6}
+    export const webhookDeliveries = pgTable('webhook_deliveries', {
+      payload: jsonb().notNull(),
+    });
+
+    type Delivery = typeof webhookDeliveries.$inferSelect;
+    // payload: unknown   ← nothing to work with
+    ```
+
+    </div>
+    **Inference is only as good as what you told the schema.** A bare `jsonb()` carries no shape, so `payload` is `unknown`, and every read has to narrow it by hand.
+  </CodeVariant>
+
+  <CodeVariant label="With $type<WebhookEvent>()">
+    <div data-mark-color="green">
+
+    ```ts "WebhookEvent"
+    export const webhookDeliveries = pgTable('webhook_deliveries', {
+      payload: jsonb().$type<WebhookEvent>().notNull(),
+    });
+
+    type Delivery = typeof webhookDeliveries.$inferSelect;
+    // payload: WebhookEvent   ← the real shape
+    ```
+
+    </div>
+    **`$type<T>()` is a compile-time promise** about the stored shape, so `$inferSelect` now resolves `payload` to `WebhookEvent`. It informs the type only; Postgres still stores bytes and Zod still validates the data on the way in.
+  </CodeVariant>
+</CodeVariants>
+
+So `$type` tells the compiler what to expect; confirming the stored bytes actually match `WebhookEvent` is Zod's job at the boundary. The same reflex covers the next two edges: when inference is too wide, fix the schema, not the consumer.
+
+**`numeric` stays `string`.** You met this already: `amountDue: string`, not `number`. The string preserves arbitrary precision, so nothing here is broken. Read `numeric → string` as the money guarantee, every time.
+
+**An enum-like `text` column gives you `string`, not a union.** Declare a fixed set of values as plain `text()` and `$inferSelect` infers `string`, losing the closed set: the compiler will let `'pending'` sit in a column that only ever holds `'draft' | 'sent' | 'paid' | 'void'`. Fix it upstream by making it a `pgEnum`, and the union comes back for free, every consumer inheriting the narrow type.
+
+**`$inferSelect` is flat: it does not include relations.** An inferred `Invoice` has `organizationId: string`, the raw foreign-key column, and nothing more: no nested `organization` object, no `lineItems` array, no `tags`. The relations you declared in the previous lesson get their own inferred types from the relational query API, produced only when you ask for them (`db.query.invoices.findMany({ with: { tags: true } })`, next chapter's territory). The flat stored row and the nested query shape are separate by design.
+
+:::caution
+`$inferSelect` never carries relations. `typeof invoices.$inferSelect` gives you the flat row: foreign keys as bare `string` columns, no nested objects. If you need an invoice *with* its line items and tags as one typed object, that's a different shape entirely, inferred from the relational query (`db.query.…({ with })`) in the next chapter. Don't expect `with: { tags: true }` to show up in `$inferSelect`. It can't, because the flat row knows nothing about the join.
+:::
+
+A related case: a query that selects only some columns infers a result narrower than `$inferSelect`, so let it infer rather than hand-type that shape. Custom-select result types are the next chapter's topic.
+
+Here's a quick check on the relations gap.
+
+<MultipleChoice>
+  You write `type Invoice = typeof invoices.$inferSelect`, and `invoices` has a relation to `organizations` declared with `defineRelations`. What does `Invoice` give you for the linked organization?
+
+  <McqChoice correct>Nothing nested — only `organizationId: string`, the raw foreign-key column. The organization itself is a separate type you reach for at the query layer.</McqChoice>
+  <McqChoice>An `organization: Organization`, always populated, since declaring the relation wires it into the row.</McqChoice>
+  <McqChoice>An `organization: Organization | null` — present when the row points at one, `null` otherwise.</McqChoice>
+  <McqChoice>A lazy proxy that hits the database for `organization` the first time you read the property.</McqChoice>
+
+  <McqWhy>`$inferSelect` is the flat stored row — it sees columns, including the `organizationId` FK, but never relations. Declaring a relation with `defineRelations` adds a *query-time* shape (`db.query.…({ with })`) with its own inferred type; it doesn't change the flat row. The other three describe an ORM that hydrates relations into the row automatically — Drizzle deliberately keeps the flat row and the nested query shape separate.</McqWhy>
+</MultipleChoice>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle ORM — Type inference (Goodies)"
+    href="https://orm.drizzle.team/docs/goodies"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The canonical reference for $inferSelect / $inferInsert and the InferSelectModel / InferInsertModel aliases."
+  />
+  <ExternalResource
+    title="Drizzle ORM — drizzle-zod"
+    href="https://orm.drizzle.team/docs/zod"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The schema-to-Zod pipeline. createSelectSchema / createInsertSchema mirror this lesson's read/write split at the runtime validation layer."
+  />
+  <ExternalResource
+    title="TypeScript Handbook — Utility Types"
+    href="https://www.typescriptlang.org/docs/handbook/utility-types.html"
+    icon="simple-icons:typescript"
+    iconColor="#3178C6"
+    description="The official reference for Pick, Omit, and Partial, the composition tools that turn an inferred row into narrower derived shapes."
+  />
+</CardGrid>

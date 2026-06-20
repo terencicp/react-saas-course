@@ -524,3 +524,23 @@ Web Worker | - | Background browser thread running JS off the main thread, no DO
 Partytown | - | Library relaying third-party scripts into a Web Worker, off the main thread. | first defined: Chapter 034 L5
 GDPR | - | EU law requiring a legal basis (usually consent) before processing personal data. | first defined: Chapter 034 L5
 ePrivacy | cookie law | EU directive governing cookies and trackers; non-essential trackers await consent. | first defined: Chapter 034 L5
+numeric | NUMERIC, DECIMAL | Postgres exact-decimal type; stores literal digits, no float rounding; reads as string in Drizzle. | first defined: Chapter 037 L3
+precision | - | Total count of significant digits a numeric column stores, both sides of the point. | first defined: Chapter 037 L3
+scale | - | Number of digits a numeric column stores after the decimal point. | first defined: Chapter 037 L3
+timestamptz | timestamp with time zone | Postgres type storing an absolute UTC instant, converting on in/out. | first defined: Chapter 037 L3
+UUID | universally unique identifier | 128-bit value, 32 hex digits, unique without central coordination; maps to TS string. | first defined: Chapter 037 L3
+UUIDv4 | uuid v4 | Fully-random UUID; Postgres gen_random_uuid() / Drizzle .defaultRandom(). | first defined: Chapter 037 L3
+UUIDv7 | uuid v7 | Time-ordered UUID; leading bits are a timestamp so IDs sort by creation; native in Postgres 18. | first defined: Chapter 037 L3
+surrogate key | - | Primary key with no business meaning, generated solely to identify the row. | first defined: Chapter 037 L3
+pgEnum | Postgres enum | Drizzle builder declaring a named Postgres enum type and a column for a fixed value set. | first defined: Chapter 037 L3
+lookup table | - | A table with one row per allowed value, the alternative to an enum when values need attributes. | first defined: Chapter 037 L3
+junction table | join table | A table that connects rows of two other tables, one row per link. | first defined: Chapter 037 L3
+jsonb | - | Postgres binary, indexable, queryable JSON type; course default over plain json. | first defined: Chapter 037 L3
+inet | - | Postgres type for an IP address (IPv4/IPv6) understood as a network, enabling subnet queries. | first defined: Chapter 037 L3
+normalization debt | - | A jsonb field you keep querying into that should have been a real column. | first defined: Chapter 037 L3
+foreign key | FK | A column constraint Postgres enforces on writes, rejecting rows that don't reference an existing parent row. | first defined: Chapter 037 L6
+defineRelations | - | Drizzle Relations v2 API declaring the whole traversal graph in one call, keyed by table name. | first defined: Chapter 037 L9
+Relations v2 | relations v2 API | Drizzle's single-call relations API (from/to/through), replacing the v1 per-table relations() helper. | first defined: Chapter 037 L9
+relational query builder | relational query API, db.query | The db.query.* findFirst/findMany API that reads the relations graph to assemble nested typed objects. | first defined: Chapter 037 L9
+pure junction | - | A junction table holding only foreign keys, walked through with .through() rather than related to. | first defined: Chapter 037 L9
+self-referential relation | self-relation | A relation whose from and to columns both live on one table (e.g. a comment's parent). | first defined: Chapter 037 L9
