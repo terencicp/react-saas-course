@@ -1,0 +1,364 @@
+---
+title: "Blob, File, and object URLs: the upload primitives"
+tagline: The browser's byte primitives, Blob, File, and object URLs, that turn a picked file into a leak-free preview.
+chapter-id: 16
+course-progress: 0.1111
+rewrites: 2
+sidebar:
+  order: 3
+  label: Blob, File, object URLs
+---
+
+import { Aside, CardGrid, Card } from '@astrojs/starlight/components';
+import Figure from '../../../components/figures/Figure.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import ReactCoding from '../../../components/live-coding/ReactCoding/ReactCoding.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import ObjectUrlLifecycle from '../../../components/lessons/016/3/ObjectUrlLifecycle.astro';
+import UploadHandoff from '../../../components/lessons/016/3/UploadHandoff.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The account settings page needs a profile photo field: an `<input type="file" accept="image/*">` that shows a thumbnail and filename the moment the user picks an image, so they can confirm it before saving, then uploads the bytes on save.
+
+The obvious version breaks. Drop the picked file into `<img src={pickedFile}>` and you get a broken-image icon, because a file object isn't a URL. The call that does render the preview, `URL.createObjectURL`, leaks memory on every re-pick unless you add one cleanup step. This lesson covers both: the primitives that turn picked bytes into a preview, and the step that keeps that preview from leaking.
+
+Three nouns build the answer in a chain. We take them one at a time, then assemble the leak-free pick-to-preview field and trace where the bytes go on upload.
+
+## `Blob`: the in-memory binary container
+
+A <Term definition={"An immutable, fixed-length sequence of bytes carrying a claimed MIME type.\nThe universal in-memory binary container the browser passes around — Response.blob() returns one, a fetch upload body accepts one, a File is one."}>`Blob`</Term> holds a chunk of binary data. It doesn't know whether those bytes are an image, a CSV, or a zip; it's the bytes plus a label for what they're meant to be. You read two properties: `size`, the byte length, and `type`, the <Term definition={"A short string like image/png or text/csv that labels the kind of bytes. A Blob carries whatever its producer claimed — the type is a label, not a guarantee, and is never checked against the actual content."}>MIME type</Term> string.
+
+That label is *claimed*, not verified: `type` is whatever the producer said the bytes are, so a Blob labelled `'image/png'` can hold anything. That detail comes back the moment a user is involved.
+
+You construct one with `new Blob(parts, { type })`, where `parts` is an array of pieces to concatenate: strings, `ArrayBuffer`s, typed arrays like `Uint8Array` (the byte array from the streaming chapter), or other `Blob`s. The browser stitches them into one contiguous byte sequence.
+
+```ts
+const csv = new Blob(['id,name\n1,Ada\n'], { type: 'text/csv' });
+```
+
+Reach for `new Blob(...)` whenever your code mints the bytes: assembling an upload payload, slicing a piece out of a larger file, or building a CSV export before a download. You've already met Blobs unnamed: the `ClipboardItem` content from the previous lesson held them, `Response.blob()` hands one back, and a `fetch` upload body accepts one directly. So **`Blob` is the universal in-memory binary container** the platform passes around: once bytes are in a Blob, every byte-shaped API speaks the same language.
+
+One thing to watch at construction. With no options object, `new Blob(['hello'])` leaves `type` as the empty string `''`, which most consumers treat as `application/octet-stream`, the generic "some bytes, who knows" type. So when anything downstream branches on content type, such as a server deciding how to store the bytes or an `<img>` deciding whether it can render them, pass an explicit `type`.
+
+## `File`: a named `Blob` the browser hands you
+
+A `File` *is* a `Blob`, a subclass, so everything from the last section carries over: `size`, `type`, and the same byte-reading methods.
+It adds exactly two read-only properties: `name`, the filename as the operating system reports it, and `lastModified`, a millisecond timestamp of the file's last change on disk.
+
+**Your code never constructs a `File`; the browser hands you one.**
+When the user picks files through an `<input type="file">`, the input's `change` event populates `event.target.files`, a <Term definition={"An array-like list of File objects the browser fills from a file input or a drop. It has length and index access but no array methods — spread it ([...files]) or use Array.from before you map or filter."}>`FileList`</Term> holding everything they selected.
+(Drag-and-drop fills `event.dataTransfer.files` the same way; a plain file input is all this course needs.)
+
+For a single-file picker you read the first entry, `event.target.files?.[0]`.
+The optional chain matters: a user who opens the picker and cancels leaves no selection, and you'd be indexing into nothing.
+
+<AnnotatedCode lang="tsx" maxLines={14} code={`
+const [file, setFile] = useState<File | null>(null);
+
+<input
+  type="file"
+  accept="image/png,image/jpeg,image/webp"
+  onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+/>;
+`}>
+  <AnnotatedStep meta={`"image/png,image/jpeg,image/webp"`} color="blue">
+    `accept` filters what the OS picker *offers* the user. It's a hint to the picker UI, not validation (the next note explains why).
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"event.target.files?.[0]"`} color="green">
+    `event.target.files` is the `FileList` the change event populates; a single-file pick reads the first entry with `?.[0]`. The optional chain guards against a cancelled picker, and `?? null` falls back cleanly.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"setFile"`} color="orange">
+    `setFile(...)` stashes the picked `File` in state, and the rest of the lesson turns it into a preview. A `multiple` picker reads the whole `FileList`, which is array-like but not an array, so spread it, `[...event.target.files]`, before you can `.map` it into thumbnails.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The `accept` attribute is **UX, not validation.**
+`accept="image/png,image/jpeg,image/webp"` tells the OS picker to gray out everything else, but a determined user can rename a file, drop something past the picker, or hit your endpoint directly with any bytes they like.
+Real validation is the server's job: it reads the file's actual leading bytes and confirms they match the claimed type before trusting it.
+This is why the `type` on a Blob was only ever a claim.
+
+So the rule: **bytes that come from the user arrive as a `File`; bytes your own code mints are a `Blob`.**
+Same byte container underneath, traveling in two directions, and the next noun renders both the same way.
+
+<VideoCallout videoId="ScZZoHj7mqY" videoTitle="Deep Dive into Blobs, Files, and ArrayBuffers">
+  Steve Griffith's 18-minute deep dive ties `Blob`, `File`, and the underlying byte buffers together, good reinforcement for the two nouns you just met.
+</VideoCallout>
+
+## `URL.createObjectURL`: a renderable handle for bytes
+
+You have a `File` or `Blob` in hand, but `<img src>` wants a URL string, not an object. <Term definition={"A temporary string handle of the form blob:<origin>/<uuid> that maps to bytes held in browser memory. Any element that takes a URL can read it; the bytes stay pinned until the handle is revoked or the page unloads."}>`URL.createObjectURL`</Term> is the bridge: pass it a `Blob` or `File`, and it hands back a **string**.
+
+```tsx
+const previewUrl = URL.createObjectURL(file);
+// 'blob:https://app.example.com/9b2c…-uuid'
+
+<img src={previewUrl} alt="" />;
+```
+
+To the DOM that string is a real URL. Any element that takes one, `<img src>`, `<video src>`, `<a href download>`, can consume it and render the bytes as if they'd been fetched, though nothing was.
+
+The catch is in how it works. Calling `createObjectURL` adds an entry to an **in-memory map**, and that entry pins the bytes for as long as it exists. The string is cheap, a UUID with a prefix, but the bytes are not freed when the `<img>` renders or the variable goes out of scope, only when the entry is removed or the page unloads. That is where the leak in the next section comes from.
+
+Why this over the `FileReader` most tutorials reach for? `FileReader` produces a <Term definition={"A data:<type>;base64,… string that embeds the file's bytes inline as base64. Self-contained but ~33% larger than the raw bytes and re-encoded on every use — an object URL is a constant-size handle instead."}>data URL</Term> that encodes the entire file inline, so a two-megabyte photo becomes a ~2.5-megabyte string, re-materialized on every read. An object URL is a constant-size handle no matter the file size. Reach for `FileReader` only when you need its progress events for a long read.
+
+One constraint: these APIs are **browser-only**. There is no `URL.createObjectURL` or `<img>` on the server, so this code can't run in a Server Component, it has to live behind a `'use client'` boundary like the Copy button.
+
+## `revokeObjectURL`: where the cleanup belongs
+
+You created a handle that pins bytes in memory; <Term definition="The mirror of createObjectURL: it removes the URL's entry from the browser's in-memory map, which lets the underlying bytes be garbage-collected. Every createObjectURL has a matching revokeObjectURL.">`URL.revokeObjectURL(url)`</Term> deletes that entry and lets the bytes be collected. **Every `createObjectURL` has a matching `revokeObjectURL`**, the same close-what-you-open rule as aborting a request or clearing a `setTimeout`.
+
+Skip the revoke and the bytes leak. Each re-pick calls `createObjectURL` again and mints a fresh handle; the `<img>` swaps to it and the preview looks perfect, but the previous URL's entry is still in the map, so the previous file's bytes stay pinned with nothing pointing at them. One avatar picker strands one image's worth of memory; a gallery or attachment list strands another file on every re-pick and every URL-recreating re-render until the tab runs out.
+
+Scrub the lifecycle below. The **memory** column fills with pinned byte-blocks; the live **handle** on the right points at one. The leak is a block with no arrow still sitting in memory.
+
+<DiagramSequence>
+  <DiagramStep>
+    <ObjectUrlLifecycle step={1} />
+    <Fragment slot="caption">
+      `createObjectURL(fileA)` adds a map entry that pins A's bytes; the `<img>` reads the handle through to them and the preview renders.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ObjectUrlLifecycle step={2} />
+    <Fragment slot="caption">
+      The re-pick mints `blob:…/B` and the `<img>` swaps to it, but nothing removed A's entry, so A's bytes stay pinned with no consumer. **This is the leak**, repeated on every re-pick.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ObjectUrlLifecycle step={3} />
+    <Fragment slot="caption">
+      `revokeObjectURL(urlA)` deletes A's entry *before* B renders, so A's bytes are collected and only the current preview stays in memory.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ObjectUrlLifecycle step={4} />
+    <Fragment slot="caption">
+      Revoke *right after* setting `<img src>` and the browser hasn't read the bytes yet, so the preview **breaks**. Revoke on unmount or URL change, not the instant the element mounts.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+So where does the revoke go? Two correct homes, chosen by context. In the pick-to-preview flow it belongs in a cleanup that fires **when the file changes or the component unmounts**, which in React is the cleanup *return* of a `useEffect` keyed to the file: swapping photos revokes the old URL, leaving the page revokes the last. For a one-shot generated download (mint a CSV, link it, let the user click), it goes in the link's click handler, right after the consumer is done. Under both: revoke once nothing needs the bytes, and not before. Putting `createObjectURL` and `revokeObjectURL` on adjacent lines blanks the preview, because setting `src` doesn't read the bytes synchronously; the browser reads them a beat later, and by then the entry is gone.
+
+Two lifecycle facts to trust. A `blob:` URL is **origin-scoped**: it works only on the page that created it, and doesn't survive a reload. And the browser revokes *all* of a page's object URLs when the page unloads, so your manual `revokeObjectURL` manages memory *during* the tab's lifetime, not after the user closes it.
+
+Now assemble the leak-free pick-to-preview island: the picked `File` in state, the object URL derived from it, the preview, and the cleanup that keeps it from leaking.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+'use client';
+
+export const AvatarPicker = () => {
+  const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  return (
+    <div>
+      <input
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+      />
+      {previewUrl != null && <img src={previewUrl} alt="" />}
+      {file != null && <p>{file.name}</p>}
+    </div>
+  );
+};
+`}>
+  <AnnotatedStep meta={`"'use client';"`} color="violet">
+    The browser-only island boundary. The `<input>`, `createObjectURL`, and `<img>` all need the DOM, so this can't be a Server Component. Unlike the Copy button, nothing here is gated behind a secure context; it's a client island purely because the API is browser-only.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4-5}" color="blue">
+    Two state slots: the picked `File`, and the preview URL derived from it. Separate, because they change at different moments, the file on pick and the URL as a consequence.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9-10}" color="green">
+    `if (!file) return` guards the no-selection case, then `createObjectURL(file)` mints the handle.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11}" color="orange">
+    The cleanup `return () => URL.revokeObjectURL(url)` is the central move. It fires when `file` changes, releasing the old URL *before* the new preview renders, and again on unmount, never synchronously after the `<img>` mounts, which is why the preview survives.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{16-23}" color="blue">
+    The render. `accept` is UX-only, `event.target.files?.[0] ?? null` handles the cancelled picker, and the `!= null` checks render the `<img>` only once a URL exists and the `<p>` only once a file is picked.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+What's missing is deliberate. The markup is bare, no design-system components or styling, to keep your attention on the byte primitives. The hooks are shown as *shape*, not taught: `useState` holds the file and the URL, `useEffect` syncs with the object-URL map and tears it down. Their mechanics land later; here, just read the shape.
+
+:::caution
+Revoke in the effect's cleanup *return*, not on the line after `createObjectURL`. Revoking immediately blanks the preview, because the `<img>` hasn't read the bytes yet. Create, render, and let the cleanup revoke on the next file change or on unmount.
+:::
+
+## Downloads and the upload handoff
+
+The pick-to-preview island is the one you'll build most, but two relatives are worth recognizing.
+
+**Downloading a generated file** reverses the direction: your code mints the bytes, like a CSV export or a generated PDF, and hands them to the user. The pattern is the same pointed outward: build a `Blob`, make a handle, put it on an `<a href download>`, click it, then revoke.
+
+```tsx
+const downloadReport = (csv: string) => {
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'report.csv';
+  link.click();
+
+  URL.revokeObjectURL(url);
+};
+```
+
+Revoking right after `link.click()` looks too early, but a download click captures the bytes before `click()` returns, so the handle is already done. The `<img>` case differs only because rendering reads the bytes later. The rule holds either way: revoke once the consumer is done.
+
+**The upload handoff** is where a picked `File` goes in production, and it never travels through your server. The client sends the file's `name`, `type`, and `size` to a server action, which returns a short-lived <Term definition="A URL, signed by the server with a short expiry, that grants the holder permission to PUT an object straight to object storage. The bytes go browser-to-storage; the application server only signs the URL, it never handles the file.">presigned URL</Term>. The client then PUTs the **`File` itself** over that URL straight to object storage. Once the upload lands, the client tells the server the key so it can write the metadata row.
+
+<Figure expandable={false}>
+  <UploadHandoff />
+  <Fragment slot="caption">
+    The `File` goes straight to object storage over a presigned URL, so the **bytes skip the server**, which only signs the URL and records the result.
+  </Fragment>
+</Figure>
+
+## Fix the leak
+
+Now write the cleanup yourself. The component below renders the preview correctly but leaks a `Blob` on every re-pick. Make it leak-free without breaking the preview.
+
+<ReactCoding
+  instructions="This avatar preview leaks a Blob on every re-pick — it mints an object URL in the effect but never revokes the old one. Wire the cleanup so picking a new file (or unmounting) releases the previous URL — without blanking the preview."
+  starter={`import { useState, useEffect } from 'react';
+
+export function App() {
+  const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    // The handle is created, but nothing ever releases it.
+  }, [file]);
+
+  return (
+    <div className="space-y-3">
+      <input
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+      />
+      {previewUrl != null && (
+        <img src={previewUrl} alt="" className="h-24 w-24 rounded object-cover" />
+      )}
+      {file != null && <p className="text-sm text-gray-600">{file.name}</p>}
+    </div>
+  );
+}`}
+  tests={`
+// Record every object URL created and revoked, so the tests can check the
+// cleanup wiring without depending on what the <img> visually shows.
+const created: string[] = [];
+const revoked: string[] = [];
+const realCreate = URL.createObjectURL.bind(URL);
+URL.createObjectURL = (obj: Blob | MediaSource) => {
+  const url = realCreate(obj);
+  created.push(url);
+  return url;
+};
+URL.revokeObjectURL = (url: string) => {
+  revoked.push(url);
+};
+
+const makeImageFile = (name: string) =>
+  new File([new Uint8Array([137, 80, 78, 71])], name, { type: 'image/png' });
+
+// Simulate the user choosing a file: set it on the input and fire the change
+// event React listens for, then let the effect run.
+const pick = async (name: string) => {
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  Object.defineProperty(input, 'files', { configurable: true, value: [makeImageFile(name)] });
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+};
+
+test('picking a file shows a preview from a blob: URL', async () => {
+  await pick('avatar.png');
+  const img = document.querySelector('img');
+  expect(img).not.toBeNull();
+  expect(img?.getAttribute('src')?.startsWith('blob:')).toBe(true);
+});
+
+test('the visible preview is not revoked while it is still on screen', async () => {
+  created.length = 0;
+  revoked.length = 0;
+  await pick('avatar.png');
+  expect(revoked).not.toContain(created[0]);
+});
+
+test('re-picking releases the previous file URL (no leak)', async () => {
+  created.length = 0;
+  revoked.length = 0;
+  await pick('first.png');
+  const firstUrl = created[0];
+  await pick('second.png');
+  expect(revoked).toContain(firstUrl);
+});
+`}
+/>
+
+The middle test guards against revoking too early: doing it right after `createObjectURL` blanks the preview. The cleanup belongs in the effect's `return`, which fires on the next pick or on unmount, after the `<img>` has read the bytes.
+
+## External resources
+
+The MDN pages are the reference to bookmark for the handle and its cleanup; the javascript.info chapter walks the same chain in tutorial voice, weighing FileReader against object URLs.
+
+<CardGrid>
+  <ExternalResource
+    title="javascript.info — Blob"
+    href="https://javascript.info/blob"
+    icon="simple-icons:javascript"
+    iconColor="#F7DF1E"
+    description="A tutorial walk from Blob to object URL to revoke, with a table comparing the object-URL and FileReader approaches."
+  />
+  <ExternalResource
+    title="MDN — URL.createObjectURL()"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/URL/createObjectURL_static"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The handle: the returned blob: URL shape, accepted types, and the memory-management note that mandates revoking."
+  />
+  <ExternalResource
+    title="MDN — URL.revokeObjectURL()"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/URL/revokeObjectURL_static"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The cleanup half: what revoking releases, and why every createObjectURL needs a matching call."
+  />
+  <ExternalResource
+    title="MDN — File"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/File"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The Blob subclass: name and lastModified, and where File objects come from."
+  />
+</CardGrid>

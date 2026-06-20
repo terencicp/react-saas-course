@@ -1,0 +1,273 @@
+---
+title: Copy to clipboard with the Clipboard API
+tagline: Write text with the browser's Clipboard API, under the secure-context and user-gesture rules every privileged browser capability shares.
+chapter-id: 16
+course-progress: 0.1092
+sidebar:
+  order: 2
+  label: The Clipboard API
+rewrites: 2
+---
+
+import { CardGrid } from '@astrojs/starlight/components';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import ActivationWindow from '../../../components/lessons/016/2/ActivationWindow.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You're building an invoices table where every row has a "Copy link" button: the user clicks, the invoice URL lands on their clipboard, and a "Copied" tick confirms it. So you write the obvious thing, `onClick={() => navigator.clipboard.writeText(url)}`, and it works on your machine.
+
+Then the tickets arrive. For some users the button does nothing; for others it copies on a fast page load but fails on a slow one; none of it reproduces locally. That one-liner depends on two conditions, and neither shows up in local development.
+
+This lesson names those two conditions and builds the version that survives production.
+
+## Writing a string with `navigator.clipboard.writeText`
+
+The entire write API is one method. `navigator.clipboard.writeText(text)` takes a string and writes it to the system clipboard, the one the user pastes from anywhere on their machine. It's asynchronous, returning a Promise that resolves when the write succeeds and rejects when it fails.
+
+```ts
+await navigator.clipboard.writeText(invoiceUrl);
+```
+
+The write *replaces* the entire clipboard: whatever was there is gone. And `writeText` expects a string, so anything else is silently coerced with `String(value)`, landing the literal text `[object Object]` on the clipboard when you pass an object.
+
+This is the only copy API you write in 2026. The deprecated `document.execCommand('copy')` is the legacy pattern to recognize and avoid.
+
+## The two gates on every clipboard write
+
+Before `writeText` can put anything on the clipboard, two conditions must hold. Miss either and the call fails, but the two failures look different, so you handle them differently.
+
+### Gate 1: a secure context
+
+The write only works in a <Term definition="A page served over HTTPS, or loaded from localhost. The browser gates powerful APIs behind it.">secure context</Term>. This is the same gate you met with `crypto.randomUUID` and `crypto.subtle` last lesson, and the same `mkcert` setup unblocks it in local dev.
+
+The failure mode has a wrinkle. On a plain `http://` page, `navigator.clipboard` isn't a clipboard object that rejects your call; it's `undefined`. So the failure isn't a rejected Promise you can `catch`, it's a `TypeError` thrown the moment you read `.writeText` on `undefined`. That distinction matters when you handle failures.
+
+### Gate 2: transient user activation
+
+The browser only lets you write to the clipboard as the *direct result of a user action*: a click, a key press, a pointer release. Without a gesture, there's no write. This is the gate that's always open in dev and often closed in production.
+
+The permission is also short-lived. The browser sets a <Term definition={"A short-lived 'the user just interacted' flag the browser sets on a gesture like a click or key press and clears about a second later.\nPrivileged APIs such as clipboard write require it to be live at the moment they run."}>transient user activation</Term> flag on the gesture and clears it about a second later. A click at *some point* isn't enough: the write has to run while the flag is still live. Once too much time passes, or you hand control back to the browser across an async gap, the activation is spent and the call rejects with a `NotAllowedError`.
+
+<DiagramSequence>
+  <DiagramStep>
+    <ActivationWindow step={1} />
+    <Fragment slot="caption">
+      Called straight from the click handler: the write runs while the activation is still live, so it **resolves**.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ActivationWindow step={2} />
+    <Fragment slot="caption">
+      The handler awaited a network round-trip first. By the time the write runs, the activation window has closed, so it rejects with `NotAllowedError`.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ActivationWindow step={3} />
+    <Fragment slot="caption">
+      Fired from a timeout or an effect on mount: no gesture ever set the flag, so there's no activation to ride, and it rejects with `NotAllowedError`.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+The three call sites add up to one rule: **the write goes inside the gesture handler, and it runs before you hand control back to the browser for anything slow.** So the call sits at the top of the click handler in the next section, never after an `await` that talks to the network, never in a `useEffect`. If you need data from the server before you copy, fetch it *before* the click and have the string ready, so the click handler does nothing but write.
+
+<MultipleChoice>
+  A user clicks a Copy button. Which placements of `navigator.clipboard.writeText(value)` land on the clipboard? Select all that apply.
+
+  <McqChoice correct>The handler's opening line, run the instant the click fires.</McqChoice>
+  <McqChoice correct>Right after a `value = formatUrl(id)` that just slices a string together — no `await` between the click and the write.</McqChoice>
+  <McqChoice>After `const value = await fetch('/api/invoice').then((r) => r.text())`, using whatever the server sent back.</McqChoice>
+  <McqChoice>Two seconds on, inside the `setTimeout(() => …, 2000)` the click kicked off.</McqChoice>
+  <McqChoice>In the `useEffect` that fires once when the button first mounts.</McqChoice>
+
+  <McqWhy>The click sets the activation flag, and only a write that runs while it's still live lands. Synchronous work — slicing a string, reading a prop — never hands control back to the browser, so the flag is still set when the write fires. A network round-trip and a two-second timeout both outlive the window: by the time they resume, the flag is gone and the write rejects with `NotAllowedError`. The mount effect never had a flag, since nothing the user did triggered it. The rule: write first, before any `await` or timer; if you need server data, fetch it before the click.</McqWhy>
+</MultipleChoice>
+
+## The canonical Copy button
+
+The button has a click handler and local feedback state, so it runs in the browser: its file is a <Term definition="A file that starts with the 'use client' directive. It ships to the browser and can use interactivity, state, and browser APIs.">Client Component</Term>, marked by the `'use client'` directive on the literal first line. A later chapter covers that directive; for now, read it as "this code runs in the browser."
+
+Keep that client boundary as small as possible. Make the *button itself* the client component, a tiny island, and pass it the URL as a string prop from a Server Component parent. Turning the whole page into a client component to host one button ships far more JavaScript and gives up server rendering for everything around it.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+'use client';
+
+type CopyButtonProps = {
+  value: string;
+  label: string;
+};
+
+export const CopyButton = ({ value, label }: CopyButtonProps) => {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => clearTimeout(timer.current ?? undefined), []);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      timer.current = setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // the write rejected — degrade instead of lying (next section)
+    }
+  };
+
+  return (
+    <button type="button" onClick={copy} aria-label={label}>
+      <span aria-hidden>{copied ? 'Copied' : 'Copy'}</span>
+      <span role="status" className="sr-only">
+        {copied ? 'Copied to clipboard' : ''}
+      </span>
+    </button>
+  );
+};
+`}>
+  <AnnotatedStep meta="{1} {8}" color="violet">
+    The client-island boundary. `'use client'` ships this one file to the browser. `value` (the string to copy) and `label` (the accessible name) come down as props from a Server Component parent.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{14} {16} "navigator.clipboard.writeText"`} color="green">
+    The write is the *first* thing the handler does, reached synchronously the instant the click fires. This is the activation gate from the last section in code: no `await fetch`, no effect, no timeout stands between the gesture and the write.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{15} {19} {21}" color="orange">
+    The call rejects in real browsers from expired activation or denied permission, so the `catch` is not optional. What goes inside it is the next section; swallowing the error silently is the bug, not the fix.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{9} {10} {12} "setTimeout(() => setCopied(false), 2000)"`} color="blue">
+    `copied` drives the label swap. A `setTimeout` flips it back after two seconds; its handle lives in a ref so the cleanup can cancel it if the button unmounts mid-timer. The takeaway is feedback that cleans up after itself.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"aria-label={label}" {27-29}`} color="violet">
+    The visible word is just "Copy", so `aria-label="Copy invoice URL"` gives a screen reader the full intent. The `role="status"` span is a live region: assistive tech announces its text when it changes, so a non-sighted user hears "Copied to clipboard" the moment the copy lands.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The visible text sits in an `aria-hidden` span and the announcement in a separate `role="status"` span, so a screen reader hears one clean "Copied to clipboard" instead of the two talking over each other. The `<button>` is bare on purpose: a real product would use its design system's button component, but the semantics that matter, `type="button"`, the accessible label, and the live region, are all here; only the styling is left out.
+
+:::caution
+No path in that handler sets `copied` to `true` before the `await` resolves. The success state follows a successful write, never runs alongside it. That ordering is the point of the next section.
+:::
+
+## Degrade honestly when the write fails
+
+A Copy button that swallows the error and *still* flashes "Copied" is worse than one with no handling: it tells the user the URL is on their clipboard when it isn't, and they paste stale text into a client email. The catch branch is part of the button's behavior, not cleanup bolted on at the end.
+
+Two failures are worth handling, and they are different kinds:
+
+- **Activation expired or denied.** The gesture window closed or the browser declined, so the Promise rejects with a `NotAllowedError`. This can reach a user, so it belongs in the `catch`: tell them it didn't copy and give them a way to copy it themselves.
+- **Insecure context.** On `http://`, `navigator.clipboard` is `undefined`, so reading `.writeText` throws a `TypeError` before the Promise exists, and your `catch` never sees it. This isn't a user error but a deployment misconfiguration: serve production over HTTPS so it can't happen, and surface it loudly in development with a console warning or dev-only banner. A `catch` branch can't help when the throw beats the Promise.
+
+Recovery for the case that can reach a user, the rejected write, is a manual-copy affordance: render the value in a small read-only field with its text pre-selected, so the user finishes with `Cmd/Ctrl+C`. The UI is yours, but the principle is fixed: **never show success you didn't achieve.**
+
+One version below is the button most people write; the other is the one you ship.
+
+<CodeVariants>
+  <CodeVariant label="Lies on failure" icon="lucide:x">
+    <div data-mark-color="red">
+
+    ```tsx del={2,3}
+    const copy = async () => {
+      navigator.clipboard.writeText(value);
+      setCopied(true);
+    };
+    ```
+
+    </div>
+    **Flashes "Copied" even when the write rejected.** With no `await` and no `catch`, the Promise rejects unhandled in the background while `setCopied(true)` runs anyway, so the user sees a success tick for a clipboard that never changed and pastes stale text.
+  </CodeVariant>
+
+  <CodeVariant label="Degrades honestly" icon="lucide:check">
+    <div data-mark-color="green">
+
+    ```tsx ins={5,6,7}
+    const copy = async () => {
+      try {
+        await navigator.clipboard.writeText(value);
+        setCopied(true);
+      } catch {
+        // open a manual-copy fallback: the value in a pre-selected read-only field
+        setFallbackOpen(true);
+      }
+    };
+    ```
+
+    </div>
+    **Only claims success after the write resolves.** The `await` gates `setCopied(true)` on a real write; if it rejects, the catch opens a manual-copy fallback instead of pretending the copy happened.
+  </CodeVariant>
+</CodeVariants>
+
+## Reading the clipboard and rich content
+
+Two other corners of the Clipboard API are worth recognizing, but you rarely reach for either.
+
+**Reading** is possible: `readText()` returns text, `read()` returns richer content. But reads prompt for permission in Chromium and behave differently in Safari, and you usually get paste for free by wiring an `<input>` or `<textarea>`, so read the clipboard yourself only when the feature needs it.
+
+```ts
+const pasted = await navigator.clipboard.readText();
+```
+
+**Rich content:** `writeText` is plain text only. To put several representations on the clipboard at once, pass `write` a <Term definition="An object holding one clipboard entry as several MIME-typed representations at once, so each paste target can pick the format it understands.">`ClipboardItem`</Term>, so a rich editor can take the `text/html` while a terminal takes the `text/plain`.
+
+```ts
+await navigator.clipboard.write([
+  new ClipboardItem({ 'text/html': htmlBlob, 'text/plain': textBlob }),
+]);
+```
+
+The 2026 use is narrow: image and chart copy buttons, with a Safari wrinkle to look up. Those `ClipboardItem` values are `Blob`s, the binary container of the next lesson.
+
+<VideoCallout videoId="T9F0R86Zfy8" videoTitle="Easiest way to Copy to Clipboard in React">
+  Colby Fayock walks the full surface in React in 8 minutes: `writeText`, `write` with a `ClipboardItem` for images, and `readText`/`read`.
+</VideoCallout>
+
+## External resources
+
+The method itself, the security model that governs reading and writing, and the gesture rule that decides whether a write lands.
+
+<CardGrid>
+  <ExternalResource
+    title="MDN — Clipboard.writeText()"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/Clipboard/writeText"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The method reference, including the exceptions it rejects with and the secure-context requirement."
+  />
+  <ExternalResource
+    title="MDN — Clipboard API"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/Clipboard_API"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The full surface — read, write, and ClipboardItem — plus the security and permission considerations."
+  />
+  <ExternalResource
+    title="web.dev — Unblocking clipboard access"
+    href="https://web.dev/articles/async-clipboard"
+    icon="simple-icons:googlechrome"
+    iconColor="#4285F4"
+    description="The Chrome team's deeper walkthrough of the async clipboard, its permission model, and feature detection across browsers."
+  />
+  <ExternalResource
+    title="MDN — Transient activation"
+    href="https://developer.mozilla.org/en-US/docs/Glossary/Transient_activation"
+    icon="simple-icons:mozilla"
+    iconColor="#000000"
+    description="The canonical definition of Gate 2 — what sets the flag, what consumes it, and when it expires."
+  />
+</CardGrid>

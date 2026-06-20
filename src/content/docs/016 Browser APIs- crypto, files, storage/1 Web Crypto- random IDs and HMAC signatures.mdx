@@ -1,0 +1,387 @@
+---
+title: "Web Crypto: random IDs and HMAC signatures"
+tagline: The built-in Web Crypto API, the `crypto` global for minting random IDs and tokens and for signing and verifying webhook payloads.
+chapter-id: 16
+course-progress: 0.1078
+rewrites: 2
+sidebar:
+  order: 1
+  label: Web Crypto
+---
+
+import { Aside, CardGrid, Card } from '@astrojs/starlight/components';
+import Figure from '../../../components/figures/Figure.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import ConstantTimeCompare from '../../../components/lessons/016/1/ConstantTimeCompare.astro';
+import CryptoThreeSurfaces from '../../../components/lessons/016/1/CryptoThreeSurfaces.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A `POST` lands on your public `/api/webhooks/stripe` route. The body claims a customer just paid you \$49, and the only proof is one header: `x-signature`. Anyone who guesses the URL can send that request, so before you record the payment you have to know whether Stripe produced this body with the secret you share, or someone forged it.
+
+The platform gives you a clean primitive to check the signature. The trap is the check itself: compare the signatures with an ordinary equality test and an attacker can use its timing to forge one that passes.
+
+Both the check and its pitfall rest on one object, the `crypto` global, which does three jobs: it mints unique IDs, produces random tokens of any length, and signs and verifies payloads. IDs and tokens are the simpler, far more common jobs, so we take those first and reuse their building blocks for signing.
+
+By the end you will have done four things with this one global: minted a UUID for a primary key, filled a byte buffer and rendered it as a URL-safe string, hashed a payload to a stable hex fingerprint, and signed and verified a webhook payload.
+
+## One `crypto` object, three surfaces
+
+`crypto` is a global, available in every runtime this course touches and never imported, which is why the code blocks here omit it the way they do for `fetch` and `console`. That one object exposes three surfaces:
+
+<Figure>
+  <CryptoThreeSurfaces />
+  <Fragment slot="caption">
+    The first two surfaces are synchronous conveniences; `crypto.subtle` is the asynchronous algorithm surface this lesson takes to depth.
+  </Fragment>
+</Figure>
+
+- `crypto.randomUUID()` returns a v4 UUID string. Synchronous, no arguments.
+- `crypto.getRandomValues(typedArray)` fills a typed array with random bytes. Synchronous.
+- `crypto.subtle` is the asynchronous algorithm surface: sign, verify, digest, encrypt, derive, and import and export keys. Every method returns a Promise.
+
+Two habits to fix first, because the wrong reflex on either ships a security bug.
+
+Ignore the legacy synchronous methods hanging directly off `crypto`: they predate `crypto.subtle`, and 2026 code never reaches for them. The three surfaces above are the whole map.
+
+Never use `Math.random()` for a value an attacker would gain from predicting. Visual jitter is fine, but the moment a random value becomes a token, a guessable ID, or a nonce, `Math.random()` is a bug: it is not a <Term definition="Cryptographically secure pseudo-random number generator. Its output is unpredictable even to an attacker who has already seen many earlier values — unlike Math.random(), whose internal state can be reconstructed.">CSPRNG</Term>. Every random byte in this lesson comes from `crypto`.
+
+## `randomUUID`: unique IDs without a server round-trip
+
+When you need a unique string and don't want a server round-trip to guarantee it, reach for `crypto.randomUUID()`.
+
+It returns a version-4 UUID: a 36-character string carrying 122 bits of entropy, enough that you mint it on the spot and trust it's unique with no database coordination, at any volume you'll generate.
+
+```ts
+const id = crypto.randomUUID();
+// '1f0b8c2e-3d4a-4f6b-9c1e-7a2d5e8b0c11'
+```
+
+Reach for it wherever you need a unique string before the server hands you one: a primary key for a row you're about to insert, an idempotency key on a `POST` so a retry doesn't double-charge, or a request ID you thread through your logs to trace one action end to end.
+
+One constraint runs through this chapter. In the **browser**, `crypto.randomUUID`, like nearly all of Web Crypto, exists only in a <Term definition="A page served over HTTPS or from localhost. Browsers gate Web Crypto, the clipboard, and other powerful APIs to secure contexts; a plain http:// page can't use them.">secure context</Term>: HTTPS or `localhost`. On a plain `http://` page, the property is `undefined` and the call throws. On the **server**, Node or the Edge runtime, there's no such restriction.
+
+<Aside type="note">
+  A v4 UUID is random, so it is **not** sortable by creation time. When you want rows ordered by insertion, reach for UUID **v7** from the `uuid` npm package: time-sortable, and this project's standard for user-facing primary keys.
+</Aside>
+
+## `getRandomValues`: random tokens of any length
+
+A UUID has a fixed shape. When you need to decide the length and format yourself, a share token, a nonce, a one-time invite code, step past `randomUUID`.
+
+`crypto.getRandomValues(typedArray)` fills a typed array **in place** with CSPRNG bytes and returns the same array. You allocate the buffer at the size you want, and the function writes randomness into it: a 256-bit token is `new Uint8Array(32)`, thirty-two bytes filled in one call.
+
+The randomness is one call; the work is turning those bytes into a string you can put in a URL or a header. That encoding is <Term definition="Base64 with a URL- and filename-safe alphabet — minus and underscore instead of plus and slash — and no equals padding, so it drops straight into a URL path, a query string, or a JWT segment without escaping.">base64url</Term>, a reusable pipeline: the digest and signature later in this lesson encode their output the same way.
+
+<AnnotatedCode lang="ts" maxLines={8} code={`
+const generateToken = () => {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\\+/g, '-')
+    .replace(/\\//g, '_')
+    .replace(/=+$/, '');
+};
+`}>
+  <AnnotatedStep meta={`{2} "new Uint8Array(32)"`} color="blue">
+    Allocate the buffer, full of zeros. The length is yours: 32 bytes is a 256-bit token, plenty for a share link or invite code.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{3} "getRandomValues"`} color="green">
+    Fill the buffer in place with CSPRNG bytes, returning the same array. The only randomness step.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{4-7} "btoa"`} color="violet">
+    Render to a URL-safe string. `btoa` gives base64; the three `replace` calls make it URL-safe (`+`→`-`, `/`→`_`, drop the `=` padding). That trio is base64url.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+`getRandomValues` throws `QuotaExceededError` once the array passes **65,536** bytes, so it's a short-token tool. For bulk randomness, reach for a server-side helper.
+
+<Aside type="note">
+  Newer typed-array methods do the encoding in one call: `bytes.toBase64({ alphabet: 'base64url' })`, with `Uint8Array.fromBase64(...)` to reverse it. They're baseline in browsers since September 2025 but only reached the server in Node 25, and this course pins Node 24 LTS. Write the manual `btoa`-plus-`replace` path today; switch once the codebase moves to Node 25.
+</Aside>
+
+## The `crypto.subtle` method families
+
+`crypto.subtle` is the **asynchronous** algorithm surface: every method returns a Promise, so every call needs `await`. Forget it and you get a `Promise<ArrayBuffer>` instead of bytes, and everything downstream is computed from the wrong value. Read a missing `await` as a bug.
+
+A web app reaches for only five families, and this course takes two to depth:
+
+- **`digest`**: a one-shot hash (SHA-256 over a buffer). *Taught at depth* next.
+- **`sign` / `verify`**: signatures, HMAC and asymmetric. *HMAC taught at depth* below.
+- **`encrypt` / `decrypt`**: AES-GCM by default. *Recognition only*; key handling is server-side.
+- **`importKey` / `exportKey`**: move key material in and out of the platform's opaque key type. You'll *use* `importKey`; `exportKey` is recognition only.
+- **`deriveKey` / `deriveBits`**: HKDF, PBKDF2, and friends. *Recognition only*; password hashing belongs on the server with argon2id, never in the browser.
+
+`subtle` never touches raw secret bytes directly: you pass them in once through `importKey` and get back a <Term definition="An opaque handle to key material the platform holds. You pass it to sign/verify; you can't read its raw bytes back unless it was imported as extractable.">CryptoKey</Term>, a sealed handle you hand to `sign` and `verify`.
+
+## `digest`: hashing a payload to a fixed string
+
+`digest` is the warm-up for HMAC: the same async call, encoder, and hex render, just with no key and no verify step. Get it fluent and HMAC is a small step.
+
+`crypto.subtle.digest(algorithm, buffer)` takes an algorithm string and a buffer of bytes, and returns a Promise resolving to an `ArrayBuffer` of the raw digest. You pass `'SHA-256'` and a `Uint8Array` of your input, produced by `new TextEncoder().encode(input)`, the one string-to-bytes bridge this course uses. For SHA-256 the result is 32 bytes.
+
+A hash's defining property is that **the same input produces the same digest, every time, on any machine.** That makes it the tool for content-addressable keys, request-body fingerprints, and deduplication: any stable identifier you can compute locally, with no server in the loop.
+
+A digest is raw bytes, but you want a string, conventionally 64 lowercase hex characters. Rendering has one trap: each byte's `.toString(16)` drops the leading zero on a low byte, so `0x0a` becomes `'a'`, not `'0a'`. Every byte needs `.padStart(2, '0')` to force two characters.
+
+<AnnotatedCode lang="ts" maxLines={9} code={`
+const sha256Hex = async (input: string) => {
+  const bytes = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)]
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+};
+`}>
+  <AnnotatedStep meta={`{2} "TextEncoder"`} color="blue">
+    Encode the input to UTF-8 bytes; `digest` needs bytes, not a string. `TextEncoder().encode` is the only string-to-bytes bridge the course uses.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{3} "await" "digest"`} color="green">
+    The async one-shot hash. `'SHA-256'` is case-sensitive, so `'sha-256'` throws. Drop the `await` and `digest` holds a Promise, not the 32-byte `ArrayBuffer` it resolves to.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{4-6} "padStart"`} color="violet">
+    Render to hex. An `ArrayBuffer` is a raw container; `new Uint8Array(...)` wraps it in a view you can iterate. Each byte becomes two hex chars, and `padStart(2, '0')` keeps a low byte like `0x0a` from collapsing to one.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That `ArrayBuffer`-to-`Uint8Array` wrap recurs: every `subtle` method returns bytes as an `ArrayBuffer` you can't index, so wrapping it in a view becomes muscle memory.
+
+Now prove `padStart` matters. This hex renderer forgot the pad; predict exactly what it prints before you check.
+
+<PredictOutput expected="aff0">
+
+```js
+const bytesToHex = (bytes) =>
+  [...bytes].map((b) => b.toString(16)).join('');
+
+console.log(bytesToHex([10, 255, 0]));
+```
+
+<PredictWhy>`toString(16)` drops the leading zero on any byte below `0x10`. `10` becomes `'a'`, `255` becomes `'ff'`, `0` becomes `'0'` — concatenated, that's `'aff0'`, four characters where the correct render is the six-character `'0aff00'`. Without `padStart(2, '0')` each low byte shrinks from two characters to one, so the string is shorter than `2 × byteLength` and no longer maps back to the bytes. The cruelty: on test data where every byte happens to be ≥ 16 the bug is invisible — every byte renders as two characters and the output looks perfect.</PredictWhy>
+
+</PredictOutput>
+
+## HMAC: signing a payload with a shared secret
+
+<Term definition="Hash-based Message Authentication Code. A keyed hash: the same secret both signs and verifies, proving a payload came from someone who holds the secret.">HMAC</Term> is a *keyed* hash: feed it the payload bytes and a secret key, and you get a signature only a holder of that secret could have produced. A plain digest fingerprints the data; an HMAC fingerprints the data *and* proves the signer knew the secret, which is the whole point of a webhook signature.
+
+That symmetry is what makes HMAC fit a webhook: Stripe holds the secret, you hold the same secret, Stripe signs with it and you verify with it. When the signer and verifier share no secret, you need asymmetric crypto instead, where a public key verifies what a private key signed.
+
+SHA-256 is again the default hash. Signing takes three steps, two of which you already know:
+
+1. **Bytes.** `TextEncoder().encode(...)` turns the secret and the payload into `Uint8Array`.
+2. **Import the key.** Hand the secret's bytes to `importKey` once and get back a `CryptoKey`.
+3. **Sign.** Pass that key and the payload bytes to `sign`, then render the `ArrayBuffer` to hex.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+const signPayload = async (secret: string, payload: string) => {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign', 'verify'],
+  );
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    encoder.encode(payload),
+  );
+  return [...new Uint8Array(signature)]
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+};
+`}>
+  <AnnotatedStep meta={`{2} "encoder"`} color="blue">
+    One stateless `TextEncoder`, reused for the secret and the payload.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{3-9} "'raw'" "false" "['sign', 'verify']"`} color="green">
+    `importKey` is the new surface. `'raw'` says the secret is plain bytes; the object names the algorithm and inner hash; `false` means not extractable. The last argument is the usages array, the trap covered just below.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{10-14} "sign"`} color="violet">
+    `sign` produces the signature `ArrayBuffer` over the payload bytes. `await` is mandatory.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{15-17} "padStart"`} color="orange">
+    Render to hex with the familiar pipeline, ready for an `x-signature` header.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The usages array declares up front what the key may do. Import with `['sign']` and then call `verify`, and the platform throws `InvalidAccessError`. You almost always need both ends, so pass `['sign', 'verify']`. The algorithm strings `'HMAC'` and `'SHA-256'` are case-sensitive, as before.
+
+<VideoCallout videoId="fzMIjWFYQl0" videoTitle="MAC / HMAC — Message Authentication Codes, explained">
+  Practical Networking's 7-minute explainer on why a keyed hash gives you both integrity and authentication: the "only the secret-holder could have made this" property a webhook signature relies on.
+</VideoCallout>
+
+## Verifying a signature in constant time
+
+The handler holds the incoming `x-signature` header, the raw request body, and the shared secret, and it owes you one boolean: was this body signed with this secret? There are two ways to get that boolean, and only one is safe.
+
+**The platform path, the default.** `crypto.subtle.verify('HMAC', key, signatureBytes, payloadBytes)` returns a Promise of a boolean. Decode the incoming header from hex (or base64url) into a `Uint8Array` for `signatureBytes`, pass the raw body bytes as `payloadBytes`, and the platform answers `true` or `false`. It is the default because it runs in time independent of where the inputs diverge: it compares every byte regardless.
+
+**The DIY path, and the footgun.** Suppose instead you re-sign the payload yourself and compare your hex string against the incoming one with `===`. That single line is a timing-attack vulnerability. String equality short-circuits, returning the instant it hits the first differing character, so a guess that matches more leading characters of the real signature takes measurably longer to reject. That rejection time leaks how many leading characters were right, and over enough timed requests an attacker recovers the signature one character at a time. This is how real signature bypasses happen. Scrub the diagram to watch the top row's timing creep up while the bottom row stays flat.
+
+<DiagramSequence>
+  <DiagramStep>
+    <ConstantTimeCompare step={1} />
+    <Fragment slot="caption">
+      The naive `===` rejects on the first wrong character and returns fast. The constant-time compare scans the whole string anyway.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ConstantTimeCompare step={2} />
+    <Fragment slot="caption">
+      The attacker fixes character 1, and the naive compare now runs longer before rejecting. That extra time confirms character 1 was right.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <ConstantTimeCompare step={3} />
+    <Fragment slot="caption">
+      Each correct character adds time on top, none on the bottom. Repeat the probe and the attacker reconstructs the whole signature. The flat bottom row is why you compare every byte.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+**The constant-time fix.** Sometimes you must compare two buffers yourself, for instance when a provider hands you a raw digest instead of a `CryptoKey` for `subtle.verify`. Check the lengths match, XOR each pair of bytes into an accumulator, and assert it is zero at the end. Because the loop always touches every byte, it takes the same time whether the buffers differ at byte 0 or byte 31, so the timing reveals nothing about where they differ.
+
+<CodeVariants maxLines={14}>
+  <CodeVariant label="Timing-attack bug">
+    <div data-mark-color="red">
+
+    ```ts del={3}
+    const verify = async (secret, payload, incomingSig) => {
+      const expectedSig = await signPayload(secret, payload);
+      return incomingSig === expectedSig;
+    };
+    ```
+
+    </div>
+    **This leaks the signature one character at a time.** `===` returns sooner the earlier the mismatch, so rejection time tells an attacker how many leading characters they got right.
+  </CodeVariant>
+
+  <CodeVariant label="Constant-time (subtle.verify)">
+    <div data-mark-color="green">
+
+    ```ts {2} "crypto.subtle.verify"
+    const verify = async (key, signatureBytes, payloadBytes) =>
+      crypto.subtle.verify('HMAC', key, signatureBytes, payloadBytes);
+    ```
+
+    </div>
+    **The platform's verify is constant-time and a single call, which is why it's the default.** `signatureBytes` is the decoded incoming header, `payloadBytes` the raw body.
+  </CodeVariant>
+
+  <CodeVariant label="Constant-time (manual XOR)">
+    <div data-mark-color="green">
+
+    ```ts {4-7}
+    const constantTimeEqual = (a: Uint8Array, b: Uint8Array) => {
+      if (a.length !== b.length) return false;
+      let mismatch = 0;
+      // constant-time compare to prevent timing attack
+      for (let i = 0; i < a.length; i++) {
+        mismatch |= a[i] ^ b[i];
+      }
+      return mismatch === 0;
+    };
+    ```
+
+    </div>
+    **Reach for this only when you hold two buffers, not a `CryptoKey`.** It XORs every byte pair into an accumulator and always runs the full loop, so the timing is identical no matter where the buffers diverge.
+  </CodeVariant>
+</CodeVariants>
+
+In server code you will also see Node's `crypto.timingSafeEqual(a, b)`: the same constant-time compare under Node's name. This course standardizes on `subtle.verify` (preferred) or the XOR compare above.
+
+The rule: prefer `subtle.verify`, never compare a signature with `===`, and make any hand-rolled compare constant-time.
+
+<MultipleChoice>
+  An attacker fires the same forged request thousands of times and watches how long the handler takes to reject each one. Against `incomingSig === expectedSig`, which two facts let those timings hand them a valid signature? Select all that apply.
+
+  <McqChoice correct>A guess whose first few characters happen to match the real signature gets rejected a hair *later* than one that's wrong from the start.</McqChoice>
+  <McqChoice correct>Because each extra matched character costs measurably more time, the attacker can confirm the signature one position at a time until the whole thing is recovered.</McqChoice>
+  <McqChoice>`===` refuses to compare two strings of different lengths, so it throws before the timing even matters.</McqChoice>
+  <McqChoice>A hex string isn't a safe type to feed to `===`, so the comparison result itself is unreliable.</McqChoice>
+  <McqChoice>`===` runs slower than `crypto.subtle.verify`, so the handler is the bottleneck under load.</McqChoice>
+
+  <McqWhy>The leak is about timing *uniformity*, not length, type, or raw speed. `===` short-circuits the instant two characters differ, so a near-correct guess is rejected a little later than a wrong-from-the-start one — and that delta is a side channel the attacker amplifies over many requests to read the signature character by character. The length decoy is wrong (`===` happily compares different-length strings and just returns `false`); the type decoy is wrong (hex is an ordinary string); the speed decoy misses the point entirely — `subtle.verify` isn't safe because it's faster, it's safe because it touches every byte regardless of where they diverge, so its timing reveals nothing.</McqWhy>
+</MultipleChoice>
+
+## Where these primitives show up later
+
+You won't hand-write most of these flows again, but you'll recognize them when later helpers wrap exactly what you just built.
+
+<CardGrid>
+  <Card title="Stripe & Resend webhooks" icon="server">
+    The same HMAC-verify pattern, plus a `processed_events` ledger to dedupe replays.
+  </Card>
+  <Card title="Idempotency keys" icon="random">
+    `randomUUID` minted on the client and sent as an `Idempotency-Key` header so a retried `POST` doesn't run twice.
+  </Card>
+  <Card title="Session-cookie integrity" icon="padlock">
+    HMAC under the hood, handled for you by Better Auth, a seam you now know the inside of.
+  </Card>
+  <Card title="Content-addressable keys" icon="database">
+    The `digest → hex` pipeline, reused to fingerprint and dedupe uploaded files in the object-storage work.
+  </Card>
+</CardGrid>
+
+One rule prevents the most common way webhook verification ships broken: **verify the signature on the raw, unparsed body.** The moment you `JSON.parse` and re-serialize, key order, whitespace, or number formatting can shift the bytes, and a signature that was never tampered with stops matching.
+
+## External resources
+
+The platform documentation is the source of truth here, and the MDN pages are unusually good: each method page ships a runnable example you can paste into a console.
+
+<CardGrid>
+  <ExternalResource
+    title="MDN — Web Crypto API"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The overview for crypto, randomUUID, getRandomValues, and the subtle surface."
+  />
+  <ExternalResource
+    title="MDN — SubtleCrypto.verify()"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/verify"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The HMAC sign/verify reference, with a working verify() example."
+  />
+  <ExternalResource
+    title="MDN — SubtleCrypto.digest()"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/digest"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The one-shot hash and the canonical bytes-to-hex render."
+  />
+  <ExternalResource
+    title="Timing-safe auth with Web Crypto"
+    href="https://www.arun.blog/timing-safe-auth-web-crypto/"
+    icon="lucide:timer"
+    iconColor="#2563EB"
+    description="A focused write-up on constant-time verification — and the double-HMAC pattern when subtle.verify isn't enough."
+  />
+</CardGrid>

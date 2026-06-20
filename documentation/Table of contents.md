@@ -115,14 +115,14 @@
 
 ### Chapter 015 — Fetch and live streams
 - 1 The universal HTTP client (Write any `fetch` call with the senior shape — `Request`, `Response`, `Headers`, `FormData`, the body consumer methods, `AbortSignal.timeout`, the `if (!response.ok)` branch, and the Zod parse on the success path.)
-- 2 Streaming progress with SSE (Read response bodies as `ReadableStream` chunks, emit Server-Sent Events from a Next.js Route Handler, consume them with `EventSource` or `fetch`, and pick between SSE, WebSockets, and polling.)
+- 2 Streaming and live channels (Read response bodies as `ReadableStream` chunks, emit Server-Sent Events from a Next.js Route Handler, consume them with `EventSource` or `fetch`, and pick between polling, SSE, and WebSockets.)
 - 3 Quiz
 
-### Chapter 016 — Browser capability APIs
+### Chapter 016 — Browser APIs: crypto, files, storage
 - 1 Web Crypto: random IDs and HMAC signatures (Installs the `crypto` global's three surfaces — `randomUUID`, `getRandomValues`, and the asynchronous `subtle` HMAC sign / verify pair — with constant-time comparison as the timing-attack mitigation for any signature check.)
-- 2 The Clipboard API: the Copy button surface (Installs `navigator.clipboard.writeText` as the senior copy reach, the secure-context-plus-user-activation constraints, and the canonical "Copy" button shape with `'use client'`, `try/catch`, feedback state, and `aria-label`.)
-- 3 Blob, File, and URL.createObjectURL: the upload primitives (Installs the three binary primitives every file-upload UI builds on — `Blob`, `File`, and `URL.createObjectURL` with `revokeObjectURL` cleanup — and foreshadows the R2 presigned-PUT flow from pick to preview to direct upload.)
-- 4 Web Storage: where localStorage earns its weight (Installs the `localStorage` and `sessionStorage` API surface, the SSR safety dance under Next.js 16, and the cookie / URL state / server state / `localStorage` / `useState` decision tree with what `localStorage` is explicitly not for.)
+- 2 Copy to clipboard with the Clipboard API (Installs `navigator.clipboard.writeText`, the secure-context-plus-user-activation gates that make it fail in production, and the canonical "Copy" button shape with `'use client'`, `try/catch`, feedback state, and `aria-label`.)
+- 3 Blob, File, and object URLs: the upload primitives (Installs the three binary primitives every file-upload UI builds on — `Blob`, `File`, and `URL.createObjectURL` with `revokeObjectURL` cleanup — and foreshadows the R2 presigned-PUT flow from pick to preview to direct upload.)
+- 4 localStorage and sessionStorage (Installs the `localStorage` and `sessionStorage` API surface, reading it safely under Next.js 16 SSR, and the component-state / URL / server / cookie / `localStorage` decision tree with what `localStorage` is explicitly not for.)
 - 5 Quiz
 
 ---
@@ -131,11 +131,11 @@
 
 ### Chapter 017 — JSX and HTML semantics
 - 1 JSX is property syntax for HTML (The JSX surface every later lesson rides on: the rename table (`className`, `htmlFor`, camelCase events), curly-brace expressions, fragments, void self-close, list keys tied to data, and the `&&` zero trap.)
-- 2 The Next.js root layout owns the document shell (The `app/layout.tsx` Server Component renders `<html lang>` and `<body>`, the metadata API writes the `<head>`, and `'use client'` belongs on a `<Providers>` child, not the root.)
-- 3 Landmarks and the heading outline (The six landmark elements (`<header>`, `<nav>`, `<main>`, `<aside>`, `<article>`, `<section>`, `<footer>`) plus the strict `<h1>`-through-`<h6>` hierarchy form the page outline assistive tech navigates.)
-- 4 Actions, navigations, and item sequences (`<button type>` for actions versus `<a href>` and `<Link>` for navigation, `target="_blank"` paired with `rel="noopener noreferrer"`, `aria-label` on icon-only buttons, and `<ul>`/`<ol>` for related parallel items.)
-- 5 Forms as a contract with the server (`<form>`, typed `<input>`s, `<label htmlFor>`, `<fieldset>`/`<legend>`, the `name` attribute as the `FormData` key, `autoComplete` for autofill, and native constraints as UX paired with server-side Zod.)
-- 6 data-*, aria-*, and the <table> decision (`data-*` for script hooks (delegation, tests, Tailwind state), `aria-*` for assistive-tech signals (`aria-label`, `aria-current`, `aria-expanded`, `aria-pressed`, `role="alert"`), and `<table>` with `<th scope>` and `<caption>` only when the data is genuinely tabular.)
+- 2 The Next.js root layout (The `app/layout.tsx` Server Component renders `<html lang>` and `<body>`, the metadata API writes the `<head>`, and `'use client'` belongs on a `<Providers>` child, not the root.)
+- 3 Semantic landmarks and the heading outline (The six landmark elements (`<header>`, `<nav>`, `<main>`, `<aside>`, `<article>`, `<section>`, `<footer>`) plus the strict `<h1>`-through-`<h6>` hierarchy form the page outline assistive tech navigates.)
+- 4 Buttons, links, and lists (`<button type>` for actions versus `<a href>` and `<Link>` for navigation, `target="_blank"` paired with `rel="noopener noreferrer"`, `aria-label` on icon-only buttons, and `<ul>`/`<ol>` for related parallel items.)
+- 5 HTML forms and the FormData contract (`<form>`, typed `<input>`s, `<label htmlFor>`, `<fieldset>`/`<legend>`, the `name` attribute as the `FormData` key, `autoComplete` for autofill, and native constraints as UX paired with server-side Zod.)
+- 6 data-*, aria-*, and the table decision (`data-*` for script hooks (delegation, tests, Tailwind state), `aria-*` for assistive-tech signals (`aria-label`, `aria-current`, `aria-expanded`, `aria-pressed`, `role="alert"`), and `<table>` with `<th scope>` and `<caption>` only when the data is genuinely tabular.)
 - 7 Quiz
 
 ### Chapter 018 — Tailwind v4 inside the React component
