@@ -76,8 +76,7 @@ prefer a plain description over a flashy teaser, slogan, or metaphor. Keep it un
 Rewrite the sidebar label to match the title, shortening if the title exceeds ~36 characters.
 Rewrite the tagline according to the guidelines. Summarize it if possible, but make sure it keeps its high-level framing, naming the technology the lesson teaches.
 Rename the MDX file to match the sidebar label if it changed.
-
-Make sure to add quotes around a field's value if using a colon in a string.
+Use quotes around a field's value if its string contains a colon.
 
 ## Step 9 - Coherence pass
 
