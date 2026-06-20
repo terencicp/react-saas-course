@@ -19,7 +19,7 @@ term | synonyms | one-line definition | first defined: Chapter <NNN> L<N>
 
 - **term** — the canonical name, lowercase unless it is a proper noun or API name.
 - **synonyms** — comma-separated alternate names and abbreviations a search might use; `-` if none.
-- **one-line definition** — plain, one sentence, no markdown.
+- **one-line definition** — plain, a few words, no markdown.
 - **first defined** — the chapter and lesson where the course first defines the term, e.g. `Chapter 001 L4`.
 
 Append a term the first time the course defines it; order does not matter since lookups use grep.
@@ -28,455 +28,489 @@ Never duplicate an existing term, update its line instead.
 ## Terms
 
 <!-- entries below, one per line, append new terms at the end -->
-value equality | - | Equality that compares two primitives by their content, since a primitive has no identity apart from its value; what `===` does for primitives. | first defined: Chapter 001 L2
-reference equality | identity equality | Equality that compares two objects by whether they are the same allocation rather than by their contents; what `===` does for objects. | first defined: Chapter 001 L2
-coercion | type coercion | JavaScript automatically converting a value from one type to another, such as a string to a number, before an operation. | first defined: Chapter 001 L2
-IEEE 754 | - | The standard defining how JavaScript's `number` type stores and computes floating-point values, the source of its floating-point edge cases. | first defined: Chapter 001 L2
-structural equality | deep equality | Comparing two objects by whether their fields and values match, recursively; JavaScript has no built-in operator for it. | first defined: Chapter 001 L2
-memoization | - | Caching a function's result so a repeated call with the same input returns the stored value instead of recomputing it. | first defined: Chapter 001 L2
-NaN | not a number | The IEEE 754 value marking an invalid numeric calculation; it is not equal to anything, including itself, and propagates through any arithmetic it touches. | first defined: Chapter 001 L2
-integer cents | integer-cents rule | Storing money as the integer count of a currency's smallest unit (1995, not 19.95), converting to a string only at input and display, so all arithmetic stays exact. | first defined: Chapter 001 L3
-minor unit | smallest currency unit | The smallest denomination of a currency, such as a cent for USD or a fil for BHD; the unit money is stored and transmitted in as an integer. | first defined: Chapter 001 L3
-ISO 4217 | - | The standard that codes each currency and its number of minor-unit decimals (USD 2, JPY 0, BHD 3), setting how many integer units make one major unit. | first defined: Chapter 001 L3
-BigInt | - | A JavaScript integer type for whole numbers beyond Number.MAX_SAFE_INTEGER, written with an `n` suffix; it does not mix with `number` in expressions or work with `Math.*`. | first defined: Chapter 001 L3
-safe integer | Number.MAX_SAFE_INTEGER | An integer a regular `number` can represent exactly, up to 2^53 − 1; past this ceiling integers lose precision and need BigInt. | first defined: Chapter 001 L3
-radix | base | The number base a string of digits is read in, such as 10 for decimal or 16 for hexadecimal; parseInt's second argument. | first defined: Chapter 001 L3
-code unit | UTF-16 code unit | One of the 16-bit chunks a JavaScript string is stored in and that `.length` counts; characters above U+FFFF take two of them. | first defined: Chapter 001 L4
-code point | Unicode code point | The single number Unicode assigns to one character; spreading a string iterates by code point, collapsing each surrogate pair to one. | first defined: Chapter 001 L4
-surrogate pair | - | The two UTF-16 code units used to encode a single code point above U+FFFF, the reason `.length` over-counts most emoji and many CJK characters. | first defined: Chapter 001 L4
-grapheme cluster | grapheme | One character as the user perceives it on screen, which can span several code points such as a base letter plus combining marks or a joined emoji sequence. | first defined: Chapter 001 L4
-zero-width joiner | ZWJ | An invisible Unicode character (U+200D) that glues adjacent code points into a single grapheme, such as the person emoji that combine into one family emoji. | first defined: Chapter 001 L4
-serialization detail | - | A property of how a value is stored or transmitted rather than of what it represents, such as `.length` reporting storage form, not the human-meaningful count. | first defined: Chapter 001 L4
-Intl.Segmenter | - | The built-in API that splits a string into graphemes, words, or sentences for a given locale and granularity, the correct way to count user-perceived characters. | first defined: Chapter 001 L4
-Unicode normalization | normalize, NFC, NFD, NFKC, NFKD | Rewriting a string to a canonical sequence of code points so visually identical text compares equal; NFC composes, NFD decomposes, the NFK forms also fold compatibility look-alikes. | first defined: Chapter 001 L4
-template literal | backtick string | A string written with backticks that supports ${} interpolation and preserves newlines as newlines. | first defined: Chapter 001 L5
-interpolation | string interpolation | Embedding the value of an expression inside a template literal with ${expression}. | first defined: Chapter 001 L5
-tagged template | tagged template literal, tag | A function call whose arguments are the static string segments and the dynamic values of a template literal, written as `tag` before the backticks. | first defined: Chapter 001 L5
-TemplateStringsArray | - | The first argument a tag function receives, a readonly array of the static string segments between ${} placeholders, always one element longer than the values array. | first defined: Chapter 001 L5
-String.raw | - | A built-in tag that returns a template's raw text without processing escape sequences, so `\n` stays as two characters. | first defined: Chapter 001 L5
-SQL injection | - | An attack where user-submitted text is concatenated into a query and runs as SQL, letting the attacker read or change data the query never intended to touch. | first defined: Chapter 001 L5
-parameterized query | bound parameter, parameterization | A query that sends each interpolated value to the database as a separately bound parameter rather than inlining it into the query text, closing the SQL injection door. | first defined: Chapter 001 L5
-dedent | - | An npm package exposing a tagged template that strips the common leading whitespace from every line of a multi-line string and trims the outer newlines. | first defined: Chapter 001 L5
-binding | - | A name that points to a value, such as a variable, parameter, or property; in `const x = 1`, `x` is the binding and `1` is the value. | first defined: Chapter 001 L1
-block scope | block-scoped | The rule that a `const` or `let` binding is visible only inside the nearest enclosing pair of curly braces, determined lexically by where it is written rather than by the runtime call stack. | first defined: Chapter 001 L6
-Temporal Dead Zone | TDZ | The period between entering a scope and reaching a `let`/`const` declaration, during which the binding exists but accessing it throws a ReferenceError. | first defined: Chapter 001 L6
-hoisting | - | The compile-time process where the engine pre-registers every name in a scope before any code runs; `var` names initialize to `undefined`, while `let`, `const`, and `class` names stay unreachable until their declaration line (the TDZ). | first defined: Chapter 001 L6
-Object.is | SameValue | A built-in equality function that behaves like `===` except it treats `NaN` as equal to itself and `+0` as distinct from `-0`; despite the name it has nothing to do with objects. | first defined: Chapter 001 L2
-Number.isNaN | - | The namespaced check that returns `true` only when the value passed is the actual `NaN`, without coercing its argument the way the global `isNaN` does. | first defined: Chapter 001 L2
-Number.isFinite | - | The namespaced check that returns `true` only when the value passed is a finite `number`, without coercing its argument the way the global `isFinite` does. | first defined: Chapter 001 L2
-predicate | - | A function that returns a boolean, used to test whether a value satisfies some condition. | first defined: Chapter 001 L3
-Number.isInteger | - | The namespaced check that returns `true` only when the value is a whole `number` with no fractional part, returning `false` for NaN and the infinities. | first defined: Chapter 001 L3
-Number.isSafeInteger | - | The namespaced check that returns `true` only when the value is an integer a regular `number` can represent exactly, at or below 2^53 − 1. | first defined: Chapter 001 L3
-Intl.NumberFormat | - | The built-in API that formats a number for a locale, producing the right currency symbol, digit grouping, and minor-unit decimals automatically. | first defined: Chapter 001 L3
-combining mark | combining accent, combining acute accent | A Unicode code point with no width of its own that the renderer overlays onto the preceding base character, such as a combining acute accent turning a plain `e` into `é`. | first defined: Chapter 001 L4
-precomposed | composed form | A single code point that already carries its accent (such as `é`), as opposed to the decomposed form of a base letter followed by separate combining marks. | first defined: Chapter 001 L4
-localeCompare | String.prototype.localeCompare | The string method that compares two strings in locale-aware alphabetical order, the correct way to sort user-visible text since `<` and `>` compare by code unit instead. | first defined: Chapter 001 L4
-ORM | object-relational mapper | A library that maps database tables to objects in your code, letting you query and write rows through typed methods instead of raw SQL strings. | first defined: Chapter 001 L5
-arrow function | arrow, fat arrow | A function value written `(args) => body` that inherits `this` from the enclosing scope; the course default, bound to `const`. | first defined: Chapter 002 L1
-function declaration | - | A function defined with the `function` keyword at statement position (`function name(args) { ... }`); its whole body hoists to the top of the scope and it gives the function its own name. | first defined: Chapter 002 L1
-function expression | - | A `function`-keyword function used as a value, e.g. assigned to a `const`; an optional internal name is visible only inside its own body for self-reference. | first defined: Chapter 002 L1
-method shorthand | - | The object-literal syntax that defines a method by dropping the colon and `function` keyword (`{ greet(name) { ... } }`); it binds its own `this` from the call site. | first defined: Chapter 002 L1
-type predicate | predicate signature | A TypeScript return annotation of the form `x is T`; when the function returns true, the checker narrows the argument to `T`. | first defined: Chapter 002 L1
-assertion signature | assertion function | A TypeScript return annotation of the form `asserts x is T`; if the function returns without throwing, the checker treats the argument as `T` from then on. Parses only on `function`, not on arrows. | first defined: Chapter 002 L1
-narrowing | - | TypeScript shrinking a value's type to something more specific within a branch, such as from `unknown` to `User` after a type guard returns true. | first defined: Chapter 002 L1
-labeled statement | label | A statement prefixed with an identifier and a colon (e.g. `loop: for (...)`), giving it a name that `break` or `continue` can target; rarely used in modern code. | first defined: Chapter 002 L1
-options object | - | A single object parameter whose named fields replace a long positional parameter list, so call sites name each argument and new fields stay backward-compatible; the course default past two parameters. | first defined: Chapter 002 L2
-positional parameter | positional argument | A parameter bound by its order in the call rather than by name; the first argument fills the first parameter, the second fills the second, and so on. | first defined: Chapter 002 L2
-parameter default | default parameter | A value written `param = expr` in a signature that fires only when the argument is `undefined` (including a missing one), unlike `||` which also fires on other falsy values. | first defined: Chapter 002 L2
-object type literal | inline object type | An inline object shape used as a type, each entry a field name, a colon, and its type, with a trailing `?` marking the field optional. | first defined: Chapter 002 L2
-rest parameter | rest | A final `...name` parameter that gathers every trailing positional argument into one array; must be last and only one per signature. | first defined: Chapter 002 L2
-spread argument | spread | A `...array` at a call site that unpacks an array into individual positional arguments, the reverse of a rest parameter. | first defined: Chapter 002 L2
-wrapper pattern | wrapper function | A function that adds behavior (logging, timing, error translation) around another and forwards every argument straight through, typically via rest on the way in and spread on the way out. | first defined: Chapter 002 L2
-falsy | - | A value that coerces to false in a boolean context; in JavaScript exactly `false`, `0`, `''`, `null`, `undefined`, and `NaN`. | first defined: Chapter 002 L2
-architectural principle | senior-mindset principle | The course's running list of senior-mindset decisions that shape a 2026 SaaS codebase before any syntax is involved; each one earns its place by preventing a real bug class, not by being a style preference. | first defined: Chapter 002 L3
-public surface | - | Everything about a function visible to a caller without opening its body: the name, parameter list, return type, and TSDoc; anything you'd see in an IDE tooltip or error message. | first defined: Chapter 002 L3
-Hungarian notation | - | A naming style that encodes a value's type or scope in the identifier itself (`bIsAdmin`, `EStatus`); invented for early C and Visual Basic codebases where the compiler couldn't show the type at a glance. | first defined: Chapter 002 L3
-Biome | - | The course's fast Rust-based linter and formatter, the 2026 replacement for ESLint plus Prettier; flags code-style problems and reformats files but can't judge whether a name describes the value. | first defined: Chapter 002 L3
-Server Action | - | A Next.js async function marked `'use server'` that runs on the server but is callable straight from client code; the course's default way to handle form submissions and mutations. | first defined: Chapter 002 L3
-implementation-leaking name | - | A name that encodes how today's code stores or computes a value (`userArray`, `invoicesQueryResult`) rather than what the value is, so a refactor makes it lie. | first defined: Chapter 002 L3
-vague abstraction | - | A name that fits any value in the codebase (`data`, `result`, `manager`, `helper`) and therefore communicates nothing about the specific value it holds. | first defined: Chapter 002 L3
-negated boolean | - | A boolean whose name bakes in a negation (`notDisabled`, `noErrors`), so it compounds with `!` at use sites into a double negative; the fix is to name the positive condition. | first defined: Chapter 002 L3
-guard clause | guard | A check at the top of a function that exits early on an invalid or edge case, with no `else`, so the rest of the body can assume the happy path. | first defined: Chapter 002 L4
-discriminated union | tagged union | A TypeScript type that is one of several object variants, each tagged by a shared literal field, so the compiler can narrow to a single variant per branch. | first defined: Chapter 002 L4
-discriminant | tag | The literal-typed field shared across the variants of a discriminated union that the dispatch reads to pick a case. | first defined: Chapter 002 L4
-never | never type | TypeScript's bottom type, the type with no values; used as a parameter type to force a compile error when an unhandled union variant could reach the function. | first defined: Chapter 002 L4
-exhaustiveness checking | exhaustive switch | Forcing the compiler to verify that every variant of a union is handled, typically a `switch` whose `default` calls `assertNever` so a missing case fails the build. | first defined: Chapter 002 L4
-assertNever | - | A helper typed `(x: never): never` that, placed in a switch `default`, turns a forgotten discriminated-union variant into a compile error and throws if ever reached at runtime. | first defined: Chapter 002 L4
-noFallthroughCasesInSwitch | - | A TypeScript compiler flag enabled in the course's tsconfig.json that makes a switch case without a terminating statement (break, return, throw, continue) a compile error. | first defined: Chapter 002 L4
-noUncheckedIndexedAccess | - | A TypeScript compiler flag that adds `| undefined` to the type of any indexed access (arr[i], obj[key]) where the key isn't statically known, forcing the caller to handle the miss. | first defined: Chapter 002 L4
-optional chaining | ?. | The `?.` operator family — `?.`, `?.()`, `?.[…]` — for accessing a property, calling a method, or indexing when the receiver might be null or undefined, short-circuiting the whole expression to undefined at the first nullish link. | first defined: Chapter 002 L5
-nullish | - | The two values JavaScript treats as genuinely missing, null and undefined, distinct from the wider falsy set that also includes 0, '', false, and NaN. | first defined: Chapter 002 L5
-nullish coalescing | ?? | The `??` operator that returns its right operand only when the left is nullish (null or undefined), unlike `||` which also fires on any falsy left. | first defined: Chapter 002 L5
-nullish coalescing assignment | ??= | The `??=` operator that assigns the right operand to the left only when the left is nullish, applying the nullish-not-falsy rule of `??` to assignment; its canonical use is lazy cache-or-compute. | first defined: Chapter 002 L5
-short-circuit | short-circuiting | An expression that stops evaluating at the first link returning the early value — for `?.` the first nullish link returning undefined, for `??` a non-nullish left returning itself. | first defined: Chapter 002 L5
-destructuring | destructure | The syntactic form that pulls fields out of an object (by name) or positions out of an array (by order) and binds them as local variables in one expression; works at the parameter signature, after assignment, and inside function bodies. | first defined: Chapter 002 L6
-shadowing | shadow | When an inner-scope binding reuses a name from an enclosing scope, the inner one hides the outer for the rest of the block, so references resolve to the inner binding. | first defined: Chapter 002 L6
-tuple | - | A fixed-length array whose positions each carry a distinct, agreed meaning, so order is part of the contract rather than incidental. | first defined: Chapter 002 L6
-closure | - | A function paired with the variables it can see from where it was written; when it runs it reads those bindings themselves, not snapshots of the values they held when it was defined. | first defined: Chapter 002 L7
-lexical environment | - | The set of bindings in scope at the spot in the source where a function is defined, which the function carries with it as its closure. | first defined: Chapter 002 L7
-scope chain | - | The ordered list of enclosing scopes a name lookup walks until it finds the binding or fails; fixed at write time by where the function is defined. | first defined: Chapter 002 L7
-higher-order function | - | A function that takes a function as input or returns a function as output, such as a factory that returns a configured handler. | first defined: Chapter 002 L7
-module scope | - | The top-level scope of a module file, evaluated once at module load, so a binding declared there is shared across every later call into the module rather than being per-call or per-request. | first defined: Chapter 002 L7
-dot access | dot notation | Reading or writing a field by a name written literally after a dot (`obj.field`); checked against the object's known shape and the default form for a known field. | first defined: Chapter 003 L1
-bracket access | bracket notation, indexed access | Reading or writing a field by a key expression in brackets (`obj[key]`); the form for non-identifier, variable, or runtime-computed keys, and the one that can reach the prototype chain. | first defined: Chapter 003 L1
-prototype chain | prototype | The chain of objects JavaScript walks on a property miss, ending at `Object.prototype`, which is why members like `toString` and `hasOwnProperty` are reachable on any object literal without being defined on it. | first defined: Chapter 003 L1
-object spread | spread, shallow merge | The `{ ...obj }` form that copies an object's own enumerable properties one level deep into a new literal; when keys collide the right-most occurrence wins. | first defined: Chapter 003 L1
-property shorthand | shorthand | The object-literal form that writes a field once when a local variable's name matches the field name (`{ name }` for `{ name: name }`). | first defined: Chapter 003 L1
-computed key | computed property name | The object-literal form that takes the key from a bracketed expression on the left of the colon (`{ [fieldName]: value }`), for keys not known when the literal is written. | first defined: Chapter 003 L1
-structural typing | structural type system | TypeScript matching types by shape rather than name, so any value carrying the required fields satisfies a type even with extra fields the type never mentioned. | first defined: Chapter 003 L1
-enumerable | enumerable property | A property that appears when an object's keys are iterated or listed; keys written in a literal are enumerable, while some built-in properties are non-enumerable so loops and `Object.keys` skip them. | first defined: Chapter 003 L1
-Record<string, T> | Record type | A TypeScript object type with dynamic string keys all sharing value type T, equivalent to `{ [key: string]: T }`. | first defined: Chapter 003 L1
-Object.hasOwn | - | The ES2022 static that checks whether a key is the object's own property, ignoring the prototype chain, replacing the older `Object.prototype.hasOwnProperty.call(obj, key)`. | first defined: Chapter 003 L1
-Object.groupBy | - | The ES2024 static that buckets an array's items into an object keyed by a string the callback returns, replacing the hand-written `.reduce` grouping pattern. | first defined: Chapter 003 L1
-Object.create(null) | - | An object created with no prototype, so it has no inherited members and a user-controlled key can never collide with `Object.prototype` methods; used for safe lookup tables. | first defined: Chapter 003 L1
-non-mutating method | non-mutating update, non-mutating twin | An array method that returns a new array with a new reference instead of changing the original in place (toSorted, toReversed, toSpliced, with), so reference-comparing systems like React detect the change. | first defined: Chapter 003 L2
-shallow copy | shallow clone | A copy that produces a new outer array or object but reuses the references to any nested objects inside, one level deep; what spread and `.slice()` produce. | first defined: Chapter 003 L2
-iterable | iteration protocol | Any value implementing the iteration protocol so it can be spread or passed to `Array.from`, including Set, NodeList, generators, strings, arguments, and URLSearchParams. | first defined: Chapter 003 L2
-sparse array | - | An array with holes, index positions that were never assigned, such as the length-3 result of `Array(3)`; most array methods skip the holes silently. | first defined: Chapter 003 L2
-SameValueZero | - | The equality JavaScript uses for Set and Map keys, like `===` for values except it treats NaN as equal to itself, so a Set never holds two NaN entries. | first defined: Chapter 003 L2
-accumulator | acc | The running value `.reduce` carries from one callback call to the next; it starts at the initial value passed as the second argument and becomes the method's result after the last element. | first defined: Chapter 003 L3
-Object.fromEntries | - | The built-in that turns an iterable of `[key, value]` pairs into an object, the linear-time inverse of `Object.entries`; paired with `.map` it builds a lookup object in one walk instead of a quadratic `.reduce` spread. | first defined: Chapter 003 L3
-non-null assertion | non-null assertion operator, postfix ! | TypeScript's trailing `!` operator (`arr[i]!`) that tells the checker a value is not null or undefined without any runtime check, commonly used to silence the `| undefined` that noUncheckedIndexedAccess adds to an indexed read. | first defined: Chapter 003 L3
-Set | - | A built-in collection of unique values with no keys and no payload, decided "same value" by SameValueZero; answers membership (`.has`) in constant time and supports set algebra. | first defined: Chapter 003 L4
-Map | - | A built-in collection of key-value entries where keys can be any type and identity is preserved; a hash table built for churn that guarantees insertion-ordered iteration in the spec. | first defined: Chapter 003 L4
-WeakMap | - | A Map variant that holds its keys weakly, so an entry is reclaimed once nothing else references its key; keys must be objects and it has no iteration or `.size`. Used to cache per-object data that must not keep the object alive. | first defined: Chapter 003 L4
-WeakSet | - | The set cousin of WeakMap: weakly-held object members and no values, for "have I already processed this object?" checks that must not keep the object alive. | first defined: Chapter 003 L4
-record | - | An object whose shape is fixed and known, like `{ id, email, name }`, where the keys are part of the type; the object literal is its container, as opposed to a dictionary. | first defined: Chapter 003 L4
-dictionary | - | A collection with a dynamic keyspace, where which keys are present is part of the data rather than the type; `Map` is its container, as opposed to a record. | first defined: Chapter 003 L4
-set algebra | set methods | The ES2025 Set composition methods that combine two set-like operands: union, intersection, difference, and symmetricDifference return a new Set; isSubsetOf, isSupersetOf, and isDisjointFrom return a boolean. | first defined: Chapter 003 L4
-set-like | - | Any object a Set composition method accepts as its operand: anything with `.size`, `.has(value)`, and `.keys()`, which a Map satisfies. | first defined: Chapter 003 L4
-hash table | - | A data structure that stores key-value entries so lookup, insert, and delete are all roughly constant-time regardless of entry count, by computing each key's storage location from the key itself. | first defined: Chapter 003 L4
-garbage collector | garbage collection | The part of the JavaScript engine that automatically frees memory holding objects nothing references anymore, so you never free memory by hand. | first defined: Chapter 003 L4
-internal slots | internal slot | Engine-managed storage that a Map or Set keeps its entries in, invisible to `JSON.stringify`, which only serializes an object's own enumerable properties, so both stringify to `'{}'`. | first defined: Chapter 003 L4
-Map.groupBy | - | The non-string-key cousin of Object.groupBy: same signature, but it returns a Map and the key the callback returns can be any type, preserving instances like Date instead of stringifying them. | first defined: Chapter 003 L4
-iteration protocol | - | The two-method contract behind `for...of`, spread, and `Array.from`: an iterable exposes `[Symbol.iterator]()` returning an iterator, and the iterator exposes `.next()` returning `{ value, done }`. | first defined: Chapter 003 L5
-iterator | - | An object with a `.next()` method returning `{ value, done }`; once `done` is true it is exhausted, with nothing left to hand back. | first defined: Chapter 003 L5
-own properties | own property | A property defined directly on the object, not inherited from its prototype; `Object.entries`, `Object.keys`, and `Object.values` walk only own properties, while `for...in` walks own plus inherited. | first defined: Chapter 003 L5
-generator | generator function | A `function*` whose body uses `yield`; calling it runs nothing and returns an object that is both iterator and iterable, where each `yield` pauses execution and hands out a value and the next `.next()` resumes it. | first defined: Chapter 003 L5
-iterator helpers | lazy helpers | The ES2025 `Iterator.prototype` methods (`.map`, `.filter`, `.take`, `.drop`, `.toArray`, and others) that run lazily on any iterator without building intermediate arrays; reach for them when the source is lazy, large, or short-circuits. | first defined: Chapter 003 L5
-Iterator.from | - | The ES2025 static that wraps any iterable (array, Set, Map, generator, or custom) into an iterator so the lazy helper chain becomes available on it. | first defined: Chapter 003 L5
-for await...of | - | The loop for asynchronous sources such as a `ReadableStream` or a paginated API; the same shape as `for...of` but it awaits each value before binding it. | first defined: Chapter 003 L5
-regular expression | regex, regexp | A pattern that describes a set of strings, written as a literal between slashes (/.../) or via new RegExp(...), and run against a string with .test, .match, .matchAll, or .replaceAll. | first defined: Chapter 003 L6
-regex flag | flag | A single letter after a regex that turns on one behavior: g (global), i (case-insensitive), m (multiline), s (dotAll), u (Unicode), v (Unicode sets). | first defined: Chapter 003 L6
-named capture group | named group | A regex group written (?<name>...) that exposes its captured text under a name on match.groups, instead of by position; reference it with \k<name> and in replacements with $<name>. | first defined: Chapter 003 L6
-character class | - | The bracketed part of a regex, like [a-z] or [\p{Letter}], that matches any single character from the set it lists. | first defined: Chapter 003 L6
-quantifier | - | A regex symbol setting how many times the preceding piece may repeat: + (one or more), * (zero or more), ? (zero or one), {n,m} (a bounded range). | first defined: Chapter 003 L6
-backreference | - | A reference inside a regex to text an earlier group already captured, so the pattern matches the same text again: \k<name> for named groups, \1 for indexed. | first defined: Chapter 003 L6
-property escape | Unicode property escape | A regex \p{...} (or \P{...} for the negation) escape that matches Unicode characters by named property such as \p{Letter} or \p{Script=Han}; requires the u or v flag. | first defined: Chapter 003 L6
-lookaround | lookahead, lookbehind | A regex assertion that matches a position by what surrounds it without consuming characters, in four forms: (?=...), (?!...), (?<=...), (?<!...). | first defined: Chapter 003 L6
-Unicode mode | u flag | The u regex flag enabling Unicode-aware matching: full code-point handling, validation of escape sequences, and \p{...} property escapes. | first defined: Chapter 003 L6
-Unicode sets mode | v flag | The v regex flag (ES2024) that supersedes u, adding set operations (&&, --) inside character classes and properties-of-strings like \p{RGI_Emoji}; mutually exclusive with u. | first defined: Chapter 003 L6
-ReDoS | regular-expression denial of service | A denial of service where adversarial input on a regex with nested quantifiers like (a+)+ triggers catastrophic backtracking; avoid nesting quantifiers and length-cap untrusted input before the regex. | first defined: Chapter 003 L6
-Language Server Protocol | LSP | The contract between an editor and a language tool like a type-checker or linter, so the same diagnostics can run in any editor that speaks the protocol. | first defined: Chapter 003 L7
-blame | git blame | Git's record of which commit and author last changed each line of a file; "who touched this line, and when." | first defined: Chapter 003 L7
-EditorConfig | .editorconfig | A cross-editor config file at the repo root whose rules (indent, line endings, charset, final newline) any editor honoring the spec applies, so editor basics stay consistent across the team. | first defined: Chapter 003 L7
-mise | rtx | The course's Rust-based polyglot version manager (formerly rtx) that pins a project's Node, Python, and other runtime versions in a committed `.mise.toml`, so the runtime is a property of the repo rather than each machine. | first defined: Chapter 003 L8
-LTS | Long-Term Support | The release line a Node major lands on after its initial Current phase, with roughly 30 months of bug fixes and security patches; the course's default for predictable updates. | first defined: Chapter 003 L8
-type-stripping | type-stripper, native type-stripping | Node 24's built-in step that blanks out the type-only parts of a `.ts` file (annotations, interfaces, `type` aliases) at parse time and runs the resulting JavaScript, with no flag, build step, or type-check. | first defined: Chapter 003 L8
-tsx | - | A third-party CLI that runs `.ts` files like `node` but reads `tsconfig.json` and uses esbuild to transform what native Node refuses (path aliases, JSX, decorators, enum, namespace); a development tool, never a production runtime. | first defined: Chapter 003 L8
-tsc | TypeScript compiler | The TypeScript compiler; it doesn't run code but type-checks the codebase with `tsc --noEmit` or, without the flag, emits `.js` plus `.d.ts` declarations when publishing a library. | first defined: Chapter 003 L8
-esbuild | - | A fast Go-based JavaScript and TypeScript bundler and transformer; tsx embeds it to convert the syntax native Node refuses into runnable JavaScript. | first defined: Chapter 003 L8
-path alias | - | A short prefix declared in tsconfig.json that maps to a directory, so `@/lib/greet` resolves to `src/lib/greet` no matter how deep the importing file sits. | first defined: Chapter 003 L8
-scoped package | scope | An npm package whose name begins with an `@`-prefixed scope followed by a slash and the package name (`@scope/name`); native Node misreads a `@/` path alias as one. | first defined: Chapter 003 L8
-moduleResolution bundler | bundler resolution | The tsconfig.json moduleResolution setting that matches how tools like tsx and esbuild resolve imports: it understands extensionless imports and resolves `paths` aliases the way the runtime does. | first defined: Chapter 003 L8
-pnpm dlx | - | The pnpm command that downloads a CLI into a temporary store, runs it once, and forgets it, the same one-shot pattern `npx` follows; the no-install way to run tsx or tsc before the project has a package.json. | first defined: Chapter 003 L8
-literal type | - | A primitive narrowed to exactly one value, so `'pending'` is a type whose only inhabitant is the string `'pending'`; the difference from the base primitive lives entirely at compile time. | first defined: Chapter 004 L1
-literal union | - | A union of literal types used when the runtime values are finite and known at design time, such as `'draft' | 'sent' | 'paid'` instead of `string`, so the compiler catches typos and powers autocomplete. | first defined: Chapter 004 L1
-inhabitant | - | A runtime value that satisfies a type; `string` has infinite inhabitants, `'pending'` has exactly one, and `never` has zero. | first defined: Chapter 004 L1
-widening | literal widening | TypeScript broadening an inferred literal to its base primitive when the value lives somewhere it could be reassigned (object properties, `let` bindings), fixed with `as const` or a written annotation. | first defined: Chapter 004 L1
-as const | const assertion | A suffix that freezes a value at the value site, giving it its narrowest type: literals stay literal and arrays become readonly tuples instead of widening to their base primitives. | first defined: Chapter 004 L1
-any | any type | The type that turns off type checking on a value and spreads that effect to every read and call; unsound, never used in the course, replaced by `unknown` at boundaries. | first defined: Chapter 004 L1
-unknown | unknown type | TypeScript's sound top type that accepts every value but refuses any read or call until you narrow it, the right type for values arriving from outside the type system. | first defined: Chapter 004 L1
-void | void type | A return type meaning the caller should ignore whatever the function returns; distinct from `undefined`, which is a readable value rather than a contract to discard. | first defined: Chapter 004 L1
-soundness | sound, unsound | A property of a type system that never lets a value's runtime type contradict its static type, so a passing check guarantees the assumption holds; `any` is unsound, `unknown` keeps the system sound. | first defined: Chapter 004 L1
-brand | branded type | A primitive tagged with a compile-time-only marker so two values of the same underlying type become distinct, non-interchangeable types at no runtime cost. | first defined: Chapter 004 L1
-type alias | alias | A name bound to a type expression; the type itself is structural, the alias is just a label TypeScript uses in errors and hovers, erased at compile time. | first defined: Chapter 004 L2
-interface | - | The other keyword for declaring an object shape (and classes); a strict subset of what type does, but unlike type it allows declaration merging. | first defined: Chapter 004 L2
-declaration merging | - | Two declarations of the same name in the same scope combining into one; interface allows it, type rejects it as a duplicate identifier, and its only practical use is augmenting a type a third-party package ships. | first defined: Chapter 004 L2
-optional property | optional field, ? modifier | An object field marked with `?` after its name, meaning the property may be absent from the object entirely. | first defined: Chapter 004 L2
-readonly | readonly modifier | A field modifier that forbids reassigning the property after construction; it locks the binding like `const`, not the value the property points at. | first defined: Chapter 004 L2
-readonly array | readonly T[], ReadonlyArray | An array type that drops every mutating method (push, pop, splice, sort, index-write) from its surface while keeping the read methods, written `readonly T[]` in the course. | first defined: Chapter 004 L2
-Readonly | Readonly utility type | The built-in utility type that applies `readonly` to every top-level property of an object type; shallow, so nested values stay mutable. | first defined: Chapter 004 L2
-exactOptionalPropertyTypes | - | A TypeScript compiler flag that enforces the distinction between an optional (absent) field and a present-but-undefined one, so a `?` field rejects an explicit `undefined`. | first defined: Chapter 004 L2
-excess property check | excess property checks | TypeScript's extra check on an object literal assigned directly to a known type, flagging properties the target type doesn't declare; skipped when the value flows through a variable first. | first defined: Chapter 004 L2
-labeled tuple | labeled tuple element | A tuple type where each position carries a name at the type level (`[id: string, name: string]`); the names show in editor tooltips and destructure-site autocomplete but don't affect type compatibility. | first defined: Chapter 004 L3
-destructure-and-rename | - | Destructuring a positional return while renaming the bindings (`const [open, toggle] = useToggle()`), letting the caller name the values; the reason a hook like useState returns a tuple instead of an object. | first defined: Chapter 004 L3
-readonly tuple | - | A tuple type prefixed with `readonly` that drops the mutating methods and index-write from its surface while keeping the read methods, the tuple counterpart of `readonly T[]`. | first defined: Chapter 004 L3
-optional tuple position | optional position | A tuple slot marked with `?` (`[start: number, end?: number]`) that may be absent, making the tuple's length almost-fixed; optional positions must follow required ones. | first defined: Chapter 004 L3
-rest tuple position | rest position | A trailing `...T[]` in a tuple type (`[header: string, ...payload: number[]]`) that allows any number of additional elements of that type; at most one per tuple, placed last. | first defined: Chapter 004 L3
-index signature | - | An object-type member that declares the type of every dynamic key, `{ [key: KeyType]: ValueType }`; the key-name slot is documentation surfaced in tooltips, the constraint is the KeyType, and it is the only form that allows named fields alongside a dynamic surface. | first defined: Chapter 004 L4
-key constraint | - | The type in an index signature's bracket (`string` in `{ [k: string]: V }`) or a `Record`'s first parameter that every key must satisfy; `string` keeps keys open, a literal union makes them finite. | first defined: Chapter 004 L4
-PropertyKey | - | The built-in type for any valid object key, `string | number | symbol`; `Record<PropertyKey, V>` is the broadest dynamic-keyed shape. | first defined: Chapter 004 L4
-completeness check | - | The guarantee a `Record<LiteralUnion, V>` earns: because the key type is a finite union, a missing key is a compile error at the object literal, and reads return `V` rather than `V | undefined`. | first defined: Chapter 004 L4
-in operator | - | JavaScript's runtime test for whether a key exists on an object (`key in obj`); it confirms existence but does not narrow an index-signature read away from `V | undefined`. | first defined: Chapter 004 L4
-union | union type, `|` | The `|` operator on types: a value of `A | B` is either an `A` or a `B`, so the set of inhabitants is the set-theoretic union and grows. | first defined: Chapter 004 L5
-intersection | intersection type, `&` | The `&` operator on types: a value of `A & B` satisfies both `A` and `B`; on shape types the value carries the fields of both, so the field set grows even as the value set shrinks. | first defined: Chapter 004 L5
-shape-union access rule | - | On a union of object types, only fields common to every variant are readable without narrowing; to read a non-shared field, narrow the value first with a runtime check the language tracks. | first defined: Chapter 004 L5
-type assertion | as, cast | A compile-time-only `as T` operation that tells the checker to treat a value as a different type; it has no runtime effect and silences the check the type system would have made, so the developer takes responsibility for the claim. | first defined: Chapter 004 L6
-control-flow narrowing | flow narrowing | The TypeScript feature where the compiler tracks how runtime checks on a value refine its type along each branch, so `typeof x === 'number'` narrows `x` to `number` inside the `if` and to the remaining union members in the `else`. | first defined: Chapter 004 L6
-truthy check | - | An `if (x)` test that branches on whether a value is truthy; it excludes every falsy value (`false`, `0`, `''`, `null`, `undefined`, `NaN`, `0n`), not just `null` and `undefined`. | first defined: Chapter 004 L6
-realm | - | A separate JavaScript execution context with its own global objects and built-in constructors, such as an iframe or web worker; a value from one realm fails an `instanceof` check against a constructor from another. | first defined: Chapter 004 L6
-satisfies | satisfies operator | A `satisfies T` operator that validates a value is assignable to `T` without applying `T` as the value's type, so a contract is checked while the narrow inferred type survives. | first defined: Chapter 004 L7
-typed config | typed config map | A module-level constant whose keys and values both carry type information consumed by the rest of the module, such as a routes map, permissions table, or feature-flag registry. | first defined: Chapter 004 L7
-keyof typeof | - | The operator pair that lifts a runtime value's keys into a type: `typeof X` reads the value's type and `keyof` takes the union of its keys, so `keyof typeof ROUTES` is the literal union of `ROUTES`'s keys. | first defined: Chapter 004 L7
-inference | type inference | TypeScript reading a value's type straight from the expression that produces it, with no annotation from you. | first defined: Chapter 004 L8
-implicit any | - | The error TypeScript fires under `noImplicitAny` when a parameter has no annotation and no contextual inference, defaulting to the unsafe top type. | first defined: Chapter 004 L8
-contextual inference | - | TypeScript inferring a parameter's type from the surrounding call site rather than from the function body, as with an inline `.map` callback. | first defined: Chapter 004 L8
-verbatimModuleSyntax | - | TypeScript flag that emits each import statement exactly as written and requires `import type` for type-only imports, removing the compiler's old type-elision heuristic. | first defined: Chapter 004 L8
-side effect | - | Work a module performs as a consequence of being imported, beyond exporting names: mutating globals, registering handlers, opening connections. | first defined: Chapter 004 L8
-tree-shaking | tree-shaken | A build step dropping code it judges unused so it never ships; an import the compiler believed was type-only could be erased before the bundler saw it. | first defined: Chapter 004 L8
-Result<T> | result type | A discriminated union for expected failure, `{ ok: true; data: T } | { ok: false; error }`, returned so a caller handles the failure by narrowing on `ok` instead of catching a throw. | first defined: Chapter 004 L5
-impossible state | impossible states | A combination of fields a type allows but the runtime never legally produces; discriminated unions are used to make such states unrepresentable. | first defined: Chapter 005 L1
-state machine | - | A discriminated union of states paired with typed transition functions, so the compiler refuses transitions the types don't allow. | first defined: Chapter 005 L2
-transition function | - | A function whose signature names a specific input state and a specific output state, so the compiler enforces the source-destination pairing of a state machine. | first defined: Chapter 005 L2
-per-state invariant | per-variant invariant | The rule that each variant of a discriminated union carries exactly the data valid in that state, so unrelated fields can't be read without a compile error. | first defined: Chapter 005 L2
-optimistic mutation | optimistic update | A state machine where the UI shows a new value immediately while the network call runs, confirming on success or rolling back to the original on failure. | first defined: Chapter 005 L2
-reducer | - | A state machine collapsed into one function, `(state, event) => state`, switching on the event type to reach each transition; the form frameworks like `useReducer` and Zustand expect. | first defined: Chapter 005 L2
-AbortController | - | The Web API for canceling an in-flight network request; its `signal` is passed to `fetch` and `.abort()` cancels the request. | first defined: Chapter 005 L2
-XState | - | A state-machine library for machines that outgrow plain TypeScript: more than a handful of branching states, parallel regions, or history nodes. | first defined: Chapter 005 L2
-dunning | - | The flow that chases a failed payment by notifying the customer and retrying the charge until it clears or the subscription is canceled. | first defined: Chapter 005 L2
-webhook | - | An HTTP request an external service sends to your server when an event happens on their side, so you react to it instead of polling for changes. | first defined: Chapter 005 L2
-indexed access type | indexed access | A type-level read that takes the type of a field straight off another type, such as `AppEvent['type']` for the union of a discriminated union's tags. | first defined: Chapter 005 L3
-Zod | - | A TypeScript-first schema library: you declare a schema once, then validate and parse unknown runtime data against it, getting a typed value back or a thrown error. | first defined: Chapter 005 L3
-nominal typing | nominal type system | Type compatibility by name: a `UserId` is distinct from a `string` because it is named `UserId`, even if both share the same underlying shape. TypeScript has no native nominal types; branding emulates them. | first defined: Chapter 005 L4
-brand factory | - | A function that converts a plain string into a branded ID, validating at the seam; the single place in the codebase where `as <Brand>` is allowed. | first defined: Chapter 005 L4
-phantom property | phantom field | A compile-time-only field attached to a primitive via intersection to carry a brand label; it lives in the type system and never exists on the runtime value. | first defined: Chapter 005 L4
-unique symbol | - | A symbol type guaranteed unique to its declaration, used as a collision-proof key for a phantom brand property so no other module can produce a matching one. | first defined: Chapter 005 L4
-parse seam | - | A spot where a value re-enters typed code from outside (fetch response, Server Action body, database read, localStorage get) and is run through a parser/factory to restore its brand and validate it. | first defined: Chapter 005 L4
-Drizzle | - | The course's TypeScript-first database toolkit (ORM): tables are declared in TypeScript and row types are inferred, so query results come back typed. Covered in depth in a later unit. | first defined: Chapter 005 L4
-derived type | - | A type computed from a runtime value via `typeof`, `keyof`, or indexed access rather than hand-written, so the value is the single source of truth and the type can't drift from it. | first defined: Chapter 005 L5
-value-level | value-level register | An expression evaluated by the JavaScript runtime (variables, calls, object literals, `if`); it persists past compilation and runs at runtime. | first defined: Chapter 005 L5
-type-level | type-level register | An expression evaluated by the TypeScript compiler while type-checking (`keyof`, `infer`, indexed access `T[K]`); it is erased before the JavaScript runs. | first defined: Chapter 005 L5
-typeof extractor | type-level typeof | The `typeof V` form read in a type position: instead of the runtime string operator, it reads the inferred type off a value identifier and lifts it into the type register; needs a value identifier on its right, not a call expression. | first defined: Chapter 005 L5
-utility type | built-in utility type | A built-in generic type alias that takes a type and returns a transformed type (`Partial<T>`, `Pick<T, K>`, `ReturnType<F>`); compile-time only, erased like every other TS construct. | first defined: Chapter 005 L6
-shallow | shallow transform | A type transform that operates on the top level only; nested object fields keep their original shape because the transform doesn't recurse. | first defined: Chapter 005 L6
-DTO | data transfer object | A type describing the shape of data crossing a boundary (request body, response payload, row sent to the client), usually a trimmed or reshaped view of a fuller domain type. | first defined: Chapter 005 L6
-generic | generic function, generic type | A function or type that accepts a type as a parameter, supplied explicitly (`identity<number>(42)`) or by inference (`identity(42)`), so one signature carries a precise type from the call site to the return. | first defined: Chapter 005 L7
-type parameter | - | The `<T>` declaration on a generic that names a type the caller will fill in; usable in parameter types, return types, and the function body's type annotations. | first defined: Chapter 005 L7
-default type parameter | - | A type parameter declared with `= DefaultType` that fills in when the caller omits the position; like a value-parameter default, with the tail rule that a defaulted parameter cannot precede a non-defaulted one. | first defined: Chapter 005 L7
-constraint | extends constraint | An `extends` clause on a type parameter (`<T extends ...>`) that requires the caller's type to be assignable to the right-hand side; inside the function `T` is usable as that constrained shape. | first defined: Chapter 005 L7
-const type parameter | const modifier | The TypeScript 5.0+ `<const T>` modifier that makes the compiler infer literal types for `T` where it would otherwise widen, equivalent to the caller writing `as const`; permitted on functions, methods, and classes only. | first defined: Chapter 005 L7
-variance | - | How a type parameter behaves under subtyping, declared with `in`/`out` annotations; library-author territory you read but do not write. | first defined: Chapter 005 L7
-module graph | directed graph of modules | The codebase seen as a directed graph where each module is a node and each import draws an edge from one module to another. | first defined: Chapter 006 L1
-named export | - | An export bound to a name (`export const`/`export function`/`export type`) that the importer pulls by the same spelling; the course default. | first defined: Chapter 006 L1
-default export | - | The single export a module marks as its default (`export default`); the importer picks any name for it, so no shared name propagates a rename. Framework-mandated only. | first defined: Chapter 006 L1
-side-effecting import | bare import | An import with no binding (`import './globals.css'`) whose point is to evaluate the file for its side effect, not to read a value. | first defined: Chapter 006 L1
-dynamic import | import() | A value-level `import('...')` expression that returns a `Promise<Module>` the runtime resolves on evaluation; usable anywhere a value can appear and the marker for a code-split point. | first defined: Chapter 006 L1
-re-export | - | An `export ... from` line that pulls a binding from another module and republishes it under the re-exporter's name, drawing a real edge into the named module. | first defined: Chapter 006 L1
-barrel file | barrel | An `index.ts` that re-exports many unrelated symbols from across a directory; hurts tree-shaking and go-to-definition, so the course bans it in `lib/`, `db/`, and `_lib/`. | first defined: Chapter 006 L1
-code-splitting | code split | Splitting a bundle into separate chunks the runtime fetches on demand rather than shipping the whole app in one file; a dynamic import marks the split point. | first defined: Chapter 006 L1
-bare specifier | - | An import specifier with no `./`, `../`, or absolute path; resolved through node_modules, the package's exports field, or tsconfig.json paths, never against the importing file's directory. | first defined: Chapter 006 L1
-exports field | - | The package.json field declaring which files a package makes importable under which specifiers; a subpath not listed is blocked even if the file exists on disk. | first defined: Chapter 006 L1
-import attribute | with attribute | The `with { type: 'json' }` clause on an import that tells the runtime how to parse a non-JS resource and check its type before evaluating it; mandatory for JSON imports, which bind as a default. | first defined: Chapter 006 L1
-live binding | - | What an `import` actually gives you: a read-only window onto the exporter's variable rather than a copy, so when the exporter mutates that variable the importer sees the new value; re-exports preserve it and the importer cannot reassign it. | first defined: Chapter 006 L2
-module evaluation order | depth-first post-order | The order the runtime runs modules: starting at the entry module it recurses into each import's target before running the importer's own top-level code, so leaves run first, the root runs last, and each module runs exactly once. | first defined: Chapter 006 L2
-circular dependency | cycle, import cycle | An import graph that loops back on itself; it crashes only when one module reads another's export at the top level before that export is assigned (yielding `undefined`), and resolves cleanly for function-body access or type-only imports. | first defined: Chapter 006 L2
-fail-closed | fail-closed startup validation | A startup pattern where invalid configuration crashes the process immediately, so bad state never reaches a request; relies on a top-level `throw` short-circuiting every module above it during evaluation. | first defined: Chapter 006 L2
-eager edge | static edge | The edge a static `import` draws: the target module belongs in the same chunk as the importer and its bytes ship in the initial JavaScript download whether or not the code path runs. | first defined: Chapter 006 L2
-deferred edge | - | The edge a dynamic `import()` expression draws: the bundler emits the target as a separate chunk fetched only when the expression runs, trading one network round-trip for keeping the bytes out of the initial bundle. | first defined: Chapter 006 L2
-chunk | bundle chunk | A separate JavaScript file the bundler emits so parts of the app can be fetched on demand instead of in one initial download; a dynamic `import()` marks where one is split off. | first defined: Chapter 006 L2
-next/dynamic | - | The Next.js wrapper that pairs `import()` with Suspense and adds SSR controls for a React component; its `ssr: false` option skips server rendering for a component that touches a browser-only API. | first defined: Chapter 006 L2
-'use client' | use client directive | A directive at the top of a file that marks it a client entry point: the bundler treats it as a root of the client subgraph and ships every statically reachable module to the browser; place it on the smallest interactive leaf. | first defined: Chapter 006 L2
-client entry point | client entry | A file marked `'use client'` that the bundler treats as a root of the client subgraph, so every module reachable from it through static imports ships to the browser. | first defined: Chapter 006 L2
-server-only | server-only package | A no-op runtime package whose `import 'server-only'` first line makes the build fail with an explicit error if any client bundle ever reaches the module, so server code (secrets, database, cookies) cannot accidentally ship to the browser. | first defined: Chapter 006 L2
-client-only | client-only package | The mirror of `server-only`: `import 'client-only'` fails the build if a server bundle reaches a module that touches `window`, `localStorage`, or another browser-only API. | first defined: Chapter 006 L2
-top-level await | top-level await, TLA | An `await` written at a module's top level, outside any `async` function; it holds the module's evaluation until the promise resolves, so the module's exports become observable only afterward. | first defined: Chapter 006 L3
-implicitly async | - | An upstream module that doesn't write `await` itself but waits because a statically-imported descendant has a top-level `await`. | first defined: Chapter 006 L3
-render-blocker | render-blocking work | Module-load work that gates the first paint of a server-rendered page because the page cannot return JSX until the work completes. | first defined: Chapter 006 L3
-lazy init | lazy getter, lazy initialization | A pattern that exports a getter doing its setup work on the first call and caching the result in a module-scoped variable, so importing the module costs nothing and the first caller pays the setup. | first defined: Chapter 006 L3
-module-level singleton | - | A value cached in a module-scoped variable and exposed through a getter, living for the lifetime of the module's evaluation; one slot per process or per serverless instance. | first defined: Chapter 006 L3
-cold start | - | The first request handled by a freshly-instantiated serverless function instance, which pays setup costs that warm instances reuse from cached state. | first defined: Chapter 006 L3
-connection pool | - | A set of reusable open database connections the client keeps around, so each query borrows one instead of paying to open a fresh connection. | first defined: Chapter 006 L3
-module augmentation | - | The pattern of extending a third-party module's published types from a project-owned `.d.ts` file using `declare module 'pkg' { ... }`, relying on declaration merging. | first defined: Chapter 006 L4
-ambient declaration | - | A `.d.ts` declaration that participates in the type checker without any runtime code; global ambient declarations sit at a file's top level with no imports/exports, module ambient declarations live inside a `declare module 'pkg' { ... }` block. | first defined: Chapter 006 L4
-$Infer | - | Better Auth's type-inference helper (`typeof auth.$Infer.Session`) that derives the session type from the runtime config, so type and runtime shape stay in sync because both come from the same source. | first defined: Chapter 006 L4
-Promise | - | An object that represents the eventual result of asynchronous work, exposing it to the rest of the program as a value that can be inspected and combined; it lives in one of three permanent-once-left states. | first defined: Chapter 007 L2
-pending | - | The Promise state where the work hasn't finished: no value and no reason yet. | first defined: Chapter 007 L2
-fulfilled | - | The Promise state where the work succeeded and the Promise holds a value. | first defined: Chapter 007 L2
-rejected | - | The Promise state where the work failed and the Promise holds a reason, by convention an `Error` instance. | first defined: Chapter 007 L2
-settled | - | A Promise that has transitioned out of pending — either fulfilled with a value or rejected with a reason. Settled state is permanent; the Promise will never transition again. | first defined: Chapter 007 L2
-executor | - | The function passed to `new Promise((resolve, reject) => ...)`. It runs synchronously when the Promise is constructed; its job is to call `resolve` or `reject` exactly once. | first defined: Chapter 007 L2
-combinator | Promise combinator | One of four static methods (`Promise.all`, `Promise.allSettled`, `Promise.any`, `Promise.race`) that takes an array of Promises and returns a single Promise; they differ in what counts as "done". | first defined: Chapter 007 L2
-AggregateError | - | A built-in `Error` subclass that wraps multiple errors in an `.errors` array. `Promise.any` rejects with one when every input rejects. | first defined: Chapter 007 L2
-Promise.withResolvers() | withResolvers | A static that returns a Promise together with its `resolve` and `reject` functions already bound, standardizing the deferred pattern so a Promise can be settled from outside any executor. | first defined: Chapter 007 L2
-deferred pattern | deferred | The legacy way to settle a Promise from outside its executor: declare the resolvers as `let` outside the constructor and capture them inside the executor; superseded by `Promise.withResolvers()`. | first defined: Chapter 007 L2
-unhandled rejection | - | A rejected Promise with no `.catch`, no `try`/`catch` around its `await`, and no combinator handling rejection; in Node it crashes the process, in the browser it fires an `unhandledrejection` event and otherwise vanishes. | first defined: Chapter 007 L2
-event loop | - | The runtime mechanism that picks the next chunk of work to run: one macrotask, then a full drain of the microtask queue, then optionally render, then the next macrotask. | first defined: Chapter 007 L1
-call stack | - | Where synchronous code runs: calling a function pushes a frame, returning pops it, and nothing else runs while the stack is non-empty. | first defined: Chapter 007 L1
-microtask | microtask queue | A continuation scheduled by a settled Promise, an `await` resumption, or `queueMicrotask`; the microtask queue drains completely between two macrotasks. | first defined: Chapter 007 L1
-macrotask | task queue, macrotask queue | A unit of work scheduled via `setTimeout`, `setInterval`, I/O completion, message events, or user input; the loop processes one per event-loop iteration. | first defined: Chapter 007 L1
-continuation | - | The callback the runtime invokes later for the code after an `await` (or a `.then`): everything past the `await` becomes a microtask rather than the next statement to run. | first defined: Chapter 007 L1
-queueMicrotask | - | The explicit microtask scheduler: `queueMicrotask(fn)` runs `fn` at the next microtask point, after the current synchronous code but before any pending macrotask. | first defined: Chapter 007 L1
-process.nextTick | - | A Node-only scheduler that runs its callback on a sub-queue draining before the microtask queue on each tick; recursive use pins the loop and starves I/O. | first defined: Chapter 007 L1
-setImmediate | - | A Node-only scheduler that runs its callback as a macrotask firing after the I/O callbacks in a loop iteration. | first defined: Chapter 007 L1
-unbounded parallelism | - | Issuing many concurrent async operations with no cap on the number in flight; the default failure mode of `.map(async ...)` over a large list. | first defined: Chapter 007 L3
-N+1 | N+1 problem | An anti-pattern where one query to list N parent rows is followed by N additional queries to fetch each child; the fix is usually a single batched query that joins or filters by an `IN` list. | first defined: Chapter 007 L3
-AbortSignal | - | The consumer-facing, read-only view of an `AbortController`, reached via `controller.signal` and handed to async APIs through `{ signal }`; it has no `abort()` of its own, exposes `aborted` and `reason`, and fires an `'abort'` event when the controller aborts. | first defined: Chapter 007 L4
-AbortError | 'AbortError' | The error name a `fetch` (or other abortable API) rejects with when its signal was aborted by `controller.abort()`; discriminated in a `catch` via `err.name` as an intentional user-cancel. | first defined: Chapter 007 L4
-TimeoutError | 'TimeoutError' | The error name a signal from `AbortSignal.timeout(ms)` rejects with when its deadline elapses, distinct from `AbortError` so a timeout can be surfaced to the user while a user-cancel stays silent. | first defined: Chapter 007 L4
-AbortSignal.timeout | - | A static factory returning a fresh `AbortSignal` that aborts itself after `ms` milliseconds and rejects with `TimeoutError`; no controller to hold and no `clearTimeout` to remember. | first defined: Chapter 007 L4
-AbortSignal.any | - | A static factory taking an array of signals and returning one signal that aborts the moment any input aborts, composing several cancel sources (user, timeout, shutdown) into a single `signal`. | first defined: Chapter 007 L4
-AbortSignal.abort | - | A static factory returning an already-aborted signal; pass it to short-circuit an operation the caller already knows it doesn't want, so the API rejects immediately. | first defined: Chapter 007 L4
-backpressure | - | When a consumer cannot keep up with a producer; bounded concurrency (`pMap` with a `concurrency` cap) is the explicit fix, while unbounded fan-out has none. | first defined: Chapter 007 L3
-fan-out | - | Starting many async operations from one list so they run at the same time; unbounded fan-out fires all at once, bounded fan-out (`pMap` with a concurrency cap) keeps a fixed number in flight. | first defined: Chapter 007 L3
-async iterable | - | An object that produces values one at a time where each may arrive asynchronously, consumed with `for await...of`; a streamed `response.body` and a paginated SDK are both async iterables. | first defined: Chapter 007 L3
-bounded concurrency | - | Capping the number of concurrent async operations in flight and starting the next as each completes; the `pMap` `concurrency` option is the project default for it. | first defined: Chapter 007 L3
-fire-and-forget | - | Starting async work without awaiting its result, for small disposable work like an analytics ping; pair `void` with an explicit `.catch` so a rejection can't crash the process. | first defined: Chapter 007 L3
-return await | - | Writing `return await` rather than bare `return` on a Promise inside a `try`/`catch`, which keeps the function's stack frame alive so the `catch` fires and the frame stays in the stack trace. | first defined: Chapter 007 L3
-domain failure | - | An expected failure that is part of a function's contract and that the caller can branch on per-case (empty file, invalid row, declined card); returned as a `Result<T, E>` rather than thrown. | first defined: Chapter 008 L1
-operational failure | - | An infrastructure or unexpected fault the caller has no per-case recovery for (disk read failed, database down, key rotated); thrown so a framework boundary can log it and show one generic message. | first defined: Chapter 008 L1
-framework boundary | - | The catch site at the edge of the framework's request lifecycle (`error.tsx`, a route handler's catch, the Server Action wrapper) where unexpected throws stop and the user-visible response is decided. | first defined: Chapter 008 L1
-custom Error subclass | domain error subclass | A small class that extends `Error` directly, with a literal-typed `name`, typed structured fields the catch branches on, and `{ cause }` passed through to `super`; one class per domain concern in a flat namespace, no abstract base. | first defined: Chapter 008 L2
-Error.cause | cause chaining | The `Error` constructor's options field, read as `err.cause`, that links a failure to the one that caused it, so a rewrap at a vendor seam preserves the original and the logger can walk the chain. | first defined: Chapter 008 L2
-Error.isError | - | An ES2026 helper that returns true for any real `Error` by checking the internal `[[ErrorData]]` slot rather than constructor identity, so it narrows correctly across a realm boundary where `instanceof Error` fails. | first defined: Chapter 008 L2
-ensureError | - | A project helper that normalizes any `unknown` thrown value into an `Error`, passing an existing `Error` through untouched and wrapping anything else with the original value on `cause`; sits at the bottom of the catch ladder for vendor seams. | first defined: Chapter 008 L2
-catch ladder | discrimination ladder | A catch body ordered most specific to least: custom subclass first, then an `error.name` check for cross-realm errors, then a generic `Error` branch, then `ensureError` as the catch-all. | first defined: Chapter 008 L2
-rewrap at the seam | rewrap | The pattern where a function catches a vendor error and throws a domain error carrying the original on `cause`, so the catch reads a typed discriminant while the log keeps the full vendor failure. | first defined: Chapter 008 L2
-wire | the wire | The serialized bytes that cross a process boundary, over HTTP, a webhook, or into and out of localStorage; the codec sits between the wire and the in-memory value. | first defined: Chapter 009 L1
-codec | - | The encoder/decoder pair (JSON.stringify and JSON.parse) that turns an in-memory value into wire bytes and back. | first defined: Chapter 009 L1
-ISO 8601 | - | The international standard for writing dates and times as text (2026-05-28T10:00:00.000Z): year-month-day, a T, then the time in UTC; the date format JSON consumers agree on. | first defined: Chapter 009 L1
-reviver | - | The optional second argument to JSON.parse, a function that walks the parsed value bottom-up and can replace or drop each key-value pair before the caller sees it. | first defined: Chapter 009 L1
-replacer | - | The optional second argument to JSON.stringify, a function that walks the value bottom-up and can substitute or omit each field during serialization. | first defined: Chapter 009 L1
-prototype pollution | prototype poisoning | An attack where crafted JSON carries __proto__ or constructor keys that mutate the prototype chain on assignment, so every object in the process inherits what the attacker injected. | first defined: Chapter 009 L1
-structuredClone | deep clone, deep copy | A global function that recursively copies a value, sharing no references with the original and preserving Date, Map, Set, BigInt, typed arrays, and cycles; the correct deep clone, unlike the JSON round-trip. | first defined: Chapter 001 L1
-hash-private | #private, #-private | The `#name` field syntax — runtime-enforced visibility. The field can't be read via bracket access, doesn't appear in `Object.keys`, and is skipped by `JSON.stringify`; per-class scope, so two unrelated classes can both declare `#secret` without collision, unlike TypeScript's compile-only `private`. | first defined: Chapter 009 L2
-arrow-field method | arrow field | A class field whose value is an arrow function (`method = (x) => { ... }`); `this` is bound to the instance at construction, so the method survives being passed as a callback, at the cost of one closure per instance instead of one method on the prototype. | first defined: Chapter 009 L2
-invariant | - | A rule about an object's state that must always hold true; a method enforces it by routing every write through the same check, turning a guarantee the code keeps into one the type system can't otherwise express. | first defined: Chapter 009 L2
-toJSON | - | A method JSON.stringify calls on an instance, if present, to choose the wire shape; the class returns a plain record from it so methods and `#private` fields don't have to serialize to `{}`. | first defined: Chapter 009 L2
-UTC | Coordinated Universal Time | The global reference clock with no DST and no regional offset, the zero point every other timezone is expressed relative to. | first defined: Chapter 009 L3
-DST | daylight saving time | The seasonal one-hour shift between standard time and summer time, applied differently in each region, which makes "+24 hours" sometimes 23 or 25 wall-clock hours. | first defined: Chapter 009 L3
-wall-clock time | wall clock | The time a clock on the wall would show in some place, a local civil time like "9 AM in Sydney" that DST can shift without the underlying instant changing. | first defined: Chapter 009 L3
-IANA tz | IANA timezone, tz database | An identifier from the Internet Assigned Numbers Authority timezone database, like Europe/Madrid or Australia/Sydney, naming a region with its full DST history rather than just a fixed UTC offset. | first defined: Chapter 009 L3
-Unix epoch | epoch | The fixed reference instant 1970-01-01T00:00:00 UTC that machine timestamps count from, in milliseconds for Date.now() and in seconds for many wire formats. | first defined: Chapter 009 L3
-sentinel | sentinel value | A special "this isn't a real value" value returned in place of throwing an error (like Date's Invalid Date), so the type system says it's valid while the runtime says it isn't. | first defined: Chapter 009 L3
-polyfill | - | A small library that implements a not-yet-native API in JavaScript so existing code can use the same shape before the platform ships it. | first defined: Chapter 009 L3
-seam | - | A boundary in the code where the application meets something external (an SDK, the database, the wire), concentrated in one place so the rest of the codebase stays clean. | first defined: Chapter 009 L3
-Temporal | Temporal API | The native ES2026 date-and-time API that replaces Date with five single-purpose immutable types that throw on bad input instead of returning a sentinel. | first defined: Chapter 009 L3
-Temporal.Instant | Instant | A UTC moment in real time with nanosecond precision and no timezone; the type for server timestamps like createdAt and webhook arrival. | first defined: Chapter 009 L3
-Temporal.ZonedDateTime | ZonedDateTime | An Instant paired with an IANA timezone and DST-aware, so "a day" is a calendar step; the type for wall-clock display and recurring schedules. | first defined: Chapter 009 L3
-Temporal.PlainDate | PlainDate | A calendar date (year, month, day) with no time and no timezone, so it stays the same date everywhere; the type for due dates, birth dates, and anniversaries. | first defined: Chapter 009 L3
-Temporal.PlainDateTime | PlainDateTime | A wall-clock date and time with no timezone commitment, for the rare "5 PM local" case where which local is left unspecified. | first defined: Chapter 009 L3
-Temporal.Duration | Duration | A length of time (days, hours, minutes) used in arithmetic, replacing raw-millisecond spans that break across DST. | first defined: Chapter 009 L3
-lib/temporal.ts | temporal seam | The single file that imports the Temporal polyfill and re-exports it, so every other file imports Temporal from one path and the swap to native Temporal touches one file. | first defined: Chapter 009 L3
-DNS | domain name system | The system that turns a hostname into an IP address, walking a chain of caches (browser, OS, recursive resolver, authoritative server) before the network stack can open a connection. | first defined: Chapter 010 L1
-DoH | DNS over HTTPS | DNS queries tunneled through an HTTPS connection so the resolver path is encrypted and cannot be read or modified on the wire; the production-default encrypted DNS form. | first defined: Chapter 010 L1
-Happy Eyeballs v2 | RFC 8305 | The algorithm browsers use to race IPv4 (A) and IPv6 (AAAA) lookups and connection attempts, preferring IPv6 by ~50ms so a broken address family never stalls the page. | first defined: Chapter 010 L1
-QUIC | - | A multiplexed, encrypted, congestion-controlled transport built on UDP that folds the TLS 1.3 handshake into connection setup and keeps streams independent, so a lost packet stalls only its own stream. | first defined: Chapter 010 L1
-HTTP/3 | h3 | The HTTP version that runs over QUIC on UDP port 443; the 2026 default, discovered via the Alt-Svc header or an HTTPS DNS record after a first HTTP/2 connection. | first defined: Chapter 010 L1
-HTTP/2 | h2 | The HTTP version that multiplexes requests over one TCP connection at the HTTP layer, so a single dropped packet blocks every later stream (head-of-line blocking); the HTTP/3 fallback. | first defined: Chapter 010 L1
-head-of-line blocking | - | The stall where one lost or delayed item holds up everything queued behind it; in HTTP/2 over TCP a single dropped packet blocks all later streams, which QUIC fixes by isolating streams. | first defined: Chapter 010 L1
-Alt-Svc | alternative services | A response header by which an origin advertises that it also speaks HTTP/3, so the browser upgrades from HTTP/2 to h3 on the next request. | first defined: Chapter 010 L1
-TLS | Transport Layer Security | The protocol that encrypts a connection and authenticates the server with a certificate; the 2026 stack speaks only TLS 1.3, which QUIC folds into transport setup. | first defined: Chapter 010 L1
-RTT | round-trip time | The wall-clock cost of one message traveling to the remote machine and its reply coming back; a fixed latency tax counted to compare connection-setup paths (fresh QUIC 1 RTT, resumed 0 RTT, TCP+TLS 2 RTT). | first defined: Chapter 010 L1
-session ticket | - | A credential the server issues after a handshake and the client caches, letting a later connection skip the full key negotiation and resume the encrypted session in fewer round trips. | first defined: Chapter 010 L1
-resumed connection | session resumption | A repeat connection to an origin the client has visited before, carrying a cached session ticket so the cryptographic handshake collapses and the request can ride in the first packet (0-RTT). | first defined: Chapter 010 L1
-early data | 0-RTT data | Request bytes a client puts inside the first packet of a resumed connection before the handshake finishes; replay-safe only for idempotent GETs and lacking forward secrecy, so it is reserved for them. | first defined: Chapter 010 L1
-forward secrecy | perfect forward secrecy | The property where each TLS 1.3 session uses its own ephemeral keys, so a later leak of the server's long-term private key cannot decrypt past recorded sessions; 0-RTT early data is the exception. | first defined: Chapter 010 L1
-idempotent | idempotency | A request you can send more than once with the same effect as sending it once, so a replayed copy does no harm; the property the next chapter builds the HTTP contract on. | first defined: Chapter 010 L1
-DOM | Document Object Model | The in-memory tree of typed element nodes the browser builds from parsed HTML; every element is a JavaScript object with properties, methods, and events, and it is the input the rest of the rendering pipeline reads. | first defined: Chapter 010 L2
-CSSOM | CSS Object Model | The in-memory tree of style rules the browser builds in parallel with the DOM; merged with the DOM to compute the render tree. | first defined: Chapter 010 L2
-render-blocking resource | render-blocking | A resource (CSS by default) that delays first paint until it is fully downloaded and parsed, because the browser cannot build the render tree without it. | first defined: Chapter 010 L2
-render tree | - | The tree of nodes that will actually paint, the DOM intersected with visible style; nodes with display:none are excluded and pseudo-elements (::before / ::after) are included. | first defined: Chapter 010 L2
-layout | reflow | The rendering stage that computes geometry (position, width, height, line breaks) for every render-tree node; the expensive stage, also called reflow in DevTools. | first defined: Chapter 010 L2
-layout thrashing | - | A read-write-read pattern on layout properties that forces the browser to flush queued layout work synchronously each time, multiplying layout cost in tight loops. | first defined: Chapter 010 L2
-compositor | compositor thread | The thread that combines painted layers into the final frame the GPU pushes to screen, running separately from the main thread so it keeps producing frames at 60fps even while the main thread is busy. | first defined: Chapter 010 L2
-compositor-only properties | - | CSS properties (transform, opacity) the compositor thread can apply directly to existing layers without re-running layout or paint, which is why animating them stays smooth even when the main thread is busy. | first defined: Chapter 010 L2
-Critical Rendering Path | CRP | The dependency chain from bytes to first pixel: DOM and CSSOM built in parallel, merged into the render tree, then layout and first paint. | first defined: Chapter 010 L2
-FCP | First Contentful Paint | The moment any text, image, or non-whitespace content first appears on screen; the first user-visible signal that the page is loading, and a Core Web Vital. | first defined: Chapter 010 L2
-LCP | Largest Contentful Paint | The moment the largest above-the-fold element finishes rendering; the standard "page is meaningfully visible" metric, and a Core Web Vital. | first defined: Chapter 010 L2
-Server Component | - | A React component that runs only on the server, renders to HTML there, and ships no JavaScript to the browser for itself; the App Router unit teaches the mechanics. | first defined: Chapter 010 L2
-hydration | - | The process where React walks the server-rendered DOM and attaches event listeners and component state to the existing nodes; the page is visible during this gap but not interactive until its component has hydrated. | first defined: Chapter 010 L2
-hydration mismatch | - | The failure mode where the server's HTML does not match what React renders on the client (for example a component that calls Date.now() during render), so React warns and re-renders the affected subtree on the client. | first defined: Chapter 010 L2
-TTFB | time to first byte | The wall-clock time from committing the URL to the first byte of the response body arriving; bundles DNS, connection setup, TLS handshake, request travel, server thinking time, and one round trip back. | first defined: Chapter 010 L1
-Chromium | - | Google's open-source browser engine, the base for Chrome, Edge, Arc, Brave, and most 2026 browsers besides Firefox and Safari; the engine the course teaches DevTools against. | first defined: Chapter 010 L3
-live DOM | - | The browser's DOM tree as it stands right now, including every change React or other JavaScript has applied since load; what the Elements panel shows, distinct from the source HTML the server returned. | first defined: Chapter 010 L3
-cascade | CSS cascade | The algorithm the browser uses to resolve conflicting CSS rules into one final value per property, ranking the rules that target an element by origin, specificity, and source order; the Tailwind chapter teaches the full resolution rules. | first defined: Chapter 010 L3
-pseudo-state | pseudo-class state | The colon-prefixed states an element can be in (:hover, :focus, :active, :focus-visible, :focus-within); DevTools can force them on an element without the mouse or keyboard via the :hov toggle. | first defined: Chapter 010 L3
-throttle | network throttling | Network conditions simulated by DevTools to mimic a slower connection from the browser side (Fast 4G, Slow 4G, 3G, Offline presets), with a per-request override available; used to test loading states. | first defined: Chapter 010 L3
-REPL | read-eval-print loop | An interactive shell that evaluates one expression at a time and prints its result; the browser Console is a REPL running inside the page, so it can read and mutate the page's actual state. | first defined: Chapter 010 L3
-console utilities | console helpers | DevTools console-only variables and functions injected into the Console's global scope ($0–$4 for the last selected elements, copy() for the clipboard, $_ for the last result); they don't exist in application code. | first defined: Chapter 010 L3
-Core Web Vitals | - | Google's small set of user-centric page-health metrics — loading (LCP), interactivity (INP), and visual stability (CLS) — used as the standard performance scorecard; measured in the performance unit. | first defined: Chapter 010 L3
-clear site data | - | The DevTools button under Application → Storage that wipes every persistence surface for the current origin (cookies, local/session storage, cache storage, IndexedDB, service workers); the fix for "works in incognito, breaks here". | first defined: Chapter 010 L3
-secure context | isSecureContext | A browser condition (read as `window.isSecureContext`) that gates powerful APIs like Clipboard, Web Crypto subtle, Service Workers, Push, and geolocation; met by HTTPS pages and, for most but not all gated APIs, by special-cased localhost/127.0.0.1 URLs. | first defined: Chapter 010 L4
-SNI | Server Name Indication | The hostname the client expects to reach, sent in the clear inside the ClientHello so a server hosting multiple sites on one IP picks the right certificate. | first defined: Chapter 010 L4
-ALPN | Application-Layer Protocol Negotiation | The ClientHello extension where the client lists the application protocols it speaks (h3, h2, http/1.1) and the server picks one in its hello, the way HTTP/3 is negotiated on the same handshake. | first defined: Chapter 010 L4
-certificate | leaf cert, leaf certificate | A public key plus metadata (valid hostnames, validity dates, allowed uses) wrapped in a signature from a Certificate Authority; the browser trusts it only when an authority it already trusts vouches for the key. | first defined: Chapter 010 L4
-Certificate Authority | CA, root CA | An entity that issues TLS certificates by signing them; a root CA's public key is preinstalled in the OS and browser trust stores, and the browser trusts any cert that chains up to a root. | first defined: Chapter 010 L4
-certificate chain | chain of trust | The path from a leaf certificate up through any intermediate signers to a root CA the trust store recognizes; the browser walks it to decide whether to trust the leaf. | first defined: Chapter 010 L4
-trust store | system trust store | The OS-and-browser store of root CA public keys the system trusts; a certificate is accepted only if its chain terminates at a root listed here. | first defined: Chapter 010 L4
-self-signed certificate | self-signed cert | A certificate signed only by itself, so its signer is unknown to the trust store and the chain walk finds no root to vouch for it; browsers reject it, which is what stops any network from minting a cert for a site it doesn't own. | first defined: Chapter 010 L4
-mkcert | - | A development tool that generates a local root CA, installs it into your OS (and Firefox) trust store, and signs project-local leaf certs with it, so localhost gets a trusted green-padlock HTTPS; the local root is per-machine and its key must never be shared. | first defined: Chapter 010 L4
-SAN | Subject Alternative Name | The list of hostnames a certificate is valid for; a browser fails validation if it visits a hostname not on the list, which is why a localhost cert must include localhost, 127.0.0.1, and ::1. | first defined: Chapter 010 L4
-safe | safe method, safety | An HTTP method is safe if calling it has no observable side effect on server state, so caches and prefetchers may speculate on it freely; GET, HEAD, and OPTIONS are safe. | first defined: Chapter 011 L1
-CDN | content delivery network | A fleet of servers geographically close to users that sits in front of your origin, caching and serving responses so requests don't travel all the way to your server. | first defined: Chapter 011 L1
-Vary header | Vary | A response header listing request headers (such as Accept-Language) whose values must match for a cached response to be reused, so one URL can hold separate cache entries per variant. | first defined: Chapter 011 L1
-CORS preflight | preflight, Cross-Origin Resource Sharing | An automatic OPTIONS request the browser sends before certain cross-origin requests to ask the server whether the real request is allowed. | first defined: Chapter 011 L1
-JSON Merge Patch | merge-patch, application/merge-patch+json | A PATCH wire format (RFC 7396) whose body is a partial JSON object: keys overwrite, an explicit null deletes; the default 2026 format for field-level patches on object-shaped resources. | first defined: Chapter 011 L1
-JSON Patch | json-patch, application/json-patch+json | A PATCH wire format (RFC 6902) whose body is an array of typed ops (add, remove, replace, move, copy, test); reach for it when the diff needs operation semantics merge-patch can't express. | first defined: Chapter 011 L1
-Idempotency-Key | idempotency key | A request header whose value is a stable per-operation identifier (typically a UUID); the server stores (key, response) before responding and returns the cached response on replay, making non-idempotent methods retry-safe. | first defined: Chapter 011 L1
-optimistic concurrency | optimistic-concurrency | A concurrency strategy where, instead of locking a record, you submit a change with a check that the record still holds the value you read; if another writer changed it first, the check fails and the write is rejected. | first defined: Chapter 011 L1
-status code | HTTP status code | The three-digit number on an HTTP response line that declares the outcome category of a request; the number is what the stack reads, the reason phrase is for humans. | first defined: Chapter 011 L2
-status class | status code class | The first digit of an HTTP status code (1xx informational, 2xx success, 3xx redirection, 4xx client error, 5xx server error); the part infrastructure layers act on, while clients code against the specific code. | first defined: Chapter 011 L2
-status line | HTTP status line | The first line of an HTTP response, made of the protocol version, the three-digit status code, and a human-readable reason phrase, e.g. `HTTP/3 200 OK`. | first defined: Chapter 011 L2
-Problem Details | RFC 9457, application/problem+json | An IETF standard (RFC 9457, 2023, superseding RFC 7807) defining a JSON error-body shape with five core fields (type, title, status, detail, instance) and the application/problem+json content type. | first defined: Chapter 011 L2
-problem-type-specific extension | problem extension | An extra field added to a Problem Details body beyond the five core fields, fixed per `type` URI so clients can code against it; the course's canonical one is `errors`, an array of { path, message }. | first defined: Chapter 011 L2
-load balancer | - | A server that sits in front of your application and spreads incoming requests across several backend instances, so no single instance is overwhelmed and a failed one can be skipped. | first defined: Chapter 011 L2
-upstream | upstream service | A service that sits behind the one handling the request and receives the request forwarded onward; for a CDN or proxy, the upstream is your origin application. | first defined: Chapter 011 L2
-multi-tenant | multi-tenancy, tenant | An architecture where one running application serves many isolated customers (tenants, usually organizations), each able to see only its own data. | first defined: Chapter 011 L2
-safeParse | - | Zod's non-throwing validation method that checks a value against a schema and returns { success: true, data } or { success: false, error } instead of throwing. | first defined: Chapter 011 L2
-Post-Redirect-Get | PRG | A pattern where a POST returns 303 with a Location header, the client follows with a GET, and the result page is safe to refresh, preventing form re-submission on back or refresh. | first defined: Chapter 011 L2
-content negotiation | - | The mechanism by which client and server agree on the body's format, driven by request headers (Accept, Accept-Encoding, Accept-Language) and answered by response headers (Content-Type, Content-Encoding). | first defined: Chapter 011 L3
-Content-Type | - | A header naming the media type (and charset) of the current body; on a request it describes what is being sent, on a response what is being returned, and the two are independent. | first defined: Chapter 011 L3
-Cache-Control | - | A header read first by caches whose value is a comma-separated list of directives (private/public, max-age, s-maxage, no-store, no-cache, must-revalidate, stale-while-revalidate, immutable) controlling what caches may do with a response. | first defined: Chapter 011 L3
-shared cache | - | A cache between client and server that stores responses for many users (a CDN or corporate proxy), as opposed to the browser's private per-user cache; only `public` responses may be stored in one. | first defined: Chapter 011 L3
-conditional request | - | A request that asks the server to return the body only if the resource has changed, using a validator the client holds (If-None-Match with an ETag, or If-Modified-Since with a timestamp); saves the body, not the round-trip. | first defined: Chapter 011 L3
-ETag | entity tag | An opaque token a server stamps on a response to identify that exact version of the resource; the client echoes it back as If-None-Match and the server replies 304 Not Modified if it still matches. | first defined: Chapter 011 L3
-If-Match | - | The write-side conditional header for optimistic concurrency: the client sends a known ETag on a mutation and the server replies 412 Precondition Failed if the resource has since changed. | first defined: Chapter 011 L3
-bearer token | Bearer | A raw credential sent in plaintext as `Authorization: Bearer <token>` on every request, with none of the browser-managed cookie mitigations; the choice for programmatic clients that manage their own credential lifecycle. | first defined: Chapter 011 L3
-CSRF | Cross-Site Request Forgery | An attack where a malicious site makes the victim's browser send an authenticated request to your app, riding on the cookie the browser attaches automatically; defended by SameSite cookies and Origin checks. | first defined: Chapter 011 L3
-XSS | Cross-Site Scripting | An attack where attacker-controlled script runs in your page's origin with access to the user's session; a nonce-based CSP closes it by executing only scripts the server marked as trusted. | first defined: Chapter 011 L3
-Content-Security-Policy | CSP | A response header telling the browser which sources may execute scripts, load styles, frame the page, and so on; the 2026 senior shape is nonce-based with 'strict-dynamic'. | first defined: Chapter 011 L3
-nonce | - | A one-time random value generated per request; in CSP the server emits it in the header and on each trusted <script> tag, and the browser executes only scripts whose nonce matches. | first defined: Chapter 011 L3
-HSTS | Strict-Transport-Security | A response header telling the browser to always use HTTPS for this host for a configured window, closing the downgrade-to-HTTP window an attacker uses to strip TLS. | first defined: Chapter 011 L3
-structured fields | RFC 9651 | A defined grammar for header values as lists of items with parameters, parsed the same way everywhere; the modern replacement for ad-hoc header formats like the legacy X-RateLimit-* set. | first defined: Chapter 011 L3
-Retry-After | - | A response header carrying the back-off the client must honor, as a number of seconds or an HTTP-date; sent on a 429 from a rate limiter and on a 503 from an overloaded server. | first defined: Chapter 011 L3
-X-Forwarded-For | XFF | A request header to which each proxy appends the IP it received the request from, so the application can recover the original client IP; only the rightmost entry (added by the trusted edge) can be believed. | first defined: Chapter 011 L3
-Forwarded | RFC 7239 | The standardized header folding X-Forwarded-For, -Proto, and -Host into one (`Forwarded: for=...;proto=...;by=...`); the modern replacement for the legacy X-Forwarded-* set. | first defined: Chapter 011 L3
-proxy.ts | - | The Next.js 16 rename of middleware.ts; the per-request setter that runs before a route resolves, where headers needing request-time data (the CSP nonce, request-id, rate-limit headers) are set. | first defined: Chapter 011 L3
-URL | new URL, URL constructor | The global that parses a URL string into named fields (protocol, hostname, pathname, search, origin, and more) and resolves a relative input against a base via `new URL(input, base)`; throws on unparseable input, with `URL.canParse` and `URL.parse` as non-throwing guards. | first defined: Chapter 012 L1
-URLSearchParams | search params | The global that builds and parses a URL query string, owning percent-encoding so values never need hand-escaping; `set`/`append` write and `get`/`getAll` read, preserving insertion order and repeated keys. | first defined: Chapter 012 L1
-WHATWG | Web Hypertext Application Technology Working Group | The body that maintains the living URL, HTML, and Fetch standards browsers actually implement. | first defined: Chapter 012 L1
-percent-encoding | URL-encoding | Replacing a character with % followed by its byte value in hex, so %20 is a space; the escaping scheme URLs use, with different encode sets for different positions. | first defined: Chapter 012 L1
-IDN | Internationalized Domain Name | A hostname with non-ASCII characters, normalized to ASCII via Punycode. | first defined: Chapter 012 L1
-Punycode | - | The ASCII encoding of Unicode hostnames, e.g. münchen becomes xn--mnchen-3ya. | first defined: Chapter 012 L1
-trailing-slash drift | - | The concatenation bug where the same logical URL, assembled from inputs that differ only by a slash, produces two unequal strings (a double slash), which caches, logs, and access checks then treat as different; the parser normalizes it away. | first defined: Chapter 012 L1
-origin | - | The tuple (scheme, host, port); two URLs share an origin only when all three match exactly, with default ports (:443 for https, :80 for http) dropped. The strict trust boundary the browser keys on. | first defined: Chapter 012 L2
-same-origin policy | SOP | The browser's default trust boundary: a page may freely read responses from its own origin, but a cross-origin response is sent and may run or render while the calling page cannot read its bytes unless the responder opts in via CORS. Protects the confidentiality of the response for the user, not the server from writes. | first defined: Chapter 012 L2
-site | same-site, cross-site | The tuple (scheme, eTLD+1); the looser boundary that ignores subdomains and ports but is schemeful (http and https differ). The unit SameSite cookies key on. | first defined: Chapter 012 L2
-effective top-level domain | eTLD | The suffix under which anyone can register their own domain (.com, .co.uk, github.io), read from the Public Suffix List rather than guessed by label count. | first defined: Chapter 012 L2
-registrable domain | eTLD+1 | The eTLD plus the one label in front of it, the shortest domain a single owner can register; the unit a site is keyed on. | first defined: Chapter 012 L2
-Public Suffix List | PSL | A browser-maintained list of every effective top-level domain, the authority for where a registrable domain begins. | first defined: Chapter 012 L2
-client certificate | - | A certificate the browser presents to authenticate the user to a server, attached automatically like a cookie. | first defined: Chapter 012 L2
-CORS | Cross-Origin Resource Sharing | The protocol, a set of Access-Control-* HTTP response headers a server sends, that tells the browser which other origins may read a response; enforced by the browser, configured on the server. | first defined: Chapter 012 L3
-simple request | CORS-safelisted request | A cross-origin request that meets the CORS-safelisted criteria (simple method, only safelisted headers, simple Content-Type), so the browser sends it directly and checks the response headers before letting the page read the body. | first defined: Chapter 012 L3
-preflighted request | preflight | A cross-origin request the browser does not send directly: it first sends a separate OPTIONS request asking the server to authorize the real request's method and headers, and sends the real one only once the Access-Control-Allow-* reply covers it. | first defined: Chapter 012 L3
-credentialed request | credentials include | A cross-origin request that carries the user's cookies because the client set credentials: 'include'; the server must answer with Access-Control-Allow-Credentials: true and may not use the wildcard origin. | first defined: Chapter 012 L3
-Route Handler | route.ts | A Next.js file at app/api/.../route.ts that responds to HTTP requests by exporting one function per method (GET, POST, OPTIONS, …). | first defined: Chapter 012 L3
-Set-Cookie | - | The response header by which a server writes a cookie once; it carries the name=value pair followed by semicolon-separated attributes that constrain when, where, and to whom the browser later re-attaches the cookie. | first defined: Chapter 013 L1
-ambient credential | - | A credential the browser attaches to matching requests on its own, with no application code involved (the prime example being a cookie); the automation that keeps sessions alive is also the CSRF threat. | first defined: Chapter 013 L1
-HttpOnly | - | A Set-Cookie attribute that hides the cookie from JavaScript (document.cookie cannot read it) while the browser still attaches it to requests; defense-in-depth that blocks XSS from exfiltrating the cookie value. | first defined: Chapter 013 L1
-Secure (cookie) | Secure attribute | A Set-Cookie attribute that tells the browser to attach the cookie only on HTTPS requests, so it never travels in the clear where an on-path attacker could read it. | first defined: Chapter 013 L1
-on-path attacker | - | Anyone positioned on the network path who can read or modify unencrypted traffic, such as a coffee-shop wifi sniffer. | first defined: Chapter 013 L1
-SameSite | SameSite=Strict, SameSite=Lax, SameSite=None | A Set-Cookie attribute deciding whether the browser attaches the cookie on cross-site requests: Strict (same-site only), Lax (same-site plus top-level safe-method navigations, the session default), or None (always, requires Secure). | first defined: Chapter 013 L1
-top-level navigation | - | A request that changes the address bar to your site, as opposed to a background request or an embedded sub-resource load. | first defined: Chapter 013 L1
-CSRF double-submit token | double-submit token | A CSRF defense where the server sets a random token in a readable cookie and the client echoes it back in a request header; the server accepts the request only when the two copies match. | first defined: Chapter 013 L1
-Path (cookie) | Path attribute | A Set-Cookie attribute that attaches the cookie only on requests whose pathname starts with the given prefix; defaults to the setting page's directory, not /, so set Path=/ explicitly. A scoping convenience, not a security boundary. | first defined: Chapter 013 L1
-Domain (cookie) | Domain attribute | A Set-Cookie attribute that, when set, attaches the cookie to the named domain and every subdomain under it; omitting it makes the cookie host-only, the safer session default. | first defined: Chapter 013 L1
-host-only cookie | host-only | A cookie with no Domain attribute, attached only to the exact host that set it and never to sibling subdomains; the wanted default for a session cookie. | first defined: Chapter 013 L1
-session cookie | - | A cookie set with neither Max-Age nor Expires, meant to live until the browser closes; unreliable on mobile and tab-restoring browsers, so set Max-Age for predictable expiry. | first defined: Chapter 013 L1
-Max-Age | Max-Age attribute | A Set-Cookie attribute giving the cookie's lifetime in seconds from now (Max-Age=0 deletes it); preferred over Expires because seconds-from-now avoids the client-clock-skew ambiguity of an absolute date. | first defined: Chapter 013 L1
-__Host- prefix | __Host- | A cookie name prefix the browser treats as a contract: a __Host- cookie must be Secure, must omit Domain, and must use Path=/, or the browser rejects it; the result is a host-locked cookie no subdomain can plant. | first defined: Chapter 013 L1
-__Secure- prefix | __Secure- | The relaxed sibling of __Host-: a cookie name prefix the browser enforces requiring only Secure, leaving Domain and Path unrestricted so the cookie can be shared across subdomains. | first defined: Chapter 013 L1
-Partitioned | CHIPS, Cookies Having Independent Partitioned State | A Set-Cookie attribute that double-keys a cookie by its own origin and the top-level site embedding it, giving each embedding site a separate cookie jar; the cross-browser path forward for a working cross-site cookie. | first defined: Chapter 013 L1
-third-party cookie | - | A cookie set under a different site than the one in the address bar; the cross-site tracking primitive that Safari and Firefox block by default and that Partitioned cookies replace. | first defined: Chapter 013 L1
-FedCM | Federated Credential Management | A browser API replacing third-party-cookie-based federated sign-in. | first defined: Chapter 013 L1
+value equality | - | `===` comparing primitives by content. | first defined: Chapter 001 L2
+reference equality | identity equality | `===` comparing objects by same-allocation, not contents. | first defined: Chapter 001 L2
+coercion | type coercion | Automatic conversion between types before an operation. | first defined: Chapter 001 L2
+IEEE 754 | - | Floating-point standard JS `number` uses. | first defined: Chapter 001 L2
+structural equality | deep equality | Comparing objects by recursive field/value match; no built-in operator. | first defined: Chapter 001 L2
+memoization | - | Caching a function's result by input. | first defined: Chapter 001 L2
+NaN | not a number | Invalid-numeric value; unequal to everything including itself, propagates. | first defined: Chapter 001 L2
+integer cents | integer-cents rule | Storing money as integer smallest-units for exact arithmetic. | first defined: Chapter 001 L3
+minor unit | smallest currency unit | A currency's smallest denomination (cent, fil). | first defined: Chapter 001 L3
+ISO 4217 | - | Standard coding currencies and their minor-unit decimals. | first defined: Chapter 001 L3
+BigInt | - | Integer type for whole numbers past MAX_SAFE_INTEGER; `n` suffix, no mixing. | first defined: Chapter 001 L3
+safe integer | Number.MAX_SAFE_INTEGER | Integer a `number` represents exactly, up to 2^53−1. | first defined: Chapter 001 L3
+radix | base | Number base for reading digit strings; parseInt's 2nd arg. | first defined: Chapter 001 L3
+code unit | UTF-16 code unit | 16-bit chunk `.length` counts; chars above U+FFFF take two. | first defined: Chapter 001 L4
+code point | Unicode code point | The single number Unicode assigns one character. | first defined: Chapter 001 L4
+surrogate pair | - | Two code units encoding one code point above U+FFFF. | first defined: Chapter 001 L4
+grapheme cluster | grapheme | One user-perceived character, possibly several code points. | first defined: Chapter 001 L4
+zero-width joiner | ZWJ | Invisible char (U+200D) gluing code points into one grapheme. | first defined: Chapter 001 L4
+serialization detail | - | A property of storage/transmission, not of meaning. | first defined: Chapter 001 L4
+Intl.Segmenter | - | API splitting strings into graphemes/words/sentences per locale. | first defined: Chapter 001 L4
+Unicode normalization | normalize, NFC, NFD, NFKC, NFKD | Rewriting to canonical code points so equal text compares equal. | first defined: Chapter 001 L4
+template literal | backtick string | Backtick string with ${} interpolation and literal newlines. | first defined: Chapter 001 L5
+interpolation | string interpolation | Embedding an expression's value via ${} in a template literal. | first defined: Chapter 001 L5
+tagged template | tagged template literal, tag | Function receiving a template's static segments and dynamic values. | first defined: Chapter 001 L5
+TemplateStringsArray | - | A tag's first arg: readonly array of static string segments. | first defined: Chapter 001 L5
+String.raw | - | Built-in tag returning a template's raw text, escapes unprocessed. | first defined: Chapter 001 L5
+SQL injection | - | Attack where user text concatenated into a query runs as SQL. | first defined: Chapter 001 L5
+parameterized query | bound parameter, parameterization | Query sending values as bound parameters, not inlined text. | first defined: Chapter 001 L5
+dedent | - | npm tagged template stripping common leading whitespace. | first defined: Chapter 001 L5
+binding | - | A name pointing to a value (variable, parameter, property). | first defined: Chapter 001 L1
+block scope | block-scoped | `const`/`let` visible only in the nearest enclosing braces. | first defined: Chapter 001 L6
+Temporal Dead Zone | TDZ | Pre-declaration window where a `let`/`const` access throws. | first defined: Chapter 001 L6
+hoisting | - | Compile-time pre-registration of names before code runs. | first defined: Chapter 001 L6
+Object.is | SameValue | Like `===` but NaN equals itself and +0 ≠ −0. | first defined: Chapter 001 L2
+Number.isNaN | - | Non-coercing check for the actual NaN. | first defined: Chapter 001 L2
+Number.isFinite | - | Non-coercing check for a finite number. | first defined: Chapter 001 L2
+predicate | - | A function returning a boolean. | first defined: Chapter 001 L3
+Number.isInteger | - | Non-coercing check for a whole number. | first defined: Chapter 001 L3
+Number.isSafeInteger | - | Non-coercing check for an exactly-representable integer. | first defined: Chapter 001 L3
+Intl.NumberFormat | - | API formatting numbers per locale (currency, grouping, decimals). | first defined: Chapter 001 L3
+combining mark | combining accent, combining acute accent | Zero-width code point overlaid on the preceding base char. | first defined: Chapter 001 L4
+precomposed | composed form | Single code point already carrying its accent. | first defined: Chapter 001 L4
+localeCompare | String.prototype.localeCompare | Locale-aware string comparison for sorting visible text. | first defined: Chapter 001 L4
+ORM | object-relational mapper | Library mapping DB tables to typed objects instead of raw SQL. | first defined: Chapter 001 L5
+arrow function | arrow, fat arrow | `(args) => body`; inherits `this`; course default. | first defined: Chapter 002 L1
+function declaration | - | `function name(){}` at statement position; whole body hoists. | first defined: Chapter 002 L1
+function expression | - | A `function`-keyword function used as a value. | first defined: Chapter 002 L1
+method shorthand | - | Object-literal method syntax; binds own `this` from call site. | first defined: Chapter 002 L1
+type predicate | predicate signature | Return annotation `x is T` that narrows on true. | first defined: Chapter 002 L1
+assertion signature | assertion function | Return annotation `asserts x is T`; narrows if no throw. `function` only. | first defined: Chapter 002 L1
+narrowing | - | TS shrinking a value's type within a branch. | first defined: Chapter 002 L1
+labeled statement | label | Identifier-prefixed statement `break`/`continue` can target. | first defined: Chapter 002 L1
+options object | - | Single object parameter replacing positional args; course default past two. | first defined: Chapter 002 L2
+positional parameter | positional argument | Parameter bound by call order, not name. | first defined: Chapter 002 L2
+parameter default | default parameter | `param = expr` firing only on `undefined`, unlike `||`. | first defined: Chapter 002 L2
+object type literal | inline object type | Inline object shape used as a type. | first defined: Chapter 002 L2
+rest parameter | rest | Final `...name` gathering trailing args into an array. | first defined: Chapter 002 L2
+spread argument | spread | `...array` unpacking an array into positional args. | first defined: Chapter 002 L2
+wrapper pattern | wrapper function | Function adding behavior around another, forwarding all args. | first defined: Chapter 002 L2
+falsy | - | Value coercing to false: `false`, `0`, `''`, `null`, `undefined`, `NaN`. | first defined: Chapter 002 L2
+architectural principle | senior-mindset principle | The course's running list of senior design decisions. | first defined: Chapter 002 L3
+public surface | - | Everything a caller sees without opening the body. | first defined: Chapter 002 L3
+Hungarian notation | - | Naming style encoding type/scope in the identifier. | first defined: Chapter 002 L3
+Biome | - | The course's Rust linter/formatter, the ESLint+Prettier replacement. | first defined: Chapter 002 L3
+Server Action | - | Next.js `'use server'` function callable from client code; course default for mutations. | first defined: Chapter 002 L3
+implementation-leaking name | - | Name encoding how a value is stored/computed, not what it is. | first defined: Chapter 002 L3
+vague abstraction | - | Name fitting any value (`data`, `result`, `manager`). | first defined: Chapter 002 L3
+negated boolean | - | Boolean named with a baked-in negation. | first defined: Chapter 002 L3
+guard clause | guard | Early-exit check at the top of a function, no `else`. | first defined: Chapter 002 L4
+discriminated union | tagged union | Union of variants tagged by a shared literal field. | first defined: Chapter 002 L4
+discriminant | tag | The shared literal field the dispatch reads. | first defined: Chapter 002 L4
+never | never type | TS bottom type; no values; forces exhaustiveness errors. | first defined: Chapter 002 L4
+exhaustiveness checking | exhaustive switch | Compiler verifying every union variant is handled. | first defined: Chapter 002 L4
+assertNever | - | `(x: never): never` helper turning a missed variant into a compile error. | first defined: Chapter 002 L4
+noFallthroughCasesInSwitch | - | TS flag making non-terminating switch cases an error. | first defined: Chapter 002 L4
+noUncheckedIndexedAccess | - | TS flag adding `| undefined` to indexed access. | first defined: Chapter 002 L4
+optional chaining | ?. | `?.` family short-circuiting to undefined on a nullish link. | first defined: Chapter 002 L5
+nullish | - | null and undefined, distinct from the wider falsy set. | first defined: Chapter 002 L5
+nullish coalescing | ?? | `??` returning the right operand only when left is nullish. | first defined: Chapter 002 L5
+nullish coalescing assignment | ??= | `??=` assigning only when left is nullish; lazy cache-or-compute. | first defined: Chapter 002 L5
+short-circuit | short-circuiting | Stopping evaluation at the first early-returning link. | first defined: Chapter 002 L5
+destructuring | destructure | Pulling fields/positions out and binding them as locals. | first defined: Chapter 002 L6
+shadowing | shadow | Inner binding hiding a same-named outer one. | first defined: Chapter 002 L6
+tuple | - | Fixed-length array where each position has a fixed meaning. | first defined: Chapter 002 L6
+closure | - | A function plus the bindings it reads from where it was written. | first defined: Chapter 002 L7
+lexical environment | - | The in-scope bindings a function carries as its closure. | first defined: Chapter 002 L7
+scope chain | - | Ordered enclosing scopes a name lookup walks. | first defined: Chapter 002 L7
+higher-order function | - | Function taking or returning a function. | first defined: Chapter 002 L7
+module scope | - | A module's top-level scope, evaluated once, shared across calls. | first defined: Chapter 002 L7
+dot access | dot notation | `obj.field`; checked against known shape; default for known fields. | first defined: Chapter 003 L1
+bracket access | bracket notation, indexed access | `obj[key]` for computed/runtime keys; can reach the prototype. | first defined: Chapter 003 L1
+prototype chain | prototype | Objects walked on a property miss, ending at Object.prototype. | first defined: Chapter 003 L1
+object spread | spread, shallow merge | `{ ...obj }` shallow-copying own enumerable props; right wins. | first defined: Chapter 003 L1
+property shorthand | shorthand | `{ name }` for `{ name: name }`. | first defined: Chapter 003 L1
+computed key | computed property name | `{ [expr]: value }` keying from a bracketed expression. | first defined: Chapter 003 L1
+structural typing | structural type system | TS matching types by shape, not name. | first defined: Chapter 003 L1
+enumerable | enumerable property | Property appearing in key iteration/listing. | first defined: Chapter 003 L1
+Record<string, T> | Record type | Object type with dynamic string keys sharing value type T. | first defined: Chapter 003 L1
+Object.hasOwn | - | ES2022 own-key check ignoring the prototype chain. | first defined: Chapter 003 L1
+Object.groupBy | - | ES2024 static bucketing an array by a string key. | first defined: Chapter 003 L1
+Object.create(null) | - | Prototype-less object for safe lookup tables. | first defined: Chapter 003 L1
+non-mutating method | non-mutating update, non-mutating twin | Array method returning a new array (toSorted, with, …). | first defined: Chapter 003 L2
+shallow copy | shallow clone | New outer container reusing nested references, one level deep. | first defined: Chapter 003 L2
+iterable | iteration protocol | Anything implementing the iteration protocol (spreadable). | first defined: Chapter 003 L2
+sparse array | - | Array with unassigned holes; most methods skip them. | first defined: Chapter 003 L2
+SameValueZero | - | Set/Map key equality; like `===` but NaN equals itself. | first defined: Chapter 003 L2
+accumulator | acc | The running value `.reduce` carries between calls. | first defined: Chapter 003 L3
+Object.fromEntries | - | Builds an object from `[key, value]` pairs; inverse of entries. | first defined: Chapter 003 L3
+non-null assertion | non-null assertion operator, postfix ! | Trailing `!` asserting non-null with no runtime check. | first defined: Chapter 003 L3
+Set | - | Collection of unique values; constant-time membership; set algebra. | first defined: Chapter 003 L4
+Map | - | Key-value collection with any-type keys and insertion order. | first defined: Chapter 003 L4
+WeakMap | - | Map with weakly-held object keys; no iteration or size. | first defined: Chapter 003 L4
+WeakSet | - | Set with weakly-held object members; "seen this object?" checks. | first defined: Chapter 003 L4
+record | - | Object with a fixed, known shape; keys part of the type. | first defined: Chapter 003 L4
+dictionary | - | Collection with a dynamic keyspace; `Map` is its container. | first defined: Chapter 003 L4
+set algebra | set methods | ES2025 Set composition methods (union, intersection, …). | first defined: Chapter 003 L4
+set-like | - | Object with `.size`, `.has`, `.keys()` a Set method accepts. | first defined: Chapter 003 L4
+hash table | - | Structure with ~constant-time keyed lookup/insert/delete. | first defined: Chapter 003 L4
+garbage collector | garbage collection | Engine part freeing unreferenced object memory automatically. | first defined: Chapter 003 L4
+internal slots | internal slot | Engine storage for Map/Set entries, invisible to JSON.stringify. | first defined: Chapter 003 L4
+Map.groupBy | - | Object.groupBy returning a Map with any-type keys. | first defined: Chapter 003 L4
+iteration protocol | - | The iterable + iterator `.next()` → `{value, done}` contract. | first defined: Chapter 003 L5
+iterator | - | Object with `.next()` returning `{ value, done }`. | first defined: Chapter 003 L5
+own properties | own property | Properties directly on the object, not inherited. | first defined: Chapter 003 L5
+generator | generator function | `function*` with `yield`; returns a pausable iterator/iterable. | first defined: Chapter 003 L5
+iterator helpers | lazy helpers | ES2025 lazy Iterator.prototype methods (.map, .filter, .take, …). | first defined: Chapter 003 L5
+Iterator.from | - | ES2025 static wrapping an iterable into an iterator. | first defined: Chapter 003 L5
+for await...of | - | Loop awaiting each value from an async source. | first defined: Chapter 003 L5
+regular expression | regex, regexp | Pattern describing a set of strings; `/.../ ` or RegExp. | first defined: Chapter 003 L6
+regex flag | flag | Single letter toggling behavior: g, i, m, s, u, v. | first defined: Chapter 003 L6
+named capture group | named group | `(?<name>...)` exposing captured text on match.groups. | first defined: Chapter 003 L6
+character class | - | `[...]` matching any single char from its set. | first defined: Chapter 003 L6
+quantifier | - | Repeat count: `+`, `*`, `?`, `{n,m}`. | first defined: Chapter 003 L6
+backreference | - | Reference re-matching an earlier group's capture (`\1`, `\k<name>`). | first defined: Chapter 003 L6
+property escape | Unicode property escape | `\p{...}` matching Unicode chars by property; needs u/v. | first defined: Chapter 003 L6
+lookaround | lookahead, lookbehind | Zero-width assertion matching by surroundings. | first defined: Chapter 003 L6
+Unicode mode | u flag | `u` flag enabling Unicode-aware matching and `\p{}`. | first defined: Chapter 003 L6
+Unicode sets mode | v flag | ES2024 `v` flag superseding u; set operations in classes. | first defined: Chapter 003 L6
+ReDoS | regular-expression denial of service | DoS from catastrophic backtracking on nested quantifiers. | first defined: Chapter 003 L6
+Language Server Protocol | LSP | Editor–language-tool contract for portable diagnostics. | first defined: Chapter 003 L7
+blame | git blame | Git's per-line record of last-changing commit and author. | first defined: Chapter 003 L7
+EditorConfig | .editorconfig | Cross-editor config for indent, line endings, charset. | first defined: Chapter 003 L7
+mise | rtx | Course's polyglot version manager pinning runtimes per repo. | first defined: Chapter 003 L8
+LTS | Long-Term Support | Node's long-support release line; course default. | first defined: Chapter 003 L8
+type-stripping | type-stripper, native type-stripping | Node 24 blanking type-only `.ts` parts and running the JS. | first defined: Chapter 003 L8
+tsx | - | Third-party CLI running `.ts` via esbuild; dev tool only. | first defined: Chapter 003 L8
+tsc | TypeScript compiler | The TS compiler; type-checks or emits JS + declarations. | first defined: Chapter 003 L8
+esbuild | - | Fast Go JS/TS bundler/transformer tsx embeds. | first defined: Chapter 003 L8
+path alias | - | tsconfig prefix mapping to a directory (`@/lib`). | first defined: Chapter 003 L8
+scoped package | scope | npm package named `@scope/name`. | first defined: Chapter 003 L8
+moduleResolution bundler | bundler resolution | tsconfig setting matching bundler-style import resolution. | first defined: Chapter 003 L8
+pnpm dlx | - | pnpm's run-once command, like `npx`. | first defined: Chapter 003 L8
+literal type | - | A primitive narrowed to exactly one value. | first defined: Chapter 004 L1
+literal union | - | Union of literal types for finite known values. | first defined: Chapter 004 L1
+inhabitant | - | A runtime value satisfying a type. | first defined: Chapter 004 L1
+widening | literal widening | TS broadening an inferred literal to its base primitive. | first defined: Chapter 004 L1
+as const | const assertion | Suffix freezing a value at its narrowest type. | first defined: Chapter 004 L1
+any | any type | Type turning off checking; unsound; banned in the course. | first defined: Chapter 004 L1
+unknown | unknown type | Sound top type accepting all values, refusing reads until narrowed. | first defined: Chapter 004 L1
+void | void type | Return type meaning ignore the return value. | first defined: Chapter 004 L1
+soundness | sound, unsound | Type system never letting runtime type contradict static type. | first defined: Chapter 004 L1
+brand | branded type | Primitive tagged with a compile-only marker for distinctness. | first defined: Chapter 004 L1
+type alias | alias | A name bound to a type expression; erased at compile time. | first defined: Chapter 004 L2
+interface | - | Keyword declaring object shapes; allows declaration merging. | first defined: Chapter 004 L2
+declaration merging | - | Two same-name declarations combining into one; interface only. | first defined: Chapter 004 L2
+optional property | optional field, ? modifier | Field marked `?`, may be absent entirely. | first defined: Chapter 004 L2
+readonly | readonly modifier | Modifier forbidding property reassignment after construction. | first defined: Chapter 004 L2
+readonly array | readonly T[], ReadonlyArray | Array type without mutating methods. | first defined: Chapter 004 L2
+Readonly | Readonly utility type | Utility applying `readonly` to top-level props; shallow. | first defined: Chapter 004 L2
+exactOptionalPropertyTypes | - | TS flag separating absent from present-but-undefined fields. | first defined: Chapter 004 L2
+excess property check | excess property checks | TS flagging undeclared props on a directly-assigned literal. | first defined: Chapter 004 L2
+labeled tuple | labeled tuple element | Tuple with named positions; names are tooltip-only. | first defined: Chapter 004 L3
+destructure-and-rename | - | Destructuring a positional return while renaming bindings. | first defined: Chapter 004 L3
+readonly tuple | - | Tuple prefixed `readonly`, dropping mutating methods. | first defined: Chapter 004 L3
+optional tuple position | optional position | Tuple slot marked `?`; must follow required ones. | first defined: Chapter 004 L3
+rest tuple position | rest position | Trailing `...T[]` in a tuple; one, placed last. | first defined: Chapter 004 L3
+index signature | - | `{ [key: K]: V }` declaring the type of dynamic keys. | first defined: Chapter 004 L4
+key constraint | - | The type every key in an index signature/Record must satisfy. | first defined: Chapter 004 L4
+PropertyKey | - | Built-in type for any key: `string | number | symbol`. | first defined: Chapter 004 L4
+completeness check | - | `Record<LiteralUnion, V>` making missing keys a compile error. | first defined: Chapter 004 L4
+in operator | - | `key in obj` runtime existence test; doesn't narrow index reads. | first defined: Chapter 004 L4
+union | union type, `|` | `A | B`: a value is either; inhabitants grow. | first defined: Chapter 004 L5
+intersection | intersection type, `&` | `A & B`: satisfies both; field set grows, value set shrinks. | first defined: Chapter 004 L5
+shape-union access rule | - | On a union, only fields common to all variants read without narrowing. | first defined: Chapter 004 L5
+type assertion | as, cast | Compile-only `as T`; no runtime effect, silences the check. | first defined: Chapter 004 L6
+control-flow narrowing | flow narrowing | TS refining a type along branches from runtime checks. | first defined: Chapter 004 L6
+truthy check | - | `if (x)` excluding every falsy value, not just nullish. | first defined: Chapter 004 L6
+realm | - | Separate JS context with its own globals; breaks `instanceof`. | first defined: Chapter 004 L6
+satisfies | satisfies operator | `satisfies T` validating assignability while keeping the narrow type. | first defined: Chapter 004 L7
+typed config | typed config map | Module constant whose key/value types the module consumes. | first defined: Chapter 004 L7
+keyof typeof | - | Lifts a value's keys into a literal-union type. | first defined: Chapter 004 L7
+inference | type inference | TS reading a type from the producing expression. | first defined: Chapter 004 L8
+implicit any | - | `noImplicitAny` error on an un-inferable unannotated parameter. | first defined: Chapter 004 L8
+contextual inference | - | TS inferring a parameter type from the call site. | first defined: Chapter 004 L8
+verbatimModuleSyntax | - | TS flag emitting imports verbatim, requiring `import type`. | first defined: Chapter 004 L8
+side effect | - | Work a module does on import beyond exporting names. | first defined: Chapter 004 L8
+tree-shaking | tree-shaken | Build step dropping code judged unused. | first defined: Chapter 004 L8
+Result<T> | result type | `{ ok: true; data } | { ok: false; error }` for expected failure. | first defined: Chapter 004 L5
+impossible state | impossible states | Field combination a type allows but the runtime never produces. | first defined: Chapter 005 L1
+state machine | - | Discriminated union of states plus typed transition functions. | first defined: Chapter 005 L2
+transition function | - | Function naming a specific input state and output state. | first defined: Chapter 005 L2
+per-state invariant | per-variant invariant | Each variant carrying only the data valid in that state. | first defined: Chapter 005 L2
+optimistic mutation | optimistic update | Showing a new value immediately, rolling back on failure. | first defined: Chapter 005 L2
+reducer | - | A state machine as one `(state, event) => state` function. | first defined: Chapter 005 L2
+AbortController | - | Web API for canceling an in-flight request via its signal. | first defined: Chapter 005 L2
+XState | - | State-machine library for machines outgrowing plain TS. | first defined: Chapter 005 L2
+dunning | - | Flow chasing a failed payment with retries and notices. | first defined: Chapter 005 L2
+webhook | - | HTTP request an external service sends on its events. | first defined: Chapter 005 L2
+indexed access type | indexed access | Type-level read of a field's type off another type. | first defined: Chapter 005 L3
+Zod | - | TS-first schema library validating unknown data to typed values. | first defined: Chapter 005 L3
+nominal typing | nominal type system | Type compatibility by name; TS emulates via branding. | first defined: Chapter 005 L4
+brand factory | - | Function validating and converting a string to a branded ID. | first defined: Chapter 005 L4
+phantom property | phantom field | Compile-only field carrying a brand label. | first defined: Chapter 005 L4
+unique symbol | - | Declaration-unique symbol type used as a collision-proof key. | first defined: Chapter 005 L4
+parse seam | - | Spot where outside data re-enters typed code and is parsed. | first defined: Chapter 005 L4
+Drizzle | - | Course's TS-first database toolkit with inferred row types. | first defined: Chapter 005 L4
+derived type | - | Type computed from a runtime value via typeof/keyof/indexed access. | first defined: Chapter 005 L5
+value-level | value-level register | Expression evaluated by the JS runtime. | first defined: Chapter 005 L5
+type-level | type-level register | Expression evaluated by the TS compiler, erased before runtime. | first defined: Chapter 005 L5
+typeof extractor | type-level typeof | `typeof V` in a type position, reading a value's inferred type. | first defined: Chapter 005 L5
+utility type | built-in utility type | Built-in generic transforming a type (Partial, Pick, ReturnType). | first defined: Chapter 005 L6
+shallow | shallow transform | Type transform operating on the top level only. | first defined: Chapter 005 L6
+DTO | data transfer object | Type for data crossing a boundary, often a trimmed view. | first defined: Chapter 005 L6
+generic | generic function, generic type | Function/type accepting a type parameter. | first defined: Chapter 005 L7
+type parameter | - | The `<T>` a generic names for the caller to fill. | first defined: Chapter 005 L7
+default type parameter | - | Type parameter with `= Default` filling in when omitted. | first defined: Chapter 005 L7
+constraint | extends constraint | `<T extends ...>` requiring T be assignable to the right side. | first defined: Chapter 005 L7
+const type parameter | const modifier | `<const T>` inferring literals like caller-side `as const`. | first defined: Chapter 005 L7
+variance | - | Type-parameter subtyping behavior via `in`/`out`. | first defined: Chapter 005 L7
+module graph | directed graph of modules | Codebase as modules (nodes) and imports (edges). | first defined: Chapter 006 L1
+named export | - | Export bound to a name; course default. | first defined: Chapter 006 L1
+default export | - | A module's single `export default`; framework-mandated only. | first defined: Chapter 006 L1
+side-effecting import | bare import | Import with no binding, run for its side effect. | first defined: Chapter 006 L1
+dynamic import | import() | `import('...')` returning `Promise<Module>`; code-split marker. | first defined: Chapter 006 L1
+re-export | - | `export ... from` republishing another module's binding. | first defined: Chapter 006 L1
+barrel file | barrel | `index.ts` re-exporting many symbols; banned in the course. | first defined: Chapter 006 L1
+code-splitting | code split | Splitting a bundle into on-demand chunks. | first defined: Chapter 006 L1
+bare specifier | - | Import with no `./`/`../`/absolute path; resolved via node_modules. | first defined: Chapter 006 L1
+exports field | - | package.json field declaring importable subpaths. | first defined: Chapter 006 L1
+import attribute | with attribute | `with { type: 'json' }` telling the runtime how to parse a resource. | first defined: Chapter 006 L1
+live binding | - | A read-only window onto the exporter's variable, not a copy. | first defined: Chapter 006 L2
+module evaluation order | depth-first post-order | Imports run before the importer; leaves first, root last, once each. | first defined: Chapter 006 L2
+circular dependency | cycle, import cycle | Import graph looping back; crashes only on top-level early read. | first defined: Chapter 006 L2
+fail-closed | fail-closed startup validation | Invalid config crashing the process at startup. | first defined: Chapter 006 L2
+eager edge | static edge | A static import's edge; target ships in the same chunk. | first defined: Chapter 006 L2
+deferred edge | - | A dynamic import's edge; target fetched as a separate chunk. | first defined: Chapter 006 L2
+chunk | bundle chunk | A separate JS file fetched on demand. | first defined: Chapter 006 L2
+next/dynamic | - | Next.js wrapper pairing import() with Suspense and SSR controls. | first defined: Chapter 006 L2
+'use client' | use client directive | Directive marking a file a client-subgraph root. | first defined: Chapter 006 L2
+client entry point | client entry | A `'use client'` file rooting the client subgraph. | first defined: Chapter 006 L2
+server-only | server-only package | `import 'server-only'` failing the build if a client bundle reaches it. | first defined: Chapter 006 L2
+client-only | client-only package | `import 'client-only'` failing the build if a server bundle reaches it. | first defined: Chapter 006 L2
+top-level await | top-level await, TLA | `await` at module top level, holding the module's evaluation. | first defined: Chapter 006 L3
+implicitly async | - | Upstream module waiting on a descendant's top-level await. | first defined: Chapter 006 L3
+render-blocker | render-blocking work | Module-load work gating a server-rendered page's first paint. | first defined: Chapter 006 L3
+lazy init | lazy getter, lazy initialization | Getter doing setup on first call and caching it. | first defined: Chapter 006 L3
+module-level singleton | - | Value cached in a module-scoped variable for the module's lifetime. | first defined: Chapter 006 L3
+cold start | - | First request on a fresh serverless instance, paying setup. | first defined: Chapter 006 L3
+connection pool | - | Reusable open DB connections queries borrow from. | first defined: Chapter 006 L3
+module augmentation | - | Extending a package's types via `declare module`. | first defined: Chapter 006 L4
+ambient declaration | - | A `.d.ts` declaration with no runtime code. | first defined: Chapter 006 L4
+$Infer | - | Better Auth helper deriving the session type from runtime config. | first defined: Chapter 006 L4
+Promise | - | Object representing async work's eventual result; three states. | first defined: Chapter 007 L2
+pending | - | Promise state: work unfinished, no value or reason. | first defined: Chapter 007 L2
+fulfilled | - | Promise state: succeeded, holds a value. | first defined: Chapter 007 L2
+rejected | - | Promise state: failed, holds a reason (usually an Error). | first defined: Chapter 007 L2
+settled | - | Promise out of pending; permanent. | first defined: Chapter 007 L2
+executor | - | The `(resolve, reject) => ...` function run synchronously at construction. | first defined: Chapter 007 L2
+combinator | Promise combinator | Static taking Promises and returning one (all, allSettled, any, race). | first defined: Chapter 007 L2
+AggregateError | - | Error subclass wrapping multiple errors; thrown by Promise.any. | first defined: Chapter 007 L2
+Promise.withResolvers() | withResolvers | Static returning a Promise plus its resolve/reject. | first defined: Chapter 007 L2
+deferred pattern | deferred | Legacy settle-from-outside pattern; superseded by withResolvers. | first defined: Chapter 007 L2
+unhandled rejection | - | A rejected Promise with no handler; crashes Node. | first defined: Chapter 007 L2
+event loop | - | Runtime picking next work: macrotask, drain microtasks, render. | first defined: Chapter 007 L1
+call stack | - | Where synchronous code runs; frames pushed and popped. | first defined: Chapter 007 L1
+microtask | microtask queue | Continuation from a settled Promise/await; drains between macrotasks. | first defined: Chapter 007 L1
+macrotask | task queue, macrotask queue | Work from setTimeout, I/O, events; one per loop iteration. | first defined: Chapter 007 L1
+continuation | - | The code after an `await`, run later as a microtask. | first defined: Chapter 007 L1
+queueMicrotask | - | Explicit microtask scheduler. | first defined: Chapter 007 L1
+process.nextTick | - | Node scheduler draining before microtasks; can starve I/O. | first defined: Chapter 007 L1
+setImmediate | - | Node macrotask scheduler firing after I/O callbacks. | first defined: Chapter 007 L1
+unbounded parallelism | - | Many concurrent async ops with no in-flight cap. | first defined: Chapter 007 L3
+N+1 | N+1 problem | One list query plus N per-child queries; fix with a batched query. | first defined: Chapter 007 L3
+AbortSignal | - | Read-only view of an AbortController passed to async APIs. | first defined: Chapter 007 L4
+AbortError | 'AbortError' | Error name a fetch rejects with on abort. | first defined: Chapter 007 L4
+TimeoutError | 'TimeoutError' | Error name AbortSignal.timeout rejects with on deadline. | first defined: Chapter 007 L4
+AbortSignal.timeout | - | Static signal aborting itself after ms with TimeoutError. | first defined: Chapter 007 L4
+AbortSignal.any | - | Static signal aborting when any input signal aborts. | first defined: Chapter 007 L4
+AbortSignal.abort | - | Static returning an already-aborted signal. | first defined: Chapter 007 L4
+backpressure | - | Consumer unable to keep up with producer; bounded concurrency fixes it. | first defined: Chapter 007 L3
+fan-out | - | Starting many async ops from one list; bounded or unbounded. | first defined: Chapter 007 L3
+async iterable | - | Object yielding values one at a time, each possibly async. | first defined: Chapter 007 L3
+bounded concurrency | - | Capping in-flight async ops; `pMap` concurrency is the default. | first defined: Chapter 007 L3
+fire-and-forget | - | Starting async work without awaiting; pair `void` with `.catch`. | first defined: Chapter 007 L3
+return await | - | `return await` in try/catch, keeping the frame for the catch. | first defined: Chapter 007 L3
+domain failure | - | Expected, per-case-recoverable failure; returned as Result. | first defined: Chapter 008 L1
+operational failure | - | Unexpected infrastructure fault; thrown for a boundary to handle. | first defined: Chapter 008 L1
+framework boundary | - | Edge of the request lifecycle where unexpected throws stop. | first defined: Chapter 008 L1
+custom Error subclass | domain error subclass | Class extending Error with a literal name and typed fields. | first defined: Chapter 008 L2
+Error.cause | cause chaining | `{ cause }` option linking a failure to its origin. | first defined: Chapter 008 L2
+Error.isError | - | ES2026 helper detecting real Errors across realms. | first defined: Chapter 008 L2
+ensureError | - | Helper normalizing any thrown value into an Error. | first defined: Chapter 008 L2
+catch ladder | discrimination ladder | Catch body ordered most to least specific. | first defined: Chapter 008 L2
+rewrap at the seam | rewrap | Catching a vendor error and throwing a domain error with `cause`. | first defined: Chapter 008 L2
+wire | the wire | The serialized bytes crossing a process boundary. | first defined: Chapter 009 L1
+codec | - | The encoder/decoder pair (JSON.stringify/parse). | first defined: Chapter 009 L1
+ISO 8601 | - | Standard text format for dates/times in UTC. | first defined: Chapter 009 L1
+reviver | - | JSON.parse's optional function transforming parsed pairs. | first defined: Chapter 009 L1
+replacer | - | JSON.stringify's optional function transforming fields. | first defined: Chapter 009 L1
+prototype pollution | prototype poisoning | Attack via `__proto__`/constructor keys mutating the prototype. | first defined: Chapter 009 L1
+structuredClone | deep clone, deep copy | Global deep-copy preserving Date, Map, Set, cycles. | first defined: Chapter 001 L1
+hash-private | #private, #-private | `#name` field with runtime-enforced visibility. | first defined: Chapter 009 L2
+arrow-field method | arrow field | Class field that's an arrow fn; `this` bound at construction. | first defined: Chapter 009 L2
+invariant | - | A state rule that must always hold, enforced via one write path. | first defined: Chapter 009 L2
+toJSON | - | Method JSON.stringify calls to choose an instance's wire shape. | first defined: Chapter 009 L2
+UTC | Coordinated Universal Time | Global reference clock, no DST or offset. | first defined: Chapter 009 L3
+DST | daylight saving time | Seasonal one-hour wall-clock shift, regional. | first defined: Chapter 009 L3
+wall-clock time | wall clock | Local civil time DST can shift without the instant changing. | first defined: Chapter 009 L3
+IANA tz | IANA timezone, tz database | Timezone identifier with full DST history (Europe/Madrid). | first defined: Chapter 009 L3
+Unix epoch | epoch | Reference instant 1970-01-01 UTC machine timestamps count from. | first defined: Chapter 009 L3
+sentinel | sentinel value | A special "not a real value" value returned instead of throwing. | first defined: Chapter 009 L3
+polyfill | - | Library implementing a not-yet-native API. | first defined: Chapter 009 L3
+seam | - | Boundary where the app meets something external, kept in one place. | first defined: Chapter 009 L3
+Temporal | Temporal API | ES2026 date/time API replacing Date with immutable types. | first defined: Chapter 009 L3
+Temporal.Instant | Instant | UTC moment, nanosecond precision, no timezone. | first defined: Chapter 009 L3
+Temporal.ZonedDateTime | ZonedDateTime | Instant plus IANA timezone, DST-aware. | first defined: Chapter 009 L3
+Temporal.PlainDate | PlainDate | Calendar date, no time or timezone. | first defined: Chapter 009 L3
+Temporal.PlainDateTime | PlainDateTime | Wall-clock date+time, no timezone. | first defined: Chapter 009 L3
+Temporal.Duration | Duration | A length of time for arithmetic. | first defined: Chapter 009 L3
+lib/temporal.ts | temporal seam | The one file re-exporting the Temporal polyfill. | first defined: Chapter 009 L3
+DNS | domain name system | System resolving a hostname to an IP via cache chain. | first defined: Chapter 010 L1
+DoH | DNS over HTTPS | DNS tunneled through HTTPS; production-default encrypted DNS. | first defined: Chapter 010 L1
+Happy Eyeballs v2 | RFC 8305 | Algorithm racing IPv4/IPv6 lookups, preferring IPv6. | first defined: Chapter 010 L1
+QUIC | - | Multiplexed encrypted UDP transport folding in TLS 1.3. | first defined: Chapter 010 L1
+HTTP/3 | h3 | HTTP over QUIC on UDP 443; 2026 default. | first defined: Chapter 010 L1
+HTTP/2 | h2 | HTTP multiplexed over one TCP connection; the h3 fallback. | first defined: Chapter 010 L1
+head-of-line blocking | - | One stalled item holding up everything queued behind it. | first defined: Chapter 010 L1
+Alt-Svc | alternative services | Header advertising that an origin also speaks HTTP/3. | first defined: Chapter 010 L1
+TLS | Transport Layer Security | Protocol encrypting a connection and authenticating the server. | first defined: Chapter 010 L1
+RTT | round-trip time | Cost of one message and its reply; a latency tax. | first defined: Chapter 010 L1
+session ticket | - | Cached credential letting a later connection resume faster. | first defined: Chapter 010 L1
+resumed connection | session resumption | Repeat connection using a cached ticket for 0-RTT. | first defined: Chapter 010 L1
+early data | 0-RTT data | First-packet request bytes on a resumed connection; idempotent GETs only. | first defined: Chapter 010 L1
+forward secrecy | perfect forward secrecy | Per-session ephemeral keys; a later key leak can't decrypt past sessions. | first defined: Chapter 010 L1
+idempotent | idempotency | A request safe to send more than once. | first defined: Chapter 010 L1
+DOM | Document Object Model | In-memory tree of typed element nodes from parsed HTML. | first defined: Chapter 010 L2
+CSSOM | CSS Object Model | In-memory tree of style rules, built alongside the DOM. | first defined: Chapter 010 L2
+render-blocking resource | render-blocking | Resource (CSS) delaying first paint until parsed. | first defined: Chapter 010 L2
+render tree | - | DOM intersected with visible style; what actually paints. | first defined: Chapter 010 L2
+layout | reflow | Stage computing geometry for render-tree nodes. | first defined: Chapter 010 L2
+layout thrashing | - | Read-write-read forcing repeated synchronous layout. | first defined: Chapter 010 L2
+compositor | compositor thread | Thread combining painted layers into the final frame. | first defined: Chapter 010 L2
+compositor-only properties | - | CSS (transform, opacity) the compositor applies without layout/paint. | first defined: Chapter 010 L2
+Critical Rendering Path | CRP | Dependency chain from bytes to first pixel. | first defined: Chapter 010 L2
+FCP | First Contentful Paint | When any content first appears; a Core Web Vital. | first defined: Chapter 010 L2
+LCP | Largest Contentful Paint | When the largest above-fold element renders; a Core Web Vital. | first defined: Chapter 010 L2
+Server Component | - | React component running only on the server, shipping no JS. | first defined: Chapter 010 L2
+hydration | - | React attaching listeners/state to server-rendered DOM. | first defined: Chapter 010 L2
+hydration mismatch | - | Server HTML not matching the client render, forcing a re-render. | first defined: Chapter 010 L2
+TTFB | time to first byte | Time from URL to first response byte. | first defined: Chapter 010 L1
+Chromium | - | Google's open-source browser engine behind most browsers. | first defined: Chapter 010 L3
+live DOM | - | The DOM as it stands now, including JS changes; Elements panel view. | first defined: Chapter 010 L3
+cascade | CSS cascade | Algorithm resolving conflicting CSS by origin, specificity, order. | first defined: Chapter 010 L3
+pseudo-state | pseudo-class state | Colon-prefixed states (:hover, :focus); DevTools can force them. | first defined: Chapter 010 L3
+throttle | network throttling | DevTools simulating a slower connection. | first defined: Chapter 010 L3
+REPL | read-eval-print loop | Interactive shell evaluating one expression at a time. | first defined: Chapter 010 L3
+console utilities | console helpers | DevTools console-only vars/functions ($0, copy(), $_). | first defined: Chapter 010 L3
+Core Web Vitals | - | Google's page-health metrics: LCP, INP, CLS. | first defined: Chapter 010 L3
+clear site data | - | DevTools button wiping an origin's persistence surfaces. | first defined: Chapter 010 L3
+secure context | isSecureContext | Condition gating powerful APIs; met by HTTPS and localhost. | first defined: Chapter 010 L4
+SNI | Server Name Indication | Hostname sent in the clear so the server picks a certificate. | first defined: Chapter 010 L4
+ALPN | Application-Layer Protocol Negotiation | ClientHello extension negotiating the app protocol (h3, h2). | first defined: Chapter 010 L4
+certificate | leaf cert, leaf certificate | Public key plus metadata signed by a CA. | first defined: Chapter 010 L4
+Certificate Authority | CA, root CA | Entity signing certificates; root keys preinstalled in trust stores. | first defined: Chapter 010 L4
+certificate chain | chain of trust | Path from a leaf cert up to a trusted root. | first defined: Chapter 010 L4
+trust store | system trust store | OS/browser store of trusted root CA keys. | first defined: Chapter 010 L4
+self-signed certificate | self-signed cert | Cert signed only by itself; browsers reject it. | first defined: Chapter 010 L4
+mkcert | - | Dev tool installing a local CA so localhost gets trusted HTTPS. | first defined: Chapter 010 L4
+SAN | Subject Alternative Name | List of hostnames a certificate is valid for. | first defined: Chapter 010 L4
+safe | safe method, safety | HTTP method with no server-state side effect (GET, HEAD, OPTIONS). | first defined: Chapter 011 L1
+CDN | content delivery network | Edge servers caching responses near users. | first defined: Chapter 011 L1
+Vary header | Vary | Header listing request headers that vary a cached response. | first defined: Chapter 011 L1
+CORS preflight | preflight, Cross-Origin Resource Sharing | Automatic OPTIONS asking if a cross-origin request is allowed. | first defined: Chapter 011 L1
+JSON Merge Patch | merge-patch, application/merge-patch+json | RFC 7396 partial-object PATCH; null deletes. Course default. | first defined: Chapter 011 L1
+JSON Patch | json-patch, application/json-patch+json | RFC 6902 array-of-ops PATCH for operation semantics. | first defined: Chapter 011 L1
+Idempotency-Key | idempotency key | Header keying a stored response to make a method retry-safe. | first defined: Chapter 011 L1
+optimistic concurrency | optimistic-concurrency | Submitting a change conditional on the value you read. | first defined: Chapter 011 L1
+status code | HTTP status code | Three-digit response outcome the stack reads. | first defined: Chapter 011 L2
+status class | status code class | First digit of a status code (1xx–5xx). | first defined: Chapter 011 L2
+status line | HTTP status line | Response's first line: version, code, reason phrase. | first defined: Chapter 011 L2
+Problem Details | RFC 9457, application/problem+json | IETF JSON error-body shape (type, title, status, detail, instance). | first defined: Chapter 011 L2
+problem-type-specific extension | problem extension | Extra Problem Details field fixed per `type` URI. | first defined: Chapter 011 L2
+load balancer | - | Server spreading requests across backend instances. | first defined: Chapter 011 L2
+upstream | upstream service | The service behind the one handling the request. | first defined: Chapter 011 L2
+multi-tenant | multi-tenancy, tenant | One app serving many isolated customers. | first defined: Chapter 011 L2
+safeParse | - | Zod's non-throwing validation returning success/error. | first defined: Chapter 011 L2
+Post-Redirect-Get | PRG | POST → 303 → GET so the result page is refresh-safe. | first defined: Chapter 011 L2
+content negotiation | - | Client/server agreeing on body format via Accept/Content headers. | first defined: Chapter 011 L3
+Content-Type | - | Header naming the body's media type and charset. | first defined: Chapter 011 L3
+Cache-Control | - | Header of caching directives (max-age, no-store, …). | first defined: Chapter 011 L3
+shared cache | - | Multi-user cache (CDN/proxy); stores only `public` responses. | first defined: Chapter 011 L3
+conditional request | - | Request returning the body only if changed (ETag/If-Modified-Since). | first defined: Chapter 011 L3
+ETag | entity tag | Opaque token identifying a resource version; echoed as If-None-Match. | first defined: Chapter 011 L3
+If-Match | - | Write-side conditional for optimistic concurrency; 412 on mismatch. | first defined: Chapter 011 L3
+bearer token | Bearer | Plaintext `Authorization: Bearer` credential for programmatic clients. | first defined: Chapter 011 L3
+CSRF | Cross-Site Request Forgery | Attack riding the auto-attached cookie; defended by SameSite/Origin. | first defined: Chapter 011 L3
+XSS | Cross-Site Scripting | Attacker script running in your origin; closed by a nonce CSP. | first defined: Chapter 011 L3
+Content-Security-Policy | CSP | Header declaring allowed script/style/frame sources. | first defined: Chapter 011 L3
+nonce | - | Per-request random value matching trusted scripts in a CSP. | first defined: Chapter 011 L3
+HSTS | Strict-Transport-Security | Header forcing HTTPS for a host for a window. | first defined: Chapter 011 L3
+structured fields | RFC 9651 | Standard grammar for header values; replaces ad-hoc formats. | first defined: Chapter 011 L3
+Retry-After | - | Header carrying back-off on a 429 or 503. | first defined: Chapter 011 L3
+X-Forwarded-For | XFF | Header proxies append the client IP to; trust rightmost only. | first defined: Chapter 011 L3
+Forwarded | RFC 7239 | Standard header folding the X-Forwarded-* set. | first defined: Chapter 011 L3
+proxy.ts | - | Next.js 16 rename of middleware.ts; per-request header setter. | first defined: Chapter 011 L3
+URL | new URL, URL constructor | Global parsing a URL string into named fields. | first defined: Chapter 012 L1
+URLSearchParams | search params | Global building/parsing a query string, owning percent-encoding. | first defined: Chapter 012 L1
+WHATWG | Web Hypertext Application Technology Working Group | Body maintaining the URL, HTML, Fetch standards. | first defined: Chapter 012 L1
+percent-encoding | URL-encoding | %-plus-hex escaping URLs use. | first defined: Chapter 012 L1
+IDN | Internationalized Domain Name | Hostname with non-ASCII chars, normalized via Punycode. | first defined: Chapter 012 L1
+Punycode | - | ASCII encoding of Unicode hostnames (xn--…). | first defined: Chapter 012 L1
+trailing-slash drift | - | Concatenation bug producing unequal URLs from a stray slash. | first defined: Chapter 012 L1
+origin | - | Tuple (scheme, host, port); the browser's strict trust boundary. | first defined: Chapter 012 L2
+same-origin policy | SOP | Browser default: a page reads only its own origin's responses. | first defined: Chapter 012 L2
+site | same-site, cross-site | Tuple (scheme, eTLD+1); looser, schemeful boundary SameSite uses. | first defined: Chapter 012 L2
+effective top-level domain | eTLD | Suffix anyone can register under, from the Public Suffix List. | first defined: Chapter 012 L2
+registrable domain | eTLD+1 | eTLD plus one label; the unit a site is keyed on. | first defined: Chapter 012 L2
+Public Suffix List | PSL | Maintained list of every eTLD. | first defined: Chapter 012 L2
+client certificate | - | Cert the browser presents to authenticate the user, like a cookie. | first defined: Chapter 012 L2
+CORS | Cross-Origin Resource Sharing | Access-Control-* headers saying which origins may read a response. | first defined: Chapter 012 L3
+simple request | CORS-safelisted request | Cross-origin request meeting safelist criteria, sent directly. | first defined: Chapter 012 L3
+preflighted request | preflight | Cross-origin request preceded by an authorizing OPTIONS. | first defined: Chapter 012 L3
+credentialed request | credentials include | Cross-origin request carrying cookies; needs Allow-Credentials. | first defined: Chapter 012 L3
+Route Handler | route.ts | Next.js route.ts exporting one function per HTTP method. | first defined: Chapter 012 L3
+Set-Cookie | - | Response header writing a cookie with its attributes. | first defined: Chapter 013 L1
+ambient credential | - | Credential the browser auto-attaches (a cookie); the CSRF threat. | first defined: Chapter 013 L1
+HttpOnly | - | Cookie attribute hiding it from JavaScript. | first defined: Chapter 013 L1
+Secure (cookie) | Secure attribute | Cookie attribute attaching it only on HTTPS. | first defined: Chapter 013 L1
+on-path attacker | - | Anyone on the network path reading/modifying unencrypted traffic. | first defined: Chapter 013 L1
+SameSite | SameSite=Strict, SameSite=Lax, SameSite=None | Cookie attribute deciding cross-site attachment (Strict/Lax/None). | first defined: Chapter 013 L1
+top-level navigation | - | A request changing the address bar to your site. | first defined: Chapter 013 L1
+CSRF double-submit token | double-submit token | CSRF defense matching a cookie token against a header copy. | first defined: Chapter 013 L1
+Path (cookie) | Path attribute | Cookie attribute scoping by pathname prefix; not a security boundary. | first defined: Chapter 013 L1
+Domain (cookie) | Domain attribute | Cookie attribute extending it to a domain and subdomains. | first defined: Chapter 013 L1
+host-only cookie | host-only | Cookie with no Domain, attached to the exact host only; session default. | first defined: Chapter 013 L1
+session cookie | - | Cookie with no Max-Age/Expires; unreliable, so set Max-Age. | first defined: Chapter 013 L1
+Max-Age | Max-Age attribute | Cookie lifetime in seconds; preferred over Expires. | first defined: Chapter 013 L1
+__Host- prefix | __Host- | Name prefix requiring Secure, no Domain, Path=/; host-locked. | first defined: Chapter 013 L1
+__Secure- prefix | __Secure- | Name prefix requiring only Secure. | first defined: Chapter 013 L1
+Partitioned | CHIPS, Cookies Having Independent Partitioned State | Cookie attribute double-keyed by embedding site. | first defined: Chapter 013 L1
+third-party cookie | - | Cookie set under a different site than the address bar; blocked by default. | first defined: Chapter 013 L1
+FedCM | Federated Credential Management | Browser API replacing third-party-cookie federated sign-in. | first defined: Chapter 013 L1
+Node hierarchy | DOM node hierarchy | The Node → Element → HTMLElement → subclass inheritance chain. | first defined: Chapter 014 L1
+Node | - | Abstract base class every DOM tree member inherits from. | first defined: Chapter 014 L1
+Element | - | A Node with a tag and attributes (HTML and SVG). | first defined: Chapter 014 L1
+HTMLElement | - | An Element specialized to HTML (style, dataset, hidden). | first defined: Chapter 014 L1
+abstract base class | - | A class never instantiated, existing only to be inherited from. | first defined: Chapter 014 L1
+subclass | - | A class inheriting from and specializing a general one. | first defined: Chapter 014 L1
+CSS selector | selector | CSS patterns used as a query language by querySelector. | first defined: Chapter 014 L1
+HTMLCollection | - | Live collection of element children (element.children). | first defined: Chapter 014 L1
+NodeList | - | Node collection from childNodes (live) or querySelectorAll (static). | first defined: Chapter 014 L1
+live collection | live | Collection reflecting the tree now, not a copy. | first defined: Chapter 014 L1
+static collection | static | Collection frozen at creation; querySelectorAll's result. | first defined: Chapter 014 L1
+index drift | - | Bug where removing nodes while index-iterating a live collection skips some. | first defined: Chapter 014 L1
+DocumentFragment | - | Off-tree node container; substrate behind React Portals. | first defined: Chapter 014 L1
+HTML attribute | attribute | Parse-time string from source; getAttribute/setAttribute. | first defined: Chapter 014 L2
+DOM property | property | Live typed field on the element object; element.propName. | first defined: Chapter 014 L2
+reflect | reflection | An attribute and same-named property staying in sync. | first defined: Chapter 014 L2
+boolean attribute | - | Attribute meaning carried by presence/absence (disabled, checked). | first defined: Chapter 014 L2
+enumerated attribute | - | Attribute with a fixed value set; out-of-set falls back. | first defined: Chapter 014 L2
+dataset | - | Property exposing data-* attributes as a camelCased object. | first defined: Chapter 014 L2
+capture phase | capture | Downward leg of propagation, window→target; opt in via {capture:true}. | first defined: Chapter 014 L3
+bubble phase | bubbling | Upward leg of propagation, target→window; the default phase. | first defined: Chapter 014 L3
+event target | target, event.target | The element actually interacted with; fixed for the whole trip. | first defined: Chapter 014 L3
+currentTarget | event.currentTarget | The element the running handler is attached to; changes during the trip. | first defined: Chapter 014 L3
+event delegation | delegation | One ancestor listener handling many descendants via event.target.closest(). | first defined: Chapter 014 L3
+default action | - | The browser's built-in reaction to an event; canceled with preventDefault(). | first defined: Chapter 014 L3
+preventDefault | event.preventDefault | Cancels the default action without stopping propagation. | first defined: Chapter 014 L3
+stopPropagation | event.stopPropagation | Halts the event's trip; breaks delegation, a design smell. | first defined: Chapter 014 L3
+closest | element.closest | Climbs ancestors returning the nearest matching a selector, or null. | first defined: Chapter 014 L1
+focusin | focusin, focusout | Bubbling counterparts of focus/blur (which fire only at the target). | first defined: Chapter 014 L3
+passive listener | passive: true | Listener promising not to call preventDefault, so scroll/zoom isn't blocked. | first defined: Chapter 014 L3
+once listener | once: true | Listener auto-removed after firing once. | first defined: Chapter 014 L3
+pointer events | pointer event, pointerdown | pointer* family unifying mouse, touch, and pen. | first defined: Chapter 014 L3
+SyntheticEvent | synthetic event | React's cross-browser wrapper around the native DOM event. | first defined: Chapter 014 L3
+root container | - | Element a React app mounts into; where React delegates events into SyntheticEvents. | first defined: Chapter 014 L3

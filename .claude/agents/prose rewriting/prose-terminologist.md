@@ -47,6 +47,7 @@ Change prose only; leave code, output comments, exercises, links, diagrams, and 
 Make a list that includes all terms the lesson explains or defines and all terms that have <Term> tooltips describing them.
 For each term in this list, search if it appears in the glossary, if not add it.
 Follow the file's format, appending one line per new term: `term | synonyms | one-line definition | first defined: Chapter <NNN> L<N>`.
+Keep the definitions to a few words, they are for your own internal reference only.
 
 ## Step 7 - Final message
 
