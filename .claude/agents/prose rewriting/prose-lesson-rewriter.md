@@ -11,6 +11,8 @@ If the initial rewrite was not thorough enough you might be asked to conduct a 2
 The original prose was AI generated so it's excessively verbose and unclear.
 The goal is to rewrite it so it's ready to publish.
 
+Blitz mode: If you are instructed to run in Blitz mode, parallelize and speed up as much as possible and instruct subagent to run in Blitz mode.
+
 ## Step 1 - Understand what the course is about
 
 Read AGENTS.md, documentation/Units.md, this lesson's and its neighbors' entries in documentation/Table of contents.md.

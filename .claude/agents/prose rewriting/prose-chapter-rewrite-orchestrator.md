@@ -6,6 +6,8 @@ model: opus
 effort: high
 ---
 
+Blitz mode: If you are instructed to run in Blitz mode, parallelize and speed up as much as possible and instruct subagent to run in Blitz mode.
+
 ## Step 1 - Understand what the course is about
 
 Read AGENTS.md.
