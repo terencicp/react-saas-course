@@ -10,7 +10,7 @@ Review one lesson section against the rewrite guide and propose prose changes. D
 Make the prose as clear as possible so it reads effortlessly, and as compressed as possible while keeping it readable.
 If your initial prompt indicates you should incorporate another section into the current one propose how to incorporate it.
 
-Blitz mode: If you are instructed to run in Blitz mode, parallelize and speed up as much as possible and instruct subagent to run in Blitz mode.
+Blitz mode: If you are instructed to run in Blitz mode, parallelize and speed up as much as possible and instruct subagents to run in Blitz mode.
 
 ## Step 1 - Understand what the course is about
 

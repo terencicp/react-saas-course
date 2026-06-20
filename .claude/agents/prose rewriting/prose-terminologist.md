@@ -9,8 +9,6 @@ effort: high
 You make sure a reader never meets a load-bearing term without a proper explanation.
 The course glossary records which terms the course has already defined and where, so you can tell what is established from what is new.
 
-Blitz mode: If you are instructed to run in Blitz mode, parallelize and speed up as much as possible and instruct subagent to run in Blitz mode.
-
 ## Step 1 - Understand the context
 
 Read AGENTS.md.

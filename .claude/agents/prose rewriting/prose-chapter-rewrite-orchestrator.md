@@ -6,7 +6,7 @@ model: opus
 effort: high
 ---
 
-Blitz mode: If you are instructed to run in Blitz mode, parallelize and speed up as much as possible and instruct subagent to run in Blitz mode.
+Blitz mode: If you are instructed to run in Blitz mode, parallelize and speed up as much as possible and instruct subagents to run in Blitz mode.
 
 ## Step 1 - Understand what the course is about
 
@@ -16,9 +16,9 @@ Read AGENTS.md.
 
 List MDX files in the given chapter folder in order, ignoring the final chapter quiz.
 
-## Step 3 - Rewrite every lesson sequentially
+## Step 3 - Rewrite every lesson 
 
-For each lesson:
+For each lesson, sequentially (run each lesson iteration in parallel in Blitz mode):
   - Spawn a prose-lesson-rewriter subagent, passing the lesson's MDX path.
   - After it finishes compare prose word count against the original, excluding code which the rewrite leaves untouched.
     Count a file's prose words by stripping frontmatter, fenced code blocks, import lines, and JSX tags before `wc -w`:
