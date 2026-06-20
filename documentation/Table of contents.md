@@ -91,10 +91,10 @@
 - 4 HTTPS on localhost with mkcert (Install the TLS 1.3 handshake and certificate-chain mental model at debug depth, then wire a local CA with `mkcert` to unblock the secure-context-required APIs (cookie `Secure`, Clipboard, WebCrypto) that silently fail on `http://localhost`.)
 - 5 Quiz
 
-### Chapter 011 — The HTTP contract every endpoint signs
-- 1 Methods and the safe-to-retry contract (Teaches the GET/POST/PUT/PATCH/DELETE palette, idempotency as the anchor that decides whether a network blip can be retried, and the `Idempotency-Key` header pattern that makes non-idempotent POSTs retry-safe.)
+### Chapter 011 — HTTP methods, status codes, headers
+- 1 Methods and the safe-to-retry contract (Teaches the GET/POST/PUT/PATCH/DELETE methods, safety and idempotency as the properties that decide whether a network blip can be retried, and the `Idempotency-Key` header pattern that makes non-idempotent POSTs retry-safe.)
 - 2 Status codes and Problem Details (Teaches the 2xx/3xx/4xx/5xx codes a SaaS engineer reaches for, the 400-vs-422-vs-409 discriminations, the 4xx/5xx split as the on-call paging contract, and RFC 9457 Problem Details as the 2026 default error-body shape.)
-- 3 Headers as the metadata channel (Teaches the header surface a SaaS engineer touches — content negotiation, `Cache-Control` directives, `Authorization` schemes, rate-limit signaling, security-baseline headers, and the custom-header naming convention — and which headers infrastructure reads versus which the application sets.)
+- 3 Headers and their audiences (Teaches the header surface a SaaS engineer touches — content negotiation, `Cache-Control` directives, `Authorization` schemes, rate-limit signaling, security-baseline headers, and the custom-header naming convention — through the three-audience model of which headers the browser, infrastructure, and application each read.)
 - 4 Quiz
 
 ### Chapter 012 — URLs, origins, and security boundaries

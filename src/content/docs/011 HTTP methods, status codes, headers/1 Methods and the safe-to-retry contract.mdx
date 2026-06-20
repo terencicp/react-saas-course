@@ -1,0 +1,379 @@
+---
+title: HTTP methods and retry safety
+tagline: Your first lesson on HTTP semantics: read the GET, POST, PUT, PATCH, and DELETE methods to decide which requests are safe to retry.
+chapter-id: 11
+course-progress: 0.0827
+rewrites: 1
+sidebar:
+  order: 1
+  label: Methods and retry safety
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import SafetyIdempotencyCard from '../../../components/lessons/011/1/SafetyIdempotencyCard.astro';
+import MethodGrid from '../../../components/lessons/011/1/MethodGrid.astro';
+import RetryStep from '../../../components/lessons/011/1/RetryStep.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+An HTTP method declares an intent, and the <Term definition="Content delivery network: a fleet of servers geographically close to users that sit in front of your origin, caching and serving responses so requests don't travel all the way to your server.">CDN</Term>, the browser's prefetcher, and every retry policy in the stack reads that intent to decide what it may do with the request.
+Pick the wrong method and the request still works: the server answers as normal.
+What breaks is the contract every downstream layer was built to honor, and in production that mismatch is what charges a card twice.
+
+This lesson builds the two properties behind that contract, **safety** and **idempotency**, then arranges the five methods (GET, POST, PUT, PATCH, DELETE) by them so you choose a verb by reasoning rather than by lookup.
+By the end you'll know why a retried POST can double a charge, and how the `Idempotency-Key` header stops it.
+
+## Methods declare intent that downstream layers act on
+
+The previous chapter walked the network wire to the HTTP request, whose first line reads `METHOD path HTTP/version`.
+This lesson is about the first of those three tokens, the method.
+
+The method matters beyond "POST has a body, GET doesn't" because three layers between client and server read it and act before your code runs.
+
+- The browser's prefetch and prerender machinery follows GETs speculatively when it expects a navigation, and never speculates on POST.
+- CDNs cache GET responses by default and bypass POST entirely. The cache key is `(method, URL, <Term definition="The Vary response header lists request headers (such as Accept-Language) whose values must match for a cached response to be reused, so the same URL can hold separate cache entries per variant.">Vary headers</Term>)`, so a POST never enters the cache.
+- HTTP clients (the browser, `fetch`, server-side SDKs) retry GET-shaped requests on a network error and refuse to retry POSTs, in some libraries even when you ask them to.
+
+Mismatch the method and those behaviors turn against you.
+A GET that writes gets retried on a network blip, prefetched on hover, and cached at the edge: three duplicated writes from one user action.
+A POST that reads bypasses every cache and re-runs the same server work on every navigation.
+The wrong verb doesn't just read oddly, it breaks every layer that trusted the contract.
+
+:::caution
+Tempted to pick a method for how a downstream layer treats it, say marking a fast read as POST so the CDN never caches it?
+The fix isn't the method.
+Use a separate endpoint, or a `Cache-Control` directive on the response.
+The verb declares intent, not configuration.
+:::
+
+## Safety and idempotency
+
+Two properties decide whether a network blip is recoverable, and they set up the grid in the next section.
+
+A method is <Term definition="An HTTP method is safe if calling it has no observable side effect on server state.">safe</Term> if calling it has no observable side effect on server state.
+*Observable* is the load-bearing word: the test is what the *client* perceives, not what the server's internals do.
+The server may log the call, warm a cache, or bump a metric counter, because none of those change what a client sees on the next request.
+A read endpoint is safe; a "send welcome email" endpoint is not, however innocent its name.
+
+A method is <Term definition="An HTTP method is idempotent if making the same request N times leaves the server in the same final state as making it once.">idempotent</Term> if making the same request N times leaves the server in the same final state as making it once.
+The key word is *state*, not *response*.
+`DELETE /invoices/42` is idempotent: one call removes the invoice, five calls leave it just as gone.
+The first may return `200 OK` and the rest `404 Not Found`, so the responses differ while the final state holds.
+`POST /invoices` is not: five calls leave you with five invoices.
+
+That gap is the most common misread of idempotency.
+People remember "returns the same response," so when `DELETE` replies 404 on the replay they conclude it isn't idempotent.
+They're checking the response when the property lives in the state.
+
+<Figure caption="The two anchor properties, each with a one-line definition and the test that tells you whether a method has it.">
+  <SafetyIdempotencyCard />
+</Figure>
+
+Each property unlocks a different downstream behavior.
+Safety is what caches and prefetchers act on: a safe method lets those layers speculate freely.
+Idempotency is what retry policies act on: an idempotent method lets the network layer retry a transient error without asking permission.
+Together they map the four cells of the grid the next section builds.
+
+## The five methods on a safety/idempotency grid
+
+Two properties with two states each give four cells.
+Drop the five methods into the cells their properties pick out and the relationships fall into place.
+
+<Figure caption="The five methods placed by safety and idempotency. The grey cell stays empty; the red POST cell is the one that needs Idempotency-Key to be retry-safe.">
+  <MethodGrid />
+</Figure>
+
+Take the four corners in order.
+The top-left is GET, the only safe method you reach for daily, which is why caches, prefetchers, and retry layers can all act on it freely.
+`HEAD` shares the cell: it's `GET` without the response body, used to read metadata like content length or last-modified date without paying for the payload.
+`OPTIONS` is safe too; it's the <Term definition="CORS (Cross-Origin Resource Sharing) preflight: an automatic OPTIONS request the browser sends before certain cross-origin requests to ask the server whether the real request is allowed.">CORS preflight</Term> the browser sends before a cross-origin request.
+
+The top-right is empty, and that emptiness is informative.
+No standard method is safe but not idempotent, because a "read" that changes state on each call isn't a read.
+If you find one in your design, you've named it wrong.
+
+The bottom-left holds `PUT`, `PATCH`, and `DELETE`.
+They're unsafe, because they change server state, but idempotent: retry them on a network blip and the final state lands where it would have anyway.
+That's the property the retry layer acts on.
+`PATCH` belongs here only when its diff is *absolute* (set this field to this value); a *relative* diff (increment this field by one) breaks idempotency, as the next section explains.
+
+The bottom-right holds POST alone: unsafe and not idempotent, so a retry duplicates the work.
+Nothing in the method or the transport makes a POST retry safe, which is what the second half of this lesson sets out to fix.
+
+<VideoCallout videoId="KF-3jtGH6Yk" videoTitle="Mastering HTTP Methods: A REST API Deep Dive">
+  ByteMonk walks the full GET/POST/PUT/PATCH/DELETE palette in 11 minutes, with the safety and idempotency framing this section uses.
+</VideoCallout>
+
+<Buckets twoCol instructions="Place each method in the cell it belongs to. One cell stays empty — that's intentional.">
+  <Bucket name="safe-idem" label="Safe + Idempotent" />
+  <Bucket name="safe-nonidem" label="Safe + Not idempotent" />
+  <Bucket name="unsafe-idem" label="Unsafe + Idempotent" />
+  <Bucket name="unsafe-nonidem" label="Unsafe + Not idempotent" />
+
+  <Item bucket="safe-idem">`GET`</Item>
+  <Item bucket="unsafe-idem">`PUT`</Item>
+  <Item bucket="unsafe-idem">`PATCH` (absolute diff)</Item>
+  <Item bucket="unsafe-idem">`DELETE`</Item>
+  <Item bucket="unsafe-nonidem">`POST`</Item>
+</Buckets>
+
+## PUT and PATCH: replace versus diff
+
+Both PUT and PATCH update an existing resource, but they send very different things on the wire, and confusing the two is a steady source of small update bugs.
+
+PUT *replaces*.
+You send the full resource body and the server overwrites what it had with what you sent.
+The mental model is assignment, `=`.
+Sending the same body twice lands on the same final state, so PUT is idempotent with no qualifiers.
+
+PATCH applies a *diff*.
+You send a description of what to change and the server applies it; the mental model is `Object.assign(current, patch)`.
+PATCH is idempotent *only when* the diff is absolute: `status = 'paid'` re-runs to the same place however many times you send it, while a relative diff like `balance = balance + 100` adds another 100 every call.
+So "PATCH is idempotent" is shorthand for "PATCH with an absolute diff is idempotent."
+
+PATCH carries a second complication: the method names the verb but not the wire format.
+PUT's body is always the resource, but PATCH's body is a *description of changes*, and there are two standard ways to describe them, each signalled by its own content type.
+Here are both, applied to the same operation: marking invoice 42 as paid and removing its draft note.
+
+<CodeVariants maxLines={10}>
+  <CodeVariant label="merge-patch+json">
+    ```http
+    PATCH /invoices/42 HTTP/3
+    Content-Type: application/merge-patch+json
+
+    { "status": "paid", "draftNote": null }
+    ```
+    **The default 2026 choice.** <Term definition="JSON Merge Patch (RFC 7396): the patch body is a partial JSON object; keys overwrite, null deletes. Default 2026 wire format for PATCH on object-shaped resources.">JSON Merge Patch</Term> (RFC 7396) is a partial JSON object: keys overwrite, and an explicit `null` deletes a key. It can't merge arrays element by element, so changing one item means sending the whole new array. Reach for it for field-level patches on object-shaped resources, which covers most web app update endpoints.
+  </CodeVariant>
+
+  <CodeVariant label="json-patch+json">
+    ```http
+    PATCH /invoices/42 HTTP/3
+    Content-Type: application/json-patch+json
+
+    [
+      { "op": "replace", "path": "/status", "value": "paid" },
+      { "op": "remove", "path": "/draftNote" }
+    ]
+    ```
+    **The choice for operation semantics.** <Term definition="JSON Patch (RFC 6902): the patch body is an array of typed ops (add, remove, replace, move, copy, test). Reach for it when the diff needs operation semantics merge-patch can't express.">JSON Patch</Term> (RFC 6902) is an array of typed operations: `add`, `remove`, `replace`, `move`, `copy`, and `test`. It's verbose but unambiguous, it mutates arrays, and the `test` op embeds <Term definition="Optimistic concurrency: instead of locking a record, you submit your change with a check that the record still holds the value you read; if another writer changed it first, the check fails and the write is rejected.">optimistic-concurrency</Term> checks in the patch. Reach for it when the diff has to be precise about ordering, array changes, or conditional application.
+  </CodeVariant>
+</CodeVariants>
+
+Merge-patch is the default; json-patch is the escape hatch for diffs it can't express.
+Most web app update endpoints, including the invoicing endpoints you'll build later, land on merge-patch.
+
+:::caution
+The most common PATCH bug in production isn't the format choice; it's sending PATCH with `Content-Type: application/json`.
+That generic type doesn't tell the server *which* PATCH dialect to expect, so it has to guess, and guesses go wrong.
+Always set `application/merge-patch+json` or `application/json-patch+json` explicitly.
+:::
+
+<MultipleChoice>
+  A wallet endpoint receives `PATCH /wallets/42` with the body `{ "delta": 5 }`, and the server adds 5 dollars to the current balance on every call. Is this endpoint idempotent?
+
+  <McqChoice>Yes — PATCH inherits idempotency from the HTTP spec.</McqChoice>
+  <McqChoice>Yes — the body is a partial JSON object, which is the merge-patch shape.</McqChoice>
+  <McqChoice correct>No — the body describes a relative change, so each call shifts the final state by another 5.</McqChoice>
+  <McqChoice>It depends — only if the server sets `Content-Type: application/merge-patch+json` on the response.</McqChoice>
+
+  <McqWhy>Idempotency travels with the *diff shape*, not the method label or the content type. A `delta` body accumulates — five retries of the same request leave the balance 25 dollars higher than one call. To make this endpoint idempotent, the body would need to name an absolute target (e.g. `{ "balance": 500 }`) so every replay lands at the same final state.</McqWhy>
+</MultipleChoice>
+
+## Making POST retry-safe with Idempotency-Key
+
+A user clicks "Pay" on an invoice, and the client sends `POST /payments/charge` with `{ amount: 5000, currency: 'usd', source: 'tok_...' }`.
+The server charges the card through Stripe, writes the payment row, and builds a `200 OK`.
+Then the response packet is dropped on a flaky connection.
+Every side effect ran, but the client never saw the answer.
+
+So the client retries, either from its network layer or from the user clicking "Pay" again because the spinner never stopped.
+The server gets a second identical `POST /payments/charge`, sees a brand-new request with no context, and charges the card again.
+The customer is down 100 dollars instead of 50, and you have a refund ticket to clear.
+
+A GET retry would be safe here because the *method* is safe: the server's reaction to a duplicate GET is to send the same answer again.
+POST is unsafe by construction, and nothing in the method or the transport makes its retry safe.
+The fix has to live at the application layer.
+
+The pattern: the client generates a stable identifier *per logical operation*, one ID per "the user wants to pay this invoice" rather than one per HTTP attempt, and sends it as an <Term definition="Request header whose value is a stable per-operation identifier (typically a UUID). The server stores (key, response) and returns the cached response on replay, making non-idempotent methods retry-safe.">`Idempotency-Key`</Term> header.
+The server stores `(key, response)` *before* it responds.
+On a retry with the same key, it finds the stored record, returns the cached response, and runs no business logic.
+Same operation in, same response out, exactly one side effect.
+
+<DiagramSequence>
+  <DiagramStep caption="First attempt: the client sends POST with an Idempotency-Key. The server processes the charge, persists (key, response), and sends 200, but the response packet is dropped, so the client never sees it. The server has done the work and remembered it.">
+    <RetryStep step={1} />
+  </DiagramStep>
+
+  <DiagramStep caption="The client retries with the same key. The contract works because retries of the same logical operation share one key, generated per operation rather than per attempt.">
+    <RetryStep step={2} />
+  </DiagramStep>
+
+  <DiagramStep caption="The server looks up the key, finds the cached response, and returns it without re-running the charge. The card is charged exactly once.">
+    <RetryStep step={3} />
+  </DiagramStep>
+</DiagramSequence>
+
+Two details decide whether this works.
+On the client, the key has to live *with the operation*, not the request, so a retry sends the key the original sent; in a React app that means storing it on the mutation handle and reusing it across attempts.
+On the server, you need a `(key, response)` store with a unique constraint on the key column: look the key up, return the cached response if it exists, otherwise process the request, store the result, and *then* respond.
+The unique constraint settles the race when two retries arrive at once.
+The full server implementation, with schema, TTL, and the transactional shape, comes when you build Stripe webhook ingestion; here the contract is what matters.
+
+`Idempotency-Key` is an in-progress IETF Standards-Track draft that Stripe, PayPal, and most payment processors already deploy, so the header name and value format are safe to build against now.
+
+<VideoCallout videoId="XAccGbtl3Z8" videoTitle="Idempotency - What it is and How to Implement it">
+  Alex Hyett walks the same duplicate-charge scenario, the key/response store, and how long to keep keys around in 8 minutes.
+</VideoCallout>
+
+Here is the client side end to end.
+
+<AnnotatedCode lang="ts" maxLines={12} code={`
+const idempotencyKey = crypto.randomUUID();
+
+const response = await fetch('/api/payments/charge', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Idempotency-Key': idempotencyKey,
+  },
+  body: JSON.stringify({ amount: 5000, currency: 'usd' }),
+});
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    Generate the key once per logical operation and store it on the operation handle, such as a React Query mutation key, a form ref, or a state value, so every retry reuses it. Generating a fresh key inside the retry loop is the most common way to defeat the pattern.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{5-8} "Idempotency-Key"`} color="orange">
+    The header carries your UUID and must ride on every retry. Drop it on a retry and the server treats the request as a fresh operation.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{1} /crypto\\.randomUUID/`} color="violet">
+    `crypto.randomUUID()` returns a random, collision-safe UUIDv4 from the global `crypto` object, covered later in this unit.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+:::caution
+Three failure modes break the pattern.
+**One**: a new key per network attempt, which makes every retry look like a new operation.
+**Two**: one key shared across different operations, which makes a retry of operation B replay operation A's response.
+**Three**: persisting the response *after* sending it, so a crash between responding and persisting leaves no record and the retry re-runs the work.
+Persist first, respond second; one key per operation, reused across its retries.
+:::
+
+## How route handlers dispatch by verb
+
+All of this meets code at one surface: the Next.js route handler.
+A `route.ts` file under `app/api/` exports an async function named after each HTTP method it handles.
+The framework reads the request line, finds the function matching the verb, and calls it.
+The function name *is* the contract.
+
+```ts title="src/app/api/invoices/[id]/route.ts"
+import type { NextRequest } from 'next/server';
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  // load and return the invoice
+}
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  // apply a merge-patch and return the updated invoice
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  // delete the invoice
+}
+```
+
+One file, one route, three handlers.
+The framework dispatches `GET /invoices/42` to the `GET` function, `PATCH /invoices/42` to `PATCH`, and so on.
+A `POST` arriving when no `POST` is exported gets an automatic `405 Method Not Allowed`.
+
+One special case: a GET can technically carry a body, but proxies, CDNs, and some HTTP libraries silently strip it, so the body won't survive the trip.
+If a read needs structure such as filters, sort columns, or pagination, encode it in the query string instead.
+
+:::tip
+If you're tempted by "GET with a body," the fix is usually POST with a clear name.
+An endpoint like `POST /searches` that takes the query in the body and returns the result rows is a reasonable shape; it just isn't a *read* in the HTTP sense, and POST signals that honestly.
+Don't dress an unsafe operation as a safe one.
+:::
+
+## Check your understanding
+
+Each claim below tests whether you reason about state and contract rather than pattern-matching method names.
+
+<TrueFalse instructions="Mark each claim about HTTP methods and retries True or False.">
+  <Statement answer="false">
+    Calling `DELETE /invoices/42` twice in a row makes DELETE non-idempotent, because the second call does less work and returns a different status code.
+    <TfWhy>Idempotency is about *state*, not response or work. After both calls, invoice 42 is gone — same final state. The fact that the second call may return 404 instead of 200 doesn't break the property; the response can differ across calls, the state cannot.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    A `PATCH` endpoint that accepts `{ "balance": 100 }` and overwrites the balance field is idempotent.
+    <TfWhy>Absolute set. Repeating the call lands at the same final state every time. The relative-diff variant `{ "delta": 100 }`, on the other hand, accumulates — five calls add 500, which breaks idempotency.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    Generating a fresh `Idempotency-Key` for each network retry of the same charge guarantees the card is only charged once.
+    <TfWhy>Exactly opposite. The whole point is that retries share the *same* key, so the server recognises the replay. A new key per attempt makes every retry look like a brand-new operation, and the server happily runs the charge again.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    A POST endpoint that only logs the request and never mutates business state still cannot be retried safely without an idempotency mechanism.
+    <TfWhy>POST is unsafe by contract — the cache, retry, and prefetch layers treat it as side-effecting whether or not the implementation actually is. Method choice declares intent; the implementation does not override the contract every downstream layer signed.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="HTTP request methods"
+    href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Methods"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="MDN's reference page lists every method with its safe / idempotent / cacheable classification."
+  />
+  <ExternalResource
+    title="Designing robust and predictable APIs with idempotency"
+    href="https://stripe.com/blog/idempotency"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="Brandur Leach's Stripe engineering post — the canonical deep dive on the key/response contract and the failure modes it has to survive."
+  />
+  <ExternalResource
+    title="The Idempotency-Key HTTP Header Field"
+    href="https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/"
+    icon="lucide:file-text"
+    iconColor="#0B1E3F"
+    description="The IETF httpapi working group draft — the contract being standardised, including fingerprinting and server policy rules."
+  />
+</CardGrid>

@@ -1,0 +1,369 @@
+---
+title: Status codes and the Problem Details body
+tagline: How HTTP status codes and the RFC 9457 Problem Details body declare an endpoint's outcome to the rest of the stack.
+chapter-id: 11
+course-progress: 0.0844
+rewrites: 2
+sidebar:
+  order: 2
+  label: Status codes and Problem Details
+---
+
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import StatusClassStrip from '../../../components/lessons/011/2/StatusClassStrip.astro';
+import Term from '../../../components/ui/Term.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A status code declares the category an outcome falls into, and every layer downstream reads it to decide what happens next.
+Alerting rules, the CDN, and the <Term definition="A server that sits in front of your application and spreads incoming requests across several backend instances, so no single instance is overwhelmed and a failed one can be skipped.">load balancer</Term> key off the first digit, the class.
+The client codes against the specific code, and the body fills in the detail.
+Pick the wrong class and you page the wrong team; pick the wrong code within a class and you confuse retry policies across the stack.
+
+## Status codes are outcome categories
+
+An HTTP response opens with a status line like `HTTP/3 200 OK`: a protocol version, a three-digit number, and a human-readable phrase.
+The number is what the rest of the stack reads; the phrase ("OK", "Not Found", "Internal Server Error") is only for humans skimming logs.
+
+The number's first digit is its **class**.
+There are five:
+
+- **1xx informational:** the request is in progress.
+- **2xx success:** done, here is the result.
+- **3xx redirection:** look at this other URL instead.
+- **4xx client error:** the request itself was wrong.
+- **5xx server error:** something broke on the server.
+
+The class is what infrastructure layers act on; the specific code is what application clients code against.
+Two downstream consumers make that division concrete.
+
+**Alerting and paging.**
+Observability platforms key error budgets and on-call rules off the 4xx/5xx split: a 5xx means the server broke, which is the on-call engineer's job, while a 4xx means the client sent something bad, a client bug or a product issue, not an emergency.
+Return `500 Internal Server Error` every time a user mistypes their email, and your team gets paged for client-side noise.
+
+**Retry policies.**
+HTTP clients, the browser's `fetch`, server-side SDKs, and load balancers have built-in retry rules that read the class.
+Most retry the 502/503/504 trio and 429 but leave 4xx alone.
+Pick the wrong code and the client either retries forever on what should have been a hard failure, or never retries on what was only a transient blip.
+
+:::caution
+Don't reach for `200 OK` with `{ ok: false, error: '...' }` in the body.
+That encodes the outcome twice, then asks the client to ignore the status code.
+The status code is the first signal and the body the second; they must agree.
+Pick the right status code and let the body explain the detail.
+:::
+
+<Figure caption="The five HTTP status classes, the first digit of every response code.">
+  <StatusClassStrip />
+</Figure>
+
+## The status codes you'll actually send, by class
+
+Most of the 60-odd registered codes are historical.
+What follows is the working subset, grouped by class so you reason from the class down to the code.
+
+### 1xx: informational
+
+You'll rarely send a 1xx yourself, but three are worth knowing on sight.
+
+- `100 Continue`: the client asks "may I send the body?" first, so a large request can learn about a rejection without sending megabytes.
+- `101 Switching Protocols`: the WebSocket upgrade handshake. Open a WebSocket in DevTools and this is what the upgrade response shows.
+- `103 Early Hints`: "while I work on the real response, here are resources to preload." The CDN preload signal, which Cloudflare and Fastly cache and replay, and Next.js 16 can emit as `Link` headers.
+
+### 2xx: success
+
+The four codes you'll send constantly:
+
+- `200 OK`: a read or update that returns a body. The default for almost every successful response.
+- `201 Created`: resource creation. Pair it with a `Location` header pointing at the new resource, so the client gets the URL to GET it without fishing the ID out of the body. `Location` and `201` travel together.
+- `202 Accepted`: the request was accepted and queued, but the work hasn't happened yet. Use it for "trigger an export" or "send the email later," anything handed to a background job.
+- `204 No Content`: a successful mutation the client needs no body for. Common for DELETE and for PATCHes whose result the client doesn't display.
+
+:::tip
+`204 No Content` means *no body at all*, not an empty body.
+Set `Content-Type: application/json` and return `{}` and you've sent a 200 with an empty object, not a 204.
+Middleware and proxies treat 204 as a signal to skip body parsing, so a body shipped with one can be dropped downstream without warning.
+:::
+
+### 3xx: redirection
+
+A redirect varies on two axes: permanent or temporary, and whether it *preserves* the request method or invites the client to *change* it.
+Those axes give you four codes.
+
+- `301 Moved Permanently` and `308 Permanent Redirect`: both permanent. `308` preserves the method, so a POST stays a POST, while `301` historically allowed clients to rewrite POST to GET. The default for new APIs is `308`.
+- `302 Found` and `307 Temporary Redirect`: both temporary, with the same split. `307` preserves the method; `302` does not, because browsers historically rewrite POST to GET on it. The default is `307`.
+- `303 See Other`: *explicitly* tells the client to use GET on the next request. This is the classic <Term definition="Pattern: a POST returns 303 with a Location header, the client follows with a GET, and the result page is safe to refresh. Prevents form re-submission on back or refresh.">Post-Redirect-Get</Term> pattern: a form POST returns `303` with a `Location` header, the browser follows with a GET, and the result page is reachable on refresh without resubmitting.
+- `304 Not Modified`: the response to a conditional request when the resource hasn't changed. The body is omitted and the client reuses its cached copy.
+
+The two you'll actually code for look like this on the wire.
+
+<CodeVariants maxLines={6}>
+  <CodeVariant label="303 See Other (Post-Redirect-Get)">
+    ```http
+    HTTP/3 303 See Other
+    Location: /invoices/42
+    ```
+    **After a form submission.** The client follows with `GET /invoices/42`, so the method is *not* preserved. Use this when a POST should land the user on a detail or confirmation page that's safe to refresh.
+  </CodeVariant>
+
+  <CodeVariant label="307 Temporary Redirect (method preserved)">
+    ```http
+    HTTP/3 307 Temporary Redirect
+    Location: /v2/invoices/42
+    ```
+    **The client follows with `POST /v2/invoices/42`,** same method, same body. Use this when the URL moved but the operation didn't.
+  </CodeVariant>
+</CodeVariants>
+
+### 4xx: client error
+
+The 4xx class is the longest and the place where most production confusion lives: nine codes, plus three distinctions that decide the ambiguous cases.
+
+- `400 Bad Request`: the request is **malformed** and the server couldn't parse it. Wrong JSON, wrong `Content-Type`, or missing required headers. It never made it past parsing.
+- `401 Unauthorized`: **unauthenticated**. No credentials, expired credentials, or a bad token. The name is a misnomer: it really means "Unauthenticated." Pair it with a `WWW-Authenticate` header to name the auth scheme you expect.
+- `403 Forbidden`: **authenticated but not allowed**. The credentials are valid; the action is not. Wrong role, paywall, or missing permission.
+- `404 Not Found`: resource not found, either because it doesn't exist *or* because the current user isn't allowed to know it does. (More on this tenancy nuance below.)
+- `405 Method Not Allowed`: the path exists but the method doesn't. `GET /api/widgets` works, `DELETE /api/widgets` doesn't. Next.js route handlers send this automatically when a method isn't exported.
+- `409 Conflict`: a **state conflict**. A unique-constraint violation, an optimistic-concurrency mismatch (`If-Match` failed), or any case where the resource isn't in the state your request assumes.
+- `410 Gone`: the resource was here and is permanently gone. Use sparingly; `404` usually suffices.
+- `422 Unprocessable Content`: **parsed cleanly but failed validation**. The JSON is well-formed and the fields are the right types, but a business rule rejected it (`endDate < startDate`, an invalid email, a taken slug). The validation-error code.
+- `429 Too Many Requests`: rate limited. Pair with `Retry-After` to tell the client when to come back.
+
+**400 vs 422, parse versus validation.** The mistake juniors ship most often. `400` means the server couldn't *parse* the request; `422` means it parsed cleanly but a business rule rejected the value. The test is whether <Term definition="Zod's non-throwing validation method: it checks a value against a schema and returns { success: true, data } or { success: false, error } instead of throwing.">`safeParse`</Term> got to *run*: if parsing failed before Zod saw the value it's `400`, if `safeParse` returned `{ success: false }` it's `422`.
+
+**401 vs 403, identity versus permission.** `401` says "I don't know who you are"; `403` says "I know who you are, and you can't do this." The test is whether re-signing-in would fix it. An expired session token is `401`; a signed-in Viewer calling `DELETE /invoices/42` when only Admins can delete is `403`.
+
+**403 vs 404, the tenancy-hiding rule.** In a <Term definition="An architecture where one running application serves many isolated customers (tenants, usually organizations), each able to see only its own data.">multi-tenant</Term> app, when a signed-in user asks for a resource that belongs to a *different* organization, the senior default is `404`, not `403`. A `403` confirms the resource exists, leaking its existence to someone who shouldn't know it's there; a `404` gives away nothing. The multi-tenancy unit builds a `tenantDb` factory that enforces this at the query layer, so you can't leak across orgs by accident.
+
+<Buckets twoCol instructions="Sort each request into the status code the server should return.">
+  <Bucket name="s400" label="400 Bad Request" description="Server couldn't parse the request" />
+  <Bucket name="s422" label="422 Unprocessable Content" description="Parsed cleanly, failed validation" />
+  <Bucket name="s403" label="403 Forbidden" description="Authenticated but not allowed" />
+
+  <Item bucket="s400">Request body is `not even json {{`.</Item>
+  <Item bucket="s400">Request `Content-Type` is `text/plain` but the route expects JSON.</Item>
+  <Item bucket="s422">Body parses fine; `endDate` is before `startDate`.</Item>
+  <Item bucket="s422">Body parses fine; email field is `'not-an-email'`.</Item>
+  <Item bucket="s403">Signed-in Viewer tries to call `DELETE /invoices/42`; only Admins can delete.</Item>
+  <Item bucket="s403">Signed-in user on a free plan calls an enterprise-only endpoint.</Item>
+</Buckets>
+
+### 5xx: server error
+
+The 5xx subset is smaller: five codes, with one trio that travels together.
+
+- `500 Internal Server Error`: the catch-all bug. An unhandled exception bubbled up to the framework boundary. This is the one your error tracker (Sentry) groups by stack trace.
+- `502 Bad Gateway`: an <Term definition="A service that sits behind the one handling the request, which forwards the request onward; for a CDN or proxy, the upstream is your origin application.">upstream</Term> service returned garbage, often the proxy or load balancer reporting that the origin app crashed.
+- `503 Service Unavailable`: the server is overloaded or down for maintenance. Pair with `Retry-After` if you can.
+- `504 Gateway Timeout`: an upstream took too long to respond. The classic timeout-at-the-CDN response.
+- `507 Insufficient Storage`: the write failed because the storage backend is full.
+
+The 502/503/504 trio is the *load-balancer trio*: when you see them, the bug is usually not in your application code but in the layer in front of it, the CDN, the proxy, or origin reachability.
+
+This is the 4xx/5xx split as one contract: **4xx is the client's fault and does not page on-call; 5xx is the server's fault and does.**
+A dashboard that pages on 4xx spikes is miscalibrated; one that stays silent on 5xx spikes is missing real outages.
+
+<VideoCallout videoId="qmpUfWN7hh4" videoTitle="HTTP Status Codes Explained In 5 Minutes — ByteByteGo">
+  ByteByteGo's animated 5-minute tour of the same five classes, a visual recap before the Problem Details section.
+</VideoCallout>
+
+<MultipleChoice>
+  A POST handler hits an unhandled `TypeError` from a missing optional chain. The exception bubbles to the framework boundary. What status code should the client see?
+
+  <McqChoice>`400 Bad Request`</McqChoice>
+  <McqChoice>`422 Unprocessable Content`</McqChoice>
+  <McqChoice correct>`500 Internal Server Error`</McqChoice>
+  <McqChoice>`503 Service Unavailable`</McqChoice>
+
+  <McqWhy>`500` is the catch-all for unhandled server-side bugs. `503` means the server is up and refusing work for capacity reasons. The class boundary settles it first (server fault, 5xx), and within that class this is a code bug, not a load issue. Sentry groups 500s by stack trace; 503s are what the load balancer emits during a deploy.</McqWhy>
+</MultipleChoice>
+
+## Problem Details: the standard error body
+
+An API that doesn't pick a standard error-body shape ends up inventing its own: `{ error: "..." }` here, `{ message: "...", code: 42 }` there, `{ errors: [{ field, msg }] }` somewhere else.
+Clients then special-case each one, SDK generators can't infer the shape, and switching vendors means rewriting every error-handling branch.
+
+The standard to converge on is <Term definition="RFC 9457 (2023): a standard JSON shape and the application/problem+json content type for HTTP error bodies. Supersedes RFC 7807.">RFC 9457 Problem Details</Term>, an IETF specification that defines a JSON shape with five named fields and a content type, `application/problem+json`, that signals the body follows the standard.
+It supersedes RFC 7807 (2016) and stays backward-compatible with it; use 9457 for any new surface.
+
+A real Problem Details response on the wire looks like this.
+
+```http
+HTTP/3 422 Unprocessable Content
+Content-Type: application/problem+json
+
+{
+  "type": "https://api.example.com/problems/validation-failed",
+  "title": "Validation failed",
+  "status": 422,
+  "detail": "The invoice could not be created. See errors for details.",
+  "instance": "/api/invoices",
+  "errors": [
+    { "path": "dueDate", "message": "Date must be after today." },
+    { "path": "lines.0.amount", "message": "Must be positive." }
+  ]
+}
+```
+
+Five core fields plus one extension:
+
+<AnnotatedCode lang="json" maxLines={12} code={`
+{
+  "type": "https://api.example.com/problems/validation-failed",
+  "title": "Validation failed",
+  "status": 422,
+  "detail": "The invoice could not be created. See errors for details.",
+  "instance": "/api/invoices",
+  "errors": [
+    { "path": "dueDate", "message": "Date must be after today." },
+    { "path": "lines.0.amount", "message": "Must be positive." }
+  ]
+}
+`}>
+  <AnnotatedStep meta={`"\"type\""`} color="blue">
+    `type` is a URI identifying the *kind* of problem, and the field the client switches on, not the human-readable `title` or `status`. It's the version-stable contract: you can change the title or detail text without breaking clients.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"\"title\""`} color="blue">
+    `title` is a short, human-readable summary of the problem type. It does *not* change between occurrences: `'Validation failed'`, not `'Validation failed for invoice 42'`. The per-occurrence text goes in the next field.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"\"status\""`} color="orange">
+    `status` repeats the HTTP status code from the response line, and the two must match. The RFC marks the field as advisory, but mismatching it confuses middleware that re-emits the body and any tool that reads one without the other. Set both in one place server-side so they can't drift.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"\"detail\""`} color="blue">
+    `detail` is a human-readable, *occurrence-specific* explanation. A generic error UI may surface this string verbatim, so keep it safe to show the user.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"\"instance\""`} color="blue">
+    `instance` is a URI identifying this specific occurrence, usually the request path. Useful for correlating a log line or support ticket with a server-side trace.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+RFC 9457 also allows fields beyond the core five.
+Any such field is a **problem-type-specific extension**: once you pick a shape for a given `type` URI you're committed, because clients code against it.
+The canonical one here is `errors`, the array of `{ path, message }` above.
+It carries the same shape as a Zod issue array, so turning a `safeParse` failure into a Problem Details body is a one-line map.
+
+One detail is easy to miss: the **content type** is `application/problem+json`, not the generic `application/json`.
+Middleware, observability tools, and SDK generators key off it to know the body follows RFC 9457.
+Get it wrong and the body is still readable JSON, but tooling won't recognize the shape.
+
+<VideoCallout videoId="XXagEUbrIc8" videoTitle="Your API Errors Suck (Here's How to Fix Them) — CodeOpinion">
+  CodeOpinion's framework-agnostic 8-minute take on why returning `200 OK` with an error in the body is a trap, and how RFC 9457 fixes it.
+</VideoCallout>
+
+:::caution
+Don't leak internals in `detail`.
+Stack traces, internal database IDs, and raw exception messages with file paths belong in your error tracker, not the response body.
+Assume `detail` will appear verbatim in a user-facing toast somewhere, and write it accordingly.
+:::
+
+## The call shape
+
+You won't write a route handler in this lesson, but the call shape is worth seeing now so it's familiar when you meet the helper.
+
+```ts title="src/app/api/invoices/route.ts"
+export async function POST(request: NextRequest) {
+  const parsed = createInvoiceSchema.safeParse(await request.json());
+  if (!parsed.success) {
+    return problemResponse({
+      type: 'https://api.example.com/problems/validation-failed',
+      title: 'Validation failed',
+      status: 422,
+      detail: 'The invoice could not be created.',
+      errors: parsed.error.issues.map((i) => ({
+        path: i.path.join('.'),
+        message: i.message,
+      })),
+    });
+  }
+
+  // …happy path: insert, return 201 with Location.
+}
+```
+
+One `safeParse` at the boundary, one `problemResponse` on the failure branch that derives the status line and the body's `status` field from a single argument.
+The happy path's `201 Created` and `Location` header arrive in the next lesson.
+
+## Closing recall
+
+<TrueFalse instructions="Each claim exercises a distinction from this lesson — the 4xx confusion pairs, the body-line coherence rule, or the on-call paging contract.">
+  <Statement answer="true">
+    A request body that fails Zod validation should return `422 Unprocessable Content`, not `400 Bad Request`.
+    <TfWhy>`400` means the server couldn't *parse* the request — malformed JSON, wrong content type. `422` is for a body that parsed cleanly but failed business validation. The test: did `safeParse` get to run? If it did and returned `{ success: false }`, the code is `422`.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    A signed-in user requesting a resource that belongs to another organization should receive `403 Forbidden` so they know the resource exists but isn't theirs.
+    <TfWhy>`403` leaks existence — it confirms the resource is real. The senior default for cross-tenant access is `404`, indistinguishable from a missing resource. Enforce this at the query layer so you can't leak by accident.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    When the server crashes from a bug in your route handler, the right status code is `503 Service Unavailable`.
+    <TfWhy>`503` is for capacity or availability problems — the server is healthy enough to say "I'm overloaded." An unhandled exception is `500`, the catch-all server bug. Sentry groups `500`s by stack trace; `503`s are what the load balancer emits during a deploy.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    The `status` field inside a Problem Details body and the HTTP status code on the response line should always match.
+    <TfWhy>The body field is advisory by the RFC, but mismatching it confuses middleware that re-emits the body and any client that reads one without the other. Set them in one place server-side so they can't drift.</TfWhy>
+  </Statement>
+
+  <Statement answer="true">
+    If your team's alerting rules page on-call for 4xx spikes, the rules are miscalibrated.
+    <TfWhy>4xx is the client's fault. A 4xx spike means clients are sending bad requests — a client bug or a product issue, not an on-call emergency. The on-call paging signal is the 5xx rate.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="RFC 9457 — Problem Details for HTTP APIs"
+    href="https://www.rfc-editor.org/rfc/rfc9457.html"
+    icon="lucide:scroll-text"
+    iconColor="#0B5FA5"
+    description="The IETF specification itself — short, readable, and the authoritative reference for the five core fields and the application/problem+json media type."
+  />
+  <ExternalResource
+    title="HTTP response status codes — MDN"
+    href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The canonical per-code reference. Each status code has its own page with usage notes, browser-compat, and links to the defining RFC."
+  />
+  <ExternalResource
+    title="httpstatuses.io"
+    href="https://httpstatuses.io/"
+    icon="lucide:list-tree"
+    iconColor="#2563EB"
+    description="A clean, browsable index of every HTTP status code with one-line definitions — handy when you need to look one up fast."
+  />
+  <ExternalResource
+    title="Problem Details: better information for bad situations"
+    href="https://redocly.com/blog/problem-details-9457"
+    icon="lucide:newspaper"
+    iconColor="#5E48E8"
+    description="Redocly's practical write-up on RFC 9457 — what changed from RFC 7807, why it matters for SDK generators, and how OpenAPI tooling consumes it."
+  />
+</CardGrid>
+</content>
+</invoke>
