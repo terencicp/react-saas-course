@@ -1,0 +1,339 @@
+---
+title: Self-hosted fonts with next/font
+tagline: How next/font self-hosts fonts at build time, removing the third-party request, the privacy leak, and the layout shift, then wires each face into Tailwind as a theme token.
+chapter-id: 34
+course-progress: 0.3223
+rewrites: 2
+sidebar:
+  order: 4
+  label: Fonts
+---
+
+import FontPipelineSequence from '../../../components/lessons/034/4/font-pipeline-sequence.astro';
+import TailwindBridgeFlow from '../../../components/lessons/034/4/tailwind-bridge-flow.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You need a brand font on your web app. You search how to add one, and every tutorial gives the same answer: drop two `<link>` tags into the `<head>`.
+
+```html
+<head>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter&display=swap" rel="stylesheet" />
+</head>
+```
+
+The font shows up, so it looks done. But those two lines hand you three problems:
+
+1. **They block rendering on a server you don't own.** The stylesheet `<link>` is a render-blocking request to a third-party origin. Before the browser can paint your text, it has to reach `fonts.googleapis.com`, parse the CSS, then fetch the font from `fonts.gstatic.com`. While that round-trip is in flight, the browser hides the text or paints a fallback that jumps to the real font once it arrives.
+
+2. **Every visitor's browser phones Google.** On each page load, the visitor's browser connects to Google directly, handing over their IP address and the page they're on. A German court ruled that embedding Google Fonts this way violates the <Term definition="General Data Protection Regulation — the EU privacy law. Sending a visitor's IP to a third party like Google without consent can be a violation.">GDPR</Term>, precisely because it leaks visitor IPs to a third party without consent.
+
+3. **Your typography depends on a CDN you don't control.** If `fonts.gstatic.com` is slow, firewalled, or unreachable from some region, your brand face silently degrades to a system font, and it works fine on your machine so you never see it.
+
+This is the shape you saw in *Images with next/image*: a plain platform tag looks harmless but silently regresses, and the fix is a platform primitive that bakes the discipline into the build. Here that primitive is `next/font`. It downloads the font at build time and serves it from your own origin, with a pre-computed fallback metric so the text never jumps.
+
+You already have this. When you scaffolded your project with `create-next-app`, it wired up Geist through `next/font` in your root layout, so you've been shipping self-hosted fonts the whole time. This lesson explains that code, then teaches you to extend it.
+
+That fallback metric kills <Term definition="Cumulative Layout Shift — the Core Web Vital that measures how much visible content jumps around as the page loads. A font swapping to a different-width face is a classic source.">CLS</Term>, the Core Web Vital from the images lesson that measures how much content jumps as the page loads. A font swapping from a wrong-width fallback to the real face reflows the text the instant it lands, so keep CLS in mind.
+
+## What next/font does: the build-time pipeline
+
+`next/font` is a build-time pipeline, and everything you configure later is a knob on it. It does four things.
+
+**It downloads the font at build.** During `next build`, the loader fetches the Google font files (or reads your local ones) and emits them as static assets on your own domain. Visitors only ever talk to your origin, which removes both the privacy leak and the CDN dependency.
+
+**It generates the `@font-face` for you.** The loader emits the rule pointing at the self-hosted files, with the right `font-display` and source paths already filled in, so you never hand-write it.
+
+**It computes a fallback-font metric.** While a web font loads, the browser paints a fallback instantly, say Arial, so it can show *something*. The real font usually has different letter widths and line heights, so when it arrives the text reflows to fit, and that reflow is the jump. `next/font` measures the real font at build time and synthesizes an adjusted fallback: an Arial tuned with `size-adjust` and `ascent-override` to occupy almost exactly the real font's space, so the swap moves nothing. This is `adjustFontFallback`, on by default, and it is the single feature that eliminates font-driven CLS.
+
+**It wires up preloading.** The loader adds the `<link rel="preload">` for the font files so the browser fetches them early. You don't manage that tag.
+
+<FontPipelineSequence />
+
+That last step is two behaviors at once: the font shows a fallback first and then swaps to the real face rather than hiding the text until it loads, and the computed metric makes that swap shift-free. The two behaviors have names you'll see everywhere in font discussions: <Term definition="Flash of Unstyled Text — the fallback font shows first, then swaps to the real font once it loads.">FOUT</Term> and <Term definition="Flash of Invisible Text — the text is hidden entirely until the font loads, then appears.">FOIT</Term>. FOIT is worse, because blank text is invisible content. The pipeline's defaults give you the shift-free version of FOUT and avoid FOIT: text appears immediately, and the swap moves nothing.
+
+<VideoCallout videoId="kvFChwzt0BI" videoTitle="How to Optimize Font Loading in Next.js">
+  Blazity traces a render-blocking Google Fonts `<link>` in DevTools: the FOUT and a 0.88 CLS, both gone once `next/font` self-hosts the file (4 min).
+</VideoCallout>
+
+## Loading a Google font: subsets and the variable-font default
+
+Here's the canonical call in your root layout, the Geist code your scaffold already includes.
+
+```tsx title="app/layout.tsx" {3} "className={geist.className}"
+import { Geist } from 'next/font/google';
+
+const geist = Geist({ subsets: ['latin'] });
+
+export const metadata = { /* ... */ };
+
+const RootLayout = ({ children }: { children: ReactNode }) => (
+  <html lang="en" className={geist.className}>
+    <body>{children}</body>
+  </html>
+);
+
+export default RootLayout;
+```
+
+`Geist({...})` runs at module scope, not inside the component; where the call lives has a failure mode we cover later. It returns an object with `className`, `style`, and `variable`. Applying `className` to `<html>` lets `font-family` inheritance carry the font to every element.
+
+`subsets` slices the font down to the scripts you serve. A full Google font ships glyphs for every script it supports, most of which you'll never render; the slice is often a fraction of the bytes, and naming it also tells the platform which slice to preload. Omit it while preloading is on (the default) and the build warns that you're shipping a font that is neither subset nor preloaded. Use `['latin']` for most apps, `['latin', 'latin-ext']` for accented European text like *Łódź* or *Köln*.
+
+### Variable fonts ship every weight in one file
+
+A **variable font** packs the whole weight axis into one file, from thin at 100 to black at 900; a **static font** is one file per weight. One variable file is often smaller than two static weights and gives every weight between for free, so use the variable font whenever the family has one, which is most of the time. Geist, Inter, and Roboto Flex all do; reach for static weights only when a family ships no variable version. The choice changes one thing in the API: whether you pass `weight`.
+
+<CodeVariants>
+  <CodeVariant label="Variable (default)">
+    <div data-mark-color="green">
+
+    ```ts title="app/layout.tsx"
+    const geist = Geist({ subsets: ['latin'] });
+    ```
+
+    </div>
+    **Omit `weight`.** One file carries every weight, so Tailwind's `font-bold`, `font-medium`, and the rest all resolve from it.
+  </CodeVariant>
+
+  <CodeVariant label="Static (no variable axis)">
+    <div data-mark-color="orange">
+
+    ```ts title="app/layout.tsx" "weight: ['400', '700']"
+    const roboto = Roboto({ weight: ['400', '700'], subsets: ['latin'] });
+    ```
+
+    </div>
+    **List only the weights you use.** Each is a separate file, so `['400', '700']` ships two; a `'300'` you never render is wasted bytes. `weight` is required for non-variable families, forbidden for variable ones.
+  </CodeVariant>
+</CodeVariants>
+
+Style follows the same rule. Pass `style: ['normal', 'italic']` on a static font only if you render italics; a variable font slants without it. Declare exactly what you render, since every extra is another file the browser downloads for nothing.
+
+## Loading a brand face with next/font/local
+
+When the font isn't on Google Fonts, a design system's own display face ships as a `.woff2` in your repo. `next/font/local` runs that file through the same pipeline: self-hosted, preloaded, zero CLS.
+
+```tsx title="app/layout.tsx" "variable: '--font-display'"
+import localFont from 'next/font/local';
+
+const acmeDisplay = localFont({
+  src: './fonts/acme-display.woff2',
+  variable: '--font-display',
+});
+```
+
+`src` is relative to the file that calls `localFont`, so `'./fonts/acme-display.woff2'` resolves next to `app/layout.tsx`. Co-locate the font with the layout, or keep all your faces in something like `app/fonts/`.
+
+When a family ships separate files for regular, bold, and italic, `src` takes an array instead, one entry per file.
+
+<details>
+<summary>Multi-file family</summary>
+
+```tsx title="app/layout.tsx"
+const acmeDisplay = localFont({
+  src: [
+    { path: './fonts/acme-display-regular.woff2', weight: '400', style: 'normal' },
+    { path: './fonts/acme-display-bold.woff2', weight: '700', style: 'normal' },
+  ],
+  variable: '--font-display',
+});
+```
+
+Each entry maps a file to its `weight` and `style`.
+
+</details>
+
+Ship <Term definition="Web Open Font Format 2 — a compressed, universally-supported web font format. The smallest format with full modern-browser support.">`.woff2`</Term> and nothing else. A `.ttf`, `.otf`, or older `.woff` alongside it is more bytes for zero benefit.
+
+This call sets `variable`, not `className`: the brand face becomes a named Tailwind token you reach for with a utility class, which the next section sets up.
+
+## Wiring a font into Tailwind as a theme token
+
+Loading a font is the easy part. The part people get wrong, AI assistants included, is wiring it into Tailwind so utilities like `font-sans` and `font-display` resolve to your self-hosted fonts. A font family is just another theme token, like a color or spacing step: its value comes from a `next/font` call instead of an OKLCH literal, and it reaches Tailwind through a single CSS custom property. The wiring is three hops, and a bug is always one of them broken, so check all three together.
+
+<TailwindBridgeFlow />
+
+This is the setup you'll keep: Geist sans for the body, Geist Mono for code, and Acme as the brand display face, wired through two files that must agree. Read them side by side.
+
+<CodeVariants>
+  <CodeVariant label="app/layout.tsx">
+    ```tsx title="app/layout.tsx" {15-17}
+    import { Geist, Geist_Mono } from 'next/font/google';
+    import localFont from 'next/font/local';
+
+    const geistSans = Geist({ subsets: ['latin'], variable: '--font-sans' });
+    const geistMono = Geist_Mono({ subsets: ['latin'], variable: '--font-mono' });
+    const acmeDisplay = localFont({
+      src: './fonts/acme-display.woff2',
+      variable: '--font-display',
+    });
+
+    const RootLayout = ({ children }: { children: ReactNode }) => (
+      <html
+        lang="en"
+        className={`${geistSans.variable} ${geistMono.variable} ${acmeDisplay.variable}`}
+      >
+        <body>{children}</body>
+      </html>
+    );
+
+    export default RootLayout;
+    ```
+    **Each font exposes its own `--font-*` variable.** Concatenate the three `.variable` classNames onto `<html>` so all three custom properties go live on the root and inherit everywhere. Use `.variable`, which sets a CSS variable, not the bare `className`, which sets `font-family` directly: in a Tailwind app you always want `.variable`, so utilities can reference the font.
+  </CodeVariant>
+
+  <CodeVariant label="app/globals.css">
+    ```css title="app/globals.css" {3-7}
+    @import "tailwindcss";
+
+    @theme inline {
+      --font-sans: var(--font-sans);
+      --font-mono: var(--font-mono);
+      --font-display: var(--font-display);
+    }
+    ```
+    **`@theme inline` aliases each font variable into a Tailwind theme token,** generating the matching `font-sans`, `font-mono`, and `font-display` utilities. `--font-sans` is special: Tailwind uses it as the default body font, so setting it makes Geist your app-wide default with no class needed. The others you apply explicitly, like `font-display` on an `<h1>`.
+  </CodeVariant>
+</CodeVariants>
+
+There is no `tailwind.config.ts` in this course. Tailwind v4 is CSS-first: the font token lives in `@theme` in `globals.css`, alongside your colors and spacing. A `tailwind.config.ts` registering fonts with `fontFamily: { sans: ['var(--font-sans)'] }` is the legacy v3 shape; the v4 equivalent is the `@theme` mapping above.
+
+<Dropdowns
+  instructions="Wire the brand face so that the font-display utility works. Pick the @theme value that aliases the font variable, then the utility class that lands the face on the heading."
+  answers={[
+    { answer: 'var(--font-display)', options: ['var(--font-display)', "'__acmeDisplay_abc'", 'localFont(...)', '--font-display'] },
+    { answer: 'font-display', options: ['font-display', 'font-acme', '--font-display', 'font-sans'] },
+  ]}
+>
+```css title="app/globals.css"
+@import "tailwindcss";
+
+@theme inline {
+  --font-display: ___;
+}
+```
+```tsx title="app/(marketing)/page.tsx"
+<h1 className="___">Acme</h1>
+```
+</Dropdowns>
+
+## Two scopes: which layout loads a font, and where you call the loader
+
+Two rules, both about not paying for work you don't need: *which layout* loads a font, and *where in the file* you call the loader.
+
+### Load the body font once, the marketing face only where it renders
+
+Every font family is bytes the browser downloads, so load a font where it renders.
+
+The body font belongs in the **root layout**, which runs on every route. A font used on only some routes should load only there: if `acme-display` appears only on marketing pages, load it in `app/(marketing)/layout.tsx` so dashboard routes never download it. This is the route groups and nested layouts you already know, now used to scope a cost.
+
+### Declare the font at module scope, never inside a component
+
+The `Geist({...})` or `localFont({...})` call must live at **module top level**, where it runs once when the module loads. That single run, at build and module load, is the whole optimization. Put the call inside a component and it re-runs on every render, throwing away the build-time work and, for a local font, re-reading the source file each time. This is the most common mistake in real code, and one an AI assistant will happily ship.
+
+<CodeVariants>
+  <CodeVariant label="Wrong — inside the component">
+    <div data-mark-color="red">
+
+    ```tsx del={4}
+    import { Inter } from 'next/font/google';
+
+    const Page = () => {
+      const inter = Inter({ subsets: ['latin'] });
+      return <h1 className={inter.className}>Acme</h1>;
+    };
+    ```
+
+    </div>
+    **Re-initializes the font on every render,** throwing away the build-time work and possibly warning.
+  </CodeVariant>
+
+  <CodeVariant label="Right — module scope">
+    <div data-mark-color="green">
+
+    ```tsx ins={3}
+    import { Inter } from 'next/font/google';
+
+    const inter = Inter({ subsets: ['latin'] });
+
+    const Page = () => <h1 className={inter.className}>Acme</h1>;
+    ```
+
+    </div>
+    **Runs once, at module load.** The component just references its `className`. This is the only correct shape.
+  </CodeVariant>
+</CodeVariants>
+
+Two reflexes follow. Don't load a font in a Client Component: a loader call inside a `'use client'` file forfeits the server-side optimization. And don't pass the font object across the server/client boundary; pass only its `className`, `variable`, and `style` fields.
+
+When more than one file needs the same font, call every loader once in a single module and import the results everywhere.
+
+```ts title="app/fonts.ts"
+import { Geist, Geist_Mono } from 'next/font/google';
+import localFont from 'next/font/local';
+
+export const geistSans = Geist({ subsets: ['latin'], variable: '--font-sans' });
+export const geistMono = Geist_Mono({ subsets: ['latin'], variable: '--font-mono' });
+export const acmeDisplay = localFont({
+  src: './fonts/acme-display.woff2',
+  variable: '--font-display',
+});
+```
+
+Now any layout does `import { geistSans } from '@/app/fonts'`: one instance per font, imported wherever it's needed, never re-called.
+
+## What next/font does not do
+
+- **No runtime CDN fetches.** Everything happens at build time; nothing fetches a font at request time.
+- **No silent guessing of subsets.** For Google fonts the platform warns rather than picking a subset for you, enforcing the always-declare-`subsets` habit.
+- **Not for icon fonts.** Shipping a whole font as glyphs downloads megabytes for a handful of symbols and breaks accessibility. Use SVG icons instead, like the Lucide components from the icons chapter.
+
+This lesson wires the font *family*. The type scale, line height, and `prose` reading surface were the Tailwind typography chapter.
+
+## Five reflexes for wiring a font
+
+1. **Declare `subsets` on every Google font.** It's where the byte savings and the preload live, and the platform warns you otherwise.
+2. **Variable fonts omit `weight`; static fonts list only what they render.** Prefer variable.
+3. **Wire fonts through `variable` and `@theme` in `globals.css`, never a `tailwind.config.ts`.** A font is a design token, like a color.
+4. **Call the loader at module scope, once,** never inside a component.
+5. **`next/font` needs zero `next.config.ts`.** Unlike images and redirects, the entire font pipeline is just the import.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="next/font API reference"
+    href="https://nextjs.org/docs/app/api-reference/components/font"
+    icon="simple-icons:nextdotjs"
+    description="Every option for the Google and local loaders — subsets, weights, variable, display, axes, and the fallback knobs."
+  />
+  <ExternalResource
+    title="Font Optimization guide"
+    href="https://nextjs.org/docs/app/getting-started/fonts"
+    icon="simple-icons:nextdotjs"
+    description="The official walkthrough of self-hosting Google fonts, loading local files, and scoping a font to a layout."
+  />
+  <ExternalResource
+    title="Custom fonts without compromise"
+    href="https://vercel.com/blog/nextjs-next-font"
+    icon="simple-icons:vercel"
+    description="Vercel's deep-dive on the size-adjust fallback metric — how next/font kills CLS before the font is even requested."
+  />
+  <ExternalResource
+    title="Introduction to variable fonts"
+    href="https://web.dev/articles/variable-fonts"
+    icon="simple-icons:google"
+    iconColor="#4285F4"
+    description="web.dev's tour of the weight, width, and slant axes that let one variable file carry every style."
+  />
+</CardGrid>

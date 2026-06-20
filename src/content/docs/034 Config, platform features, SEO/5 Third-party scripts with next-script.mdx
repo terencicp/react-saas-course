@@ -1,0 +1,384 @@
+---
+title: Third-party scripts with next/script
+chapter-id: 34
+tagline: Next.js next/script, the primitive that schedules when each third-party vendor tag loads.
+course-progress: 0.3241
+sidebar:
+  order: 5
+  label: Third-party scripts
+rewrites: 2
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import SdkDecisionLadder from '../../../components/lessons/034/5/sdk-decision-ladder.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Three teams want three scripts on your app this week.
+Marketing wants a product-analytics snippet, checkout needs Stripe.js to mount the card field, and support wants a chat widget.
+Each is a `<script>` tag a vendor handed you, and the easy move is to paste all three into your root layout.
+
+That repeats one mistake three times.
+Now every script downloads and runs on *every* route, and all three compete with your React code for the browser's single <Term definition="The one thread a browser uses to run JavaScript and paint the page. While it's busy executing one script, nothing else runs or renders.">main thread</Term>, so the page takes longer to become interactive and your LCP slips (Largest Contentful Paint, from the `next/image` lesson).
+They also share one priority, though their urgencies differ: Stripe matters because the user is about to pay, while the chat widget can wait.
+A plain `<script>` tag can't express any of that.
+
+As with `next/image` and `next/font`, a plain HTML element quietly regresses a Core Web Vital, and Next ships a component with better defaults.
+Every third-party script flows through `next/script`, which lets you say *when* each one loads so it stops competing with your own code.
+The choice comes down to one question: when does this need to run, and what breaks if it runs late?
+
+## How next/script schedules a script
+
+A raw `<script src="...">` in your JSX is render-blocking: the browser stops parsing, fetches the script, runs it, then continues.
+It has no notion of "after the page is interactive," and it loads twice if the same tag renders in two places.
+
+`next/script` is a thin scheduler around that tag.
+It doesn't change your vendor's code; it decides *the moment the script is inserted into the page*.
+It loads the script once as the user navigates within a layout, hands you load and error callbacks, and does **not** block your render unless you ask it to.
+
+<CodeVariants>
+  <CodeVariant label="Raw <script>">
+    <div data-mark-color="red">
+
+    ```tsx title="app/layout.tsx" del={5}
+    export default function RootLayout({ children }: { children: React.ReactNode }) {
+      return (
+        <html lang="en">
+          <body>
+            <script src="https://cdn.example.com/analytics.js"></script>
+            {children}
+          </body>
+        </html>
+      );
+    }
+    ```
+
+    </div>
+    **The wrong default in a React app.** The browser stops parsing to fetch and run this tag, knows nothing about hydration, and loads it again if this layout re-renders elsewhere.
+  </CodeVariant>
+
+  <CodeVariant label="next/script">
+    <div data-mark-color="green">
+
+    ```tsx title="app/layout.tsx" ins={1, 7}
+    import Script from 'next/script';
+
+    export default function RootLayout({ children }: { children: React.ReactNode }) {
+      return (
+        <html lang="en">
+          <body>
+            <Script src="https://cdn.example.com/analytics.js" />
+            {children}
+          </body>
+        </html>
+      );
+    }
+    ```
+
+    </div>
+    **The same intent, now scheduled.** No directive is needed, since this is still a server file. Next loads the script after the page hydrates instead of blocking, and dedupes it. With no `strategy` prop it takes the default, right for the common case.
+  </CodeVariant>
+</CodeVariants>
+
+That default is `afterInteractive`: the script loads right after <Term definition="The browser attaching interactivity to the server-rendered HTML, the moment your React app 'wakes up' in the browser.">hydration</Term> begins.
+Every strategy you're about to learn is measured *relative to that moment*.
+A `<Script>` can live in any page or layout, with one exception we'll get to.
+
+## The four loading strategies
+
+The `strategy` prop takes one of four values: a default you'll use almost always, two you reach for under a specific condition, and one you can't use here at all.
+
+**`afterInteractive`, the default.**
+Loads right after hydration begins, so your app's own JavaScript gets the main thread first and the third-party script slots in behind it.
+Home for analytics snippets, tag managers, and error-monitoring loaders: anything that should run soon but never *ahead* of the code that makes your app work.
+
+**`lazyOnload`, for anything non-critical.**
+Loads during browser idle time, after everything else on the page has finished.
+Chat widgets, social embeds, and retargeting pixels belong here.
+If nothing the user would notice breaks when the script loads five seconds late or never, it's `lazyOnload`.
+Demote non-critical scripts down here so they stop competing for the main thread when it matters.
+
+**`beforeInteractive`, narrow and expensive.**
+Loads *before* any Next.js code, and Next always injects it into the document `<head>`, so it **must** live in your root `app/layout.tsx`.
+It's your most expensive strategy: it competes with first-party data fetching and, from the root layout, runs on every route.
+Reserve it for scripts that must run before the page paints: bot and fraud detectors that fingerprint the request, and cookie-consent managers that decide what else may load.
+"Before interactive" *sounds* like "earliest and safest," so beginners reach for it by reflex and slow down LCP site-wide.
+If you can't say out loud why this script must beat hydration, it isn't `beforeInteractive`.
+
+**`worker`, which you can't use here.**
+It offloads the script to a <Term definition="A background browser thread that runs JavaScript off the main thread. It has no access to the DOM, which is why not every script tolerates it.">Web Worker</Term> via <Term definition="An open-source library that relays third-party scripts into a Web Worker so they execute off the main thread.">Partytown</Term>, but it's experimental and **does not work with the App Router**.
+This course is App-Router-only, so just know the word for now.
+
+That leaves three strategies, and one short question picks between them.
+
+<StateMachineWalker kind="decision" title="Which loading strategy?">
+  <Question
+    id="before-hydrate"
+    prompt="Must this script run before the page hydrates?"
+    description="Ask the expensive question first. The litmus is whether it gates what else is allowed to run: a consent manager deciding which trackers may load, or a bot/fraud detector that must fingerprint the request before anything else happens.">
+    <Branch
+      label="Yes, it gates what else may run"
+      to="leaf-before"
+      rationale="A consent gate or a fraud check that has to decide before other code gets a turn." />
+    <Branch
+      label="No"
+      to="first-interaction"
+      rationale="Almost everything lands here, so fall through to the common cases." />
+  </Question>
+
+  <Question
+    id="first-interaction"
+    prompt="Is it needed for the user's first interaction or the above-the-fold experience?">
+    <Branch
+      label="Yes, the first interaction depends on it"
+      to="leaf-after"
+      rationale="The card field, or an analytics call that must fire on load: run it as soon as it's safe." />
+    <Branch
+      label="No, nothing on screen needs it yet"
+      to="leaf-lazy"
+      rationale="The user would not notice if it loaded five seconds late, or never." />
+  </Question>
+
+  <Leaf id="leaf-before" verdict="beforeInteractive">
+    Loads before any Next.js code and is always injected into the document `<head>`, so it **must** live in your root `app/layout.tsx`. The most expensive choice: it competes with your own data fetching and runs on every route. Reserve it for cookie-consent managers and bot/fraud detection.
+  </Leaf>
+
+  <Leaf id="leaf-after" verdict="afterInteractive">
+    The default. Loads right after hydration begins, so your own JavaScript gets the main thread first. Home for analytics snippets, tag managers, and error-monitoring loaders.
+  </Leaf>
+
+  <Leaf id="leaf-lazy" verdict="lazyOnload">
+    Loads during browser idle time, after everything else. Chat widgets, social embeds, and retargeting pixels: anything that breaks nothing if it loads late or not at all. (`worker` would sit further out still, but it's unavailable in the App Router today.)
+  </Leaf>
+</StateMachineWalker>
+
+The walk is quick because the questions are ranked: ask the expensive, narrow question first, and fall through when the answer is no.
+Now sort six scripts a real web app accumulates into the strategy you'd reach for.
+
+<Buckets instructions="Sort each vendor script into the loading strategy you'd reach for.">
+  <Bucket name="after" label="afterInteractive" description="Runs ASAP, behind your own JS" />
+  <Bucket name="lazy" label="lazyOnload" description="Idle-time, after everything else" />
+  <Bucket name="before" label="beforeInteractive" description="Before hydration, root layout only" />
+
+  <Item bucket="after">Product-analytics loader (PostHog snippet)</Item>
+  <Item bucket="after">Error-monitoring loader</Item>
+  <Item bucket="before">Cookie-consent manager</Item>
+  <Item bucket="before">Bot / fraud detector</Item>
+  <Item bucket="lazy">Intercom chat widget</Item>
+  <Item bucket="lazy">Twitter / X embed</Item>
+</Buckets>
+
+The `beforeInteractive` pair decides what else may run (consent) or whether to trust the request (bot detection).
+Anything that merely reports on the user, analytics and error monitoring, is `afterInteractive`; anything the user could live without for a few seconds, chat and embeds, is `lazyOnload`.
+
+## Callbacks force a Client Component
+
+Often you need to run your own code the instant the vendor's global appears, or react when the load fails.
+`<Script>` gives you three callbacks for this:
+
+- **`onLoad`** fires once the script finishes loading. Put initialization that depends on the vendor's global here, like calling `window.Intercom('boot', ...)` once Intercom's loader lands.
+- **`onError`** fires when the script fails to load, from a network blip, an ad blocker, or a CDN outage. It's your hook for graceful degradation.
+- **`onReady`** fires on first load and again on every re-mount, so you can re-run vendor setup after the user navigates to a new route.
+
+One constraint trips people up: **all three callbacks only work in a Client Component.**
+A bare `<Script src="...">` with no callbacks runs fine in a Server Component, as in every example so far.
+Add any callback and the file needs `'use client'`, because callbacks are event handlers and event handlers run in the browser.
+The failure is indirect, the error never mentions `onLoad`, so memorize the rule: callbacks mean `'use client'`, no callbacks means leave it on the server.
+
+Here is a client component that boots a chat widget once its script lands.
+
+<AnnotatedCode lang="tsx" code={`
+'use client';
+
+import Script from 'next/script';
+
+export const IntercomWidget = ({ appId }: { appId: string }) => {
+  return (
+    <Script
+      id="intercom-widget"
+      src="https://widget.intercom.io/widget/loader.js"
+      strategy="lazyOnload"
+      onLoad={() => {
+        window.Intercom('boot', { app_id: appId });
+      }}
+    />
+  );
+};
+`}>
+  <AnnotatedStep meta="{1}" color="orange">
+    `'use client';` is here only because of the callback below. Strip the callback and this directive goes too.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7-10}" color="blue">
+    The `<Script>` with its `src` and `strategy="lazyOnload"`. A chat widget has zero first-interaction value, so it loads at idle. The `id` is optional for an external script, since those dedupe by `src` automatically, but naming a script you attach behavior to is a tidy habit.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11-13}" color="orange">
+    `onLoad` fires once the loader lands, and only then is `window.Intercom` defined and safe to call. This callback is the reason step 1 exists.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11}" color="violet">
+    To re-initialize on every client navigation, swap `onLoad` for `onReady`, which fires on every re-mount rather than just the first load.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+`onLoad` and `onError` can't pair with `beforeInteractive`: that script runs before React is on the page, so there's no component lifecycle to fire them. Use `onReady` instead.
+
+## Placement, dedup, and inline scripts
+
+Where you put a `<Script>` is a scoping decision.
+A script in a layout loads for that layout's entire subtree and persists as the user navigates within it; a script in the root layout loads on every route in the app.
+So marketing pixels belong in your `(marketing)` layout, product analytics in the app layout, and Stripe.js in the checkout route or layout, where it isn't dead weight on a pricing page.
+The rule mirrors the one for fonts: **put the script in the narrowest layout that covers every route that needs it, and no wider.**
+
+Dedup has an asymmetry worth knowing.
+Next loads a given script once and won't re-inject it as the user navigates within a layout.
+For **external** scripts (anything with a `src`) this is automatic.
+For **inline** scripts, where you write the JavaScript as the script's content instead of pointing at a URL, Next can't track it without an `id`.
+Omit the `id` and dedup silently breaks: no error, it just loads more than once.
+
+<CodeVariants>
+  <CodeVariant label="External">
+    ```tsx
+    <Script src="https://cdn.example.com/analytics.js" strategy="afterInteractive" />
+    ```
+    **Deduped automatically.** Next keys an external script on its `src`, loads it once, and won't reload it as you navigate within the layout. No `id` required.
+  </CodeVariant>
+
+  <CodeVariant label="Inline">
+    <div data-mark-color="orange">
+
+    ```tsx /id="ga-init"/
+    <Script id="ga-init" strategy="afterInteractive">
+      {`window.dataLayer = window.dataLayer || [];
+    function gtag(){ dataLayer.push(arguments); }
+    gtag('js', new Date());`}
+    </Script>
+    ```
+
+    </div>
+    **The `id` is what dedup depends on.** An inline script has no `src` to key on, so Next tracks it by `id`; omit it and dedup silently breaks. When a vendor offers a hosted snippet or SDK, prefer that over raw inline JS.
+  </CodeVariant>
+</CodeVariants>
+
+Placement can also be a legal decision.
+Under EU privacy law, chiefly the <Term definition="General Data Protection Regulation: the EU law requiring a clear legal basis, usually explicit consent, before processing personal data. It underpins the consent banners you see across the web.">GDPR</Term> and the <Term definition="The EU 'cookie law' directive governing cookies, pixels, and similar tracking tech. It's why non-essential trackers must wait for consent.">ePrivacy</Term> rules, many analytics and marketing scripts may load only after the user consents to being tracked.
+Drop such a script where it fires before your consent banner is answered, and you've broken the law, not just the page.
+So gate non-essential trackers behind your consent state, and use `lazyOnload` so they stay deferred and conditional.
+
+:::caution
+A `<Script>` is a client-side concern injected into your rendered output. It does not, by itself, force a route to render dynamically under Cache Components. Placement is a scoping and consent decision, not a caching one.
+:::
+
+## When to skip Script entirely
+
+`<Script>` is the floor, the primitive everything else builds on, so the first question about any vendor isn't "which strategy?" but "do they ship something better than a snippet?"
+
+Increasingly they do.
+Vendors like PostHog, Sentry, and LaunchDarkly ship a typed npm SDK you `import` like any other dependency: tree-shakable, typed, and wired into React through hooks and providers instead of a global on `window`.
+When a vendor offers an SDK, that's the answer.
+`<Script>` is the fallback for the vendor that gives you only a raw snippet.
+
+Google is the case to know by name.
+Google Analytics and Google Tag Manager ship a snippet, not an SDK, but you still shouldn't hand-roll them.
+The official `@next/third-parties/google` package wraps them in `GoogleAnalytics` and `GoogleTagManager` components that load after hydration by default, so reach for it over a raw GA tag every time.
+The package is still officially experimental, so don't treat its API as frozen.
+
+<SdkDecisionLadder />
+
+Every third-party script costs bytes to download, time to parse, and main-thread time to run, so one question drives the whole lesson: what breaks if this script disappeared tomorrow?
+If you can't justify a script, don't ship it.
+
+## Worked example: three scripts, three decisions
+
+Back to the three scripts the three teams wanted.
+Each gets a different answer.
+
+<CodeVariants>
+  <CodeVariant label="Stripe.js">
+    ```tsx title="app/(checkout)/layout.tsx"
+    <Script src="https://js.stripe.com/v3" strategy="afterInteractive" />
+    ```
+    **Needed for the interaction, not before it, and scoped to where it happens.** This lives in the checkout route or layout only; it's useless on marketing or pricing pages, so tight scoping keeps every other route from paying for it. The strategy is `afterInteractive` because the card field is part of the interaction once the page loads, but nothing has to run before hydration.
+  </CodeVariant>
+
+  <CodeVariant label="PostHog">
+    ```tsx title="app/providers.tsx"
+    import posthog from 'posthog-js';
+
+    posthog.init(process.env.NEXT_PUBLIC_POSTHOG_KEY!, {
+      api_host: 'https://us.i.posthog.com',
+    });
+    // init inside a client provider — full setup comes later
+    ```
+    **The right move is the SDK, not `<Script>`.** PostHog ships a typed npm SDK, so you skip the component entirely. You `import` and initialize it inside a client provider, and you get types, tree-shaking, and React hooks instead of a global dumped on `window`.
+  </CodeVariant>
+
+  <CodeVariant label="Intercom">
+    ```tsx title="app/(app)/layout.tsx"
+    <Script
+      id="intercom"
+      src="https://widget.intercom.io/widget/loader.js"
+      strategy="lazyOnload"
+    />
+    ```
+    **Zero first-interaction value, so it waits.** A chat widget loads at idle with `lazyOnload`, behind everything that matters on screen. It belongs in whichever layout offers support, not the root, and an inline version would carry an `id` so Next can dedupe it.
+  </CodeVariant>
+</CodeVariants>
+
+<MultipleChoice>
+  Marketing pastes a retargeting pixel into the root `app/layout.tsx` with `strategy="beforeInteractive"`. The build succeeds and the pixel fires. What's the *actual* problem with this choice?
+
+  <McqChoice correct>The pixel now runs ahead of hydration on every single route, stealing the main thread from your first-party code and dragging down LCP site-wide — and it can fire before the user has answered the consent banner.</McqChoice>
+  <McqChoice>Without an `id`, Next can't dedupe the pixel, so it reloads on every navigation within the layout.</McqChoice>
+  <McqChoice>`beforeInteractive` is only legal in the root layout, so placing it there is the one mistake that *won't* compile — it needs to move into a route group.</McqChoice>
+  <McqChoice>Retargeting pixels aren't supported by `next/script`; this one only works because it silently fell back to a plain `<script>` tag.</McqChoice>
+
+  <McqWhy>A retargeting pixel is the textbook `lazyOnload`, consent-gated, narrowly-scoped script — `beforeInteractive` in the root layout is the exact opposite on every axis: earliest instead of idle, every route instead of one, eager instead of consent-gated. The `id` decoy is about *inline* scripts; this pixel has a `src`, so Next dedupes it automatically. And the root layout is precisely the one place `beforeInteractive` *is* allowed, so nothing here is a compile error — it's a judgment error.</McqWhy>
+</MultipleChoice>
+
+`next/script` needs zero configuration for all of this, no `next.config.ts` entry, unlike the image pipeline you set up earlier.
+The decisions are the work: pick the latest loading moment that still works, scope the script to the narrowest layout that needs it, and prefer a real SDK to a snippet whenever the vendor ships one.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Script Component — API reference"
+    href="https://nextjs.org/docs/app/api-reference/components/script"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The official next/script reference: every strategy, every callback, and the constraints spelled out."
+  />
+  <ExternalResource
+    title="Optimizing third-party libraries"
+    href="https://nextjs.org/docs/app/guides/third-party-libraries"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The @next/third-parties guide — GoogleAnalytics, GoogleTagManager, and Maps/YouTube embeds."
+  />
+  <ExternalResource
+    title="Optimizing third-party script loading in Next.js"
+    href="https://developer.chrome.com/blog/script-component"
+    icon="simple-icons:googlechrome"
+    iconColor="#4285F4"
+    description="The Chrome team's deep dive on why the strategies exist, with real LCP and FCP wins measured."
+  />
+</CardGrid>

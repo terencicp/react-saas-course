@@ -514,3 +514,13 @@ once listener | once: true | Listener auto-removed after firing once. | first de
 pointer events | pointer event, pointerdown | pointer* family unifying mouse, touch, and pen. | first defined: Chapter 014 L3
 SyntheticEvent | synthetic event | React's cross-browser wrapper around the native DOM event. | first defined: Chapter 014 L3
 root container | - | Element a React app mounts into; where React delegates events into SyntheticEvents. | first defined: Chapter 014 L3
+main thread | - | The single browser thread running JS and painting; busy work blocks rendering. | first defined: Chapter 034 L5
+next/script | Script component | Next.js component scheduling when a third-party script loads. | first defined: Chapter 034 L5
+afterInteractive | - | next/script default strategy: loads right after hydration begins. | first defined: Chapter 034 L5
+lazyOnload | - | next/script strategy: loads during browser idle, after everything else. | first defined: Chapter 034 L5
+beforeInteractive | - | next/script strategy: loads before Next.js code, root layout only. | first defined: Chapter 034 L5
+worker strategy | strategy="worker" | next/script strategy offloading a script to a Web Worker via Partytown; Pages Router only. | first defined: Chapter 034 L5
+Web Worker | - | Background browser thread running JS off the main thread, no DOM access. | first defined: Chapter 034 L5
+Partytown | - | Library relaying third-party scripts into a Web Worker, off the main thread. | first defined: Chapter 034 L5
+GDPR | - | EU law requiring a legal basis (usually consent) before processing personal data. | first defined: Chapter 034 L5
+ePrivacy | cookie law | EU directive governing cookies and trackers; non-essential trackers await consent. | first defined: Chapter 034 L5

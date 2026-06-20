@@ -287,7 +287,7 @@
 - 5 Client-side navigation hooks (Teaches the four `next/navigation` hooks (`useRouter`, `usePathname`, `useSearchParams`, `useParams`), the read-on-server / write-on-client division of labor, `push` vs. `replace` vs. `refresh`, the Suspense requirement on `useSearchParams`, and the chip-list pattern that puts it all together.)
 - 6 Quiz
 
-### Chapter 034 — Project config, platform primitives, and SEO
+### Chapter 034 — Config, platform features, and SEO
 - 1 The typed next.config.ts (Teaches the typed `next.config.ts` surface as a one-screen map (`cacheComponents`, `typedRoutes`, `images`, `headers`, `experimental`) and `serverExternalPackages` as the lever for Node-native SDKs that break Turbopack bundling.)
 - 2 Images with next/image (Teaches `next/image` as the platform default for sized, lazy, format-negotiated images, the required `sizes`/`priority`/`placeholder` props, the Next.js 16 `qualities` requirement, and `remotePatterns` as the mandatory security gate for external sources.)
 - 3 Edge redirects and rewrites (Teaches `redirects()` and `rewrites()` in `next.config.ts` as the edge-applied home for request-independent rules, the `source`/`has`/`missing` pattern syntax, 308-vs-307 SEO consequences, and the decision tree against `proxy.ts` and `redirect()`.)
