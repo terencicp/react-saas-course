@@ -206,7 +206,7 @@
 - 1 Strict Mode is the messenger (How `<StrictMode>` double-invokes renders, initializers, and the effect lifecycle in dev so impurity and missing cleanups surface before production.)
 - 2 useEffect as synchronization (The `useEffect` signature, the setup/cleanup/resync lifecycle, the four canonical cleanup pairings, abort and ignore-flag race patterns, and the dependency-array contract.)
 - 3 useEffectEvent and the non-reactive seam (How `useEffectEvent` lets an effect read latest props and state without re-running, the reactive vs. non-reactive distinction, and the call-site restrictions that make it safe.)
-- 4 You probably don't need an effect (The five-quadrant audit (derive, handle, server, cache, sync) and the catalog of effect anti-patterns paired with their correctly shaped replacements.)
+- 4 When not to use useEffect (The five-quadrant audit (derive, handle, server, cache, sync) and the catalog of effect anti-patterns paired with their correctly shaped replacements.)
 - 5 useContext without the re-render storm (`useContext` as propagation primitive, the every-consumer-re-renders footgun, and the three mitigations: split contexts, separate state from dispatch, and stable provider values.)
 - 6 Marking updates as non-urgent (`useTransition` and `useDeferredValue` as priority markers (not speed boosts), the wrap-the-setter vs. wrap-the-value cut, async transitions, and the Suspense interaction that keeps old UI visible.)
 - 7 Reading promises with use() (The `use()` primitive for unwrapping promises into Suspense and reading context conditionally, the stable-promise rule, and the Server-to-Client streaming pattern that replaces effect-based fetching.)
