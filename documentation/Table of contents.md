@@ -84,10 +84,10 @@
 
 ## Unit 2 — HTTP and the Browser Platform
 
-### Chapter 010 — How a request becomes a page
-- 1 URL bar to first byte (Walk the four-step network leg from a URL commit to the first byte of HTML — DNS resolution, TCP/QUIC connection, the TLS handshake, and the HTTP request — and read each step on the DevTools Network waterfall against the 2026 HTTP/3-over-QUIC protocol stack.)
-- 2 First byte to pixels (Trace the browser-side pipeline from HTML bytes to an interactive page — parser to DOM, CSSOM, render tree, layout, paint, composite — and overlay the SSR plus hydration model that Unit 3 and Unit 4 will land on.)
-- 3 DevTools: the four panels that earn their keep (Teaches the senior workflows in Elements (live DOM and cascade), Network (open before the action, throttle, copy-as-fetch), Console (REPL, `$0`, `console.table`), and Application (cookies, storage, service workers), with React DevTools installed here for its first call in the React unit.)
+### Chapter 010 — From request to rendered page
+- 1 The four network stages (Walk the four-stage network leg from a URL commit to the first byte of HTML — DNS resolution, the QUIC transport, the TLS 1.3 handshake, and the HTTP request — and read each stage on the DevTools Network waterfall against the 2026 HTTP/3-over-QUIC protocol stack.)
+- 2 The browser rendering pipeline (Trace the six-stage browser pipeline from HTML bytes to an interactive page — parser to DOM, CSSOM, render tree, layout, paint, composite — and overlay the SSR plus hydration model that Unit 3 and Unit 4 will land on.)
+- 3 DevTools: the four panels you use daily (Teaches the senior workflows in Elements (live DOM and cascade), Network (open before the action, throttle, copy-as-fetch), Console (REPL, `$0`, `console.table`), and Application (cookies, storage, service workers), with React DevTools installed here for its first call in the React unit.)
 - 4 HTTPS on localhost with mkcert (Install the TLS 1.3 handshake and certificate-chain mental model at debug depth, then wire a local CA with `mkcert` to unblock the secure-context-required APIs (cookie `Secure`, Clipboard, WebCrypto) that silently fail on `http://localhost`.)
 - 5 Quiz
 

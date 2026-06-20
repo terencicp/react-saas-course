@@ -1,0 +1,214 @@
+---
+title: The browser rendering pipeline
+tagline: The six browser stages that turn HTML bytes into an interactive page, plus where Next.js server rendering and React hydration fit on top.
+chapter-id: 10
+course-progress: 0.0773
+rewrites: 1
+sidebar:
+  order: 2
+  label: The browser rendering pipeline
+---
+
+import Term from '../../../components/ui/Term.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import PipelineOverview from '../../../components/lessons/010/2/PipelineOverview.astro';
+import PipelineWalkthrough from '../../../components/lessons/010/2/PipelineWalkthrough.astro';
+import JankComparison from '../../../components/lessons/010/2/JankComparison.astro';
+import SsrHydrationOverlay from '../../../components/lessons/010/2/SsrHydrationOverlay.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The first byte has arrived, but the user still sees nothing and has nothing to click. Turning those bytes into a page the user can use takes a second pipeline of six stages, each with its own job, cost, and failure modes. The last lesson named the four network stages from URL commit to first byte; this one names the six browser stages from first byte to interactive page. The framing carries forward: a slow page load is always slow at one specific stage, and the engineer who can name that stage leads the debugging conversation. Server rendering and React hydration then layer on top of these stages.
+
+<VideoCallout videoId="5rLFYtXHo9s" videoTitle="How does a browser work? | Engineering side">
+  Hitesh Choudhary's 30-minute deep dive into how a browser turns bytes into a rendered page: a slower, fuller tour of the pipeline this lesson maps.
+</VideoCallout>
+
+## The six-stage pipeline
+
+Six stages run from bytes to pixels: two input lanes that merge in the middle, then a single chain that ends on screen. Every section below refers back to this diagram, so study it first.
+
+<Figure caption="The full pipeline, bytes to pixels.">
+  <PipelineOverview />
+</Figure>
+
+Read it left to right. HTML and CSS bytes arrive in parallel, each parsed into its own in-memory tree. The two trees merge into one render tree, and from there the pipeline is sequential: layout works out *where* each element sits, paint fills pixels into layers, and composite combines those layers into the final frame the GPU pushes to the display.
+
+The next sections take the stages one at a time. The diagram below is the same pipeline, but only one stage lights up per step; scrub through it as you read.
+
+<DiagramSequence>
+  <DiagramStep caption="Parse: the HTML parser streams tokens into a tree of typed DOM nodes as bytes arrive.">
+    <PipelineWalkthrough active="dom" />
+  </DiagramStep>
+  <DiagramStep caption="Style: stylesheets parse in parallel with HTML into the CSSOM, a tree of computed style rules.">
+    <PipelineWalkthrough active="cssom" />
+  </DiagramStep>
+  <DiagramStep>
+    <PipelineWalkthrough active="render-tree" />
+    <Fragment slot="caption">
+      Render tree: DOM and CSSOM merge. Nodes with `display: none` drop out; pseudo-elements get added in.
+    </Fragment>
+  </DiagramStep>
+  <DiagramStep caption="Layout: the browser computes geometry (position, width, height, line breaks) for every render-tree node.">
+    <PipelineWalkthrough active="layout" />
+  </DiagramStep>
+  <DiagramStep caption="Paint: pixels get filled into bitmap layers for text, backgrounds, borders, shadows, and images.">
+    <PipelineWalkthrough active="paint" />
+  </DiagramStep>
+  <DiagramStep caption="Composite: layers are combined on the GPU into the final frame and pushed to the screen.">
+    <PipelineWalkthrough active="composite" />
+  </DiagramStep>
+</DiagramSequence>
+
+## Stage 1: Parsing HTML into a DOM tree
+
+The HTML parser is a streaming state machine. It doesn't wait for the whole body to download; as bytes arrive, it tokenizes tags and emits typed element nodes. Every `<div>` becomes an `HTMLDivElement`, every `<a>` an `HTMLAnchorElement`, every `<input>` an `HTMLInputElement`. The result is the <Term definition="Document Object Model — the in-memory tree of typed element nodes the browser builds from parsed HTML. Every element is a JavaScript object with properties, methods, and events.">DOM</Term>, the tree JavaScript reads and mutates.
+
+The DOM is the input for the rest of the pipeline: layout and paint both read it, so everything downstream waits on it being built.
+
+One rule about the parser is where web developers get caught: a `<script>` without `async` or `defer` blocks the parser the moment it's encountered. The browser must download the script, execute it, and *then* keep parsing. Three behaviors sit side by side on the same element, and the difference is what makes a page fast or slow:
+
+```html title="index.html"
+<script src="/blocking.js"></script>            <!-- blocks the parser here -->
+<script defer src="/deferred.js"></script>      <!-- queued for after parsing, in order -->
+<script async src="/async.js"></script>         <!-- runs whenever it lands -->
+```
+
+`defer` runs the script after the parser finishes, with multiple deferred scripts running in source order. `async` runs the script the moment its download finishes, with no ordering guarantees. The habit that keeps the parser unblocked is to put scripts in `<head>` with `defer`, or at the end of `<body>` without it.
+
+On a Next.js page this is handled for you: the framework sets script attributes so the parser stays unblocked. The rule is still worth knowing, because it's what your framework is protecting you from.
+
+## Stage 2: CSS parsing builds the CSSOM
+
+Every `<link rel="stylesheet">` and inline `<style>` block parses alongside the HTML into the <Term definition="CSS Object Model — the in-memory tree of style rules the browser builds in parallel with the DOM. Used together with the DOM to compute the render tree.">CSSOM</Term>, a tree of rules and computed properties waiting to be matched against DOM nodes.
+
+CSS is <Term definition="A resource that delays first paint until it is fully downloaded and parsed.">render-blocking</Term> by default: the browser can't build the render tree without the CSSOM, because it wouldn't know what each node looks like, what's hidden, or what's positioned where. This is why `<link rel="stylesheet">` lives in `<head>`. Declaring the style dependency early lets the browser fetch and parse it while the HTML body is still streaming in.
+
+:::tip
+A stylesheet whose `media` attribute doesn't match the current context, like `media="print"` or `media="(min-width: 1200px)"` on a smaller viewport, downloads but does *not* block first paint. The browser fetches the rules in case the media starts matching, but won't gate the render tree on them. Use this to keep heavy print styles or a large desktop-only sheet from delaying the mobile render.
+:::
+
+## Stage 3: The render tree
+
+DOM and CSSOM merge into the <Term definition="The tree of nodes that will actually paint — DOM intersected with visible style. Nodes with display: none are excluded; pseudo-elements (::before / ::after) are included.">render tree</Term>: every node that will visually appear, each with its computed styles attached.
+
+Two membership rules matter. Nodes with `display: none` are *excluded*: they stay in the DOM where JavaScript can find them, but the rest of the pipeline skips them. Pseudo-elements like `::before` and `::after` are *included*, even though they never exist in the DOM.
+
+This is why `display: none` is cheaper than `visibility: hidden`. Removing a node from the render tree skips it through layout, paint, and composite. `visibility: hidden` keeps the node in the tree, so the browser still computes its geometry and reserves its space, and only the paint step makes it invisible.
+
+## Stage 4: Layout
+
+The browser walks the render tree and computes geometry for every node: where each box sits, how wide and tall it is, where lines break inside paragraphs, and how inline content flows around floats and images. The output is a *geometry tree* of positions and sizes, not pixels yet. This stage is <Term definition="Geometry computation — position, width, height, line breaks. Also called reflow, the label DevTools uses.">layout</Term>, also called *reflow*.
+
+Layout is the expensive stage. Its cost grows with the number of nodes and with the depth of dependencies, since a change to a parent's width can cascade through every descendant. Anything that affects geometry invalidates it: inserting or removing a node, changing a width or height, resizing the viewport, or even *reading* a layout property like `offsetHeight` while the browser has style or DOM changes queued.
+
+That last case has a name: <Term definition="A read-write-read pattern on layout properties forces the browser to flush queued layout work synchronously each time, multiplying layout cost in tight loops.">layout thrashing</Term>. You read `offsetHeight`, write a width, read another layout property, write another width, and each read forces the browser to flush the queued writes synchronously to give you an accurate answer. In a tight loop, that cost multiplies fast. It's worth knowing the name so you recognize the pattern when you see it.
+
+## Stage 5: Paint
+
+With the geometry settled, the browser fills pixels into **layers**: text glyphs, background colors, borders, shadows, images, and gradients. Paint runs per layer, and the browser repaints as little as it can, so when one region of the page changes, only the layers covering it are repainted. The output is a set of bitmap textures, ready to be combined.
+
+Some elements are promoted to their own layer because they will be manipulated independently: `position: fixed` elements, anything with `will-change` set, certain `transform`s, and elements with `opacity` below 1 that have descendants. That promotion is what makes the next stage's optimizations possible.
+
+## Stage 6: Composite, and the properties that hit 60fps
+
+The compositor combines the painted layers into the final frame, which the GPU pushes to the screen. It runs on its own thread, separate from the main thread that handled parsing, layout, and paint. That separation is what keeps the screen showing new frames at 60fps, roughly one every 16.7 milliseconds, even while the main thread is busy with something else.
+
+Two CSS properties can be applied by the compositor directly to a layer without re-running layout or paint: `transform` (translate, scale, rotate, skew) and `opacity`. These are the <Term definition="CSS properties (transform, opacity) the compositor thread can apply directly to existing layers without re-running layout or paint. The reason animations on them stay smooth even when the main thread is busy.">compositor-only properties</Term>. Animating `transform: translateX(...)` shifts a layer on the GPU with no main-thread work, producing 60fps. Animating `left` to make the same move invalidates layout, forcing the main thread to recompute geometry every frame, and the moment it misses the 16.7ms budget for even one frame the animation visibly stutters.
+
+<Figure caption="Two animations, same duration. Toggle the main-thread load on, and only the layout-driven animation stutters; the compositor keeps painting at 60fps regardless.">
+  <JankComparison />
+</Figure>
+
+Choose `transform` and `opacity` for animations that need to feel smooth: slide-ins, fades, hover scales, and drag handles. Reach for `width`, `top`, `margin`, or `height` only when you need the layout side effect, such as collapsing a panel that pushes its siblings down.
+
+## The Critical Rendering Path, FCP, and LCP
+
+The chain you just walked has a name: DOM and CSSOM built in parallel, merged into the render tree, then layout and first paint. That dependency chain from bytes to first pixel is the **Critical Rendering Path**, and the moment its first non-whitespace content appears is <Term definition="First Contentful Paint — the moment any text, image, or non-whitespace content first appears on screen. The first user-visible signal that the page is loading.">FCP</Term>, First Contentful Paint.
+
+A related metric is <Term definition="Largest Contentful Paint — the moment the largest visible element finishes rendering. The standard 'page is meaningfully visible' metric.">LCP</Term>, Largest Contentful Paint, which fires when the largest above-the-fold element, typically a hero image or headline, finishes painting. That's the moment the page is *meaningfully* visible rather than just visually started. FCP and LCP are both Core Web Vitals, measured later in the performance unit.
+
+## Server rendering and hydration
+
+On the 2026 default stack, Next.js 16 with React 19, the HTML the browser receives is already populated: the server ran the <Term definition="A React component that runs only on the server, renders to HTML there, and ships no JavaScript to the browser for itself. The App Router unit teaches the mechanics.">Server Component</Term> tree, serialized it to HTML, and streamed it as the response body. The pipeline above runs unchanged, but because the bytes already represent the rendered page, **first paint happens before any JavaScript has run.** That is the headline win of server rendering: a user, and a search-engine crawler, sees content the moment first paint fires, not after a bundle downloads and executes.
+
+After first paint, the browser downloads the JavaScript for any interactive components. When it runs, React performs <Term definition="The process where React attaches event listeners and component state to server-rendered DOM nodes. The page is visible during this gap but not yet interactive — a button click won't fire until its component has hydrated.">hydration</Term>: it walks the DOM the server already produced and attaches event listeners and component state to the existing nodes. The page stays visible throughout, so the user can scroll and read, but can't click anything that needs React state until its component finishes hydrating.
+
+**The page is visible before it's interactive.** That one fact captures the whole story, and it explains a common class of bug report: when a user says the button does nothing for the first second after load, the click handler usually isn't broken, the component simply hasn't hydrated yet.
+
+<VideoCallout videoId="kZG3izJu7qE" videoTitle="Hydration Explained">
+  A 4-minute walk through CSR vs SSR, the hydration gap, and how Suspense enables selective hydration, using the same framing as this section.
+</VideoCallout>
+
+React 19 shrinks the gap two ways. **Selective hydration** hydrates the components the user touches first and defers the rest. **Suspense streaming** in Next.js 16 sends the HTML inside a `<Suspense>` boundary as its data resolves, so skeleton placeholders fill in instead of the whole page waiting. The App Router unit later teaches the mechanics.
+
+<TabbedContent>
+  <TabbedItem label="Pipeline only" caption="The base pipeline: bytes arrive from the network, the six stages run, pixels land on screen.">
+    <SsrHydrationOverlay />
+  </TabbedItem>
+  <TabbedItem label="Pipeline + SSR + hydration" caption="On the Next.js stack the HTML arrives already populated by Server Components, and hydration runs as a downstream branch after first paint. The page is visible before it's interactive.">
+    <SsrHydrationOverlay withSsr />
+  </TabbedItem>
+</TabbedContent>
+
+One failure mode to know: if the server's HTML doesn't match what React renders on the client, for instance a component that calls `Date.now()` or branches on `typeof window` during render, React logs a hydration mismatch warning and re-renders the affected subtree on the client.
+
+The DevTools Performance panel shows every stage on a frame timeline, with parse, layout, paint, and composite events as labelled bars.
+
+## Order the events
+
+The map only helps if the stages stay in order, so place these six events on a timeline.
+
+<Sequence instructions="Order the six events of a Next.js 16 page load from earliest to latest.">
+  <Step>HTML bytes arrive at the browser.</Step>
+  <Step>The DOM and CSSOM are both built.</Step>
+  <Step>First Contentful Paint — the user sees the page.</Step>
+  <Step>The hydration JavaScript bundle finishes downloading.</Step>
+  <Step>React hydration runs — event listeners attach.</Step>
+  <Step>A click handler fires for the first time.</Step>
+</Sequence>
+
+With the order fixed, you can read a slow page against it: a slow LCP points at a stage before paint, while a slow interaction points at hydration or main-thread work after it.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="How browsers work"
+    href="https://developer.mozilla.org/en-US/docs/Web/Performance/Guides/How_browsers_work"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="MDN's reference walkthrough of the same six stages, with extra detail on parsing internals and the preload scanner."
+  />
+  <ExternalResource
+    title="Understanding the critical rendering path"
+    href="https://web.dev/learn/performance/understanding-the-critical-path"
+    icon="simple-icons:google"
+    iconColor="#4285F4"
+    description="web.dev's performance course module on what blocks first paint and how to find blocking resources in real audits."
+  />
+  <ExternalResource
+    title="CSS Triggers"
+    href="https://csstriggers.com/"
+    icon="simple-icons:css"
+    iconColor="#663399"
+    description="A property-by-property catalog of which CSS properties trigger layout, paint, or composite, useful when picking what to animate."
+  />
+  <ExternalResource
+    title="The perils of rehydration"
+    href="https://www.joshwcomeau.com/react/the-perils-of-rehydration/"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Josh Comeau on the hydration mismatch failure mode named in this lesson, with the two-pass rendering pattern that fixes it."
+  />
+</CardGrid>
