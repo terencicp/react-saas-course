@@ -335,9 +335,9 @@
 - 4 Aggregations and grouping (Teaches `count`, `sum`, `avg`, `min`, `max`, and their distinct variants alongside `groupBy`, `having`, filtered aggregates with `FILTER (WHERE …)`, and `selectDistinctOn`.)
 - 5 Upserts and RETURNING (Teaches `onConflictDoUpdate` and `onConflictDoNothing`, the `target` constraint requirement, the `excluded` pseudo-table, conditional `targetWhere`/`setWhere`, and `.returning()` as the round-trip eliminator.)
 - 6 Cursor pagination (Teaches when offset is enough, the cursor model with a mandatory tiebreaker, opaque base64 cursor encoding and validation, the fetch-n+1 has-next-page trick, and the composite index cursors depend on.)
-- 7 Subqueries and CTEs (Teaches inline subqueries in `where` and `from`, `db.$with` and `$withRecursive` for CTEs, `exists`/`notExists`, window functions like `row_number()`, and the readability call between layered SQL and app-code passes.)
+- 7 Subqueries and CTEs (Teaches inline subqueries in `where` and `from`, `db.$with`/`db.with` for CTEs, `exists`/`notExists`, window functions like `row_number()`, recursive CTEs via raw `sql`, and the readability call between layered SQL and app-code passes.)
 - 8 Full-text search in Postgres (Teaches the `tsvector`/`tsquery` model, a generated `tsvector` column, `websearch_to_tsquery` for user input, `ts_rank` ordering with `ts_headline`, and the volume threshold where external search earns its weight.)
-- 9 JSONB columns (Teaches when to reach for `jsonb` vs. real columns, `$type<...>` claims, the `->`/`->>` accessors, `@>` containment and key-existence operators, partial updates via `||` and `jsonb_set`, and the promote-to-column trigger.)
+- 9 Reading and writing JSONB columns (Teaches when to reach for `jsonb` vs. real columns, `$type<...>` claims, the `->`/`->>` accessors, `@>` containment and key-existence operators, partial updates via `||` and `jsonb_set`, and the promote-to-column trigger.)
 - 10 The raw SQL escape hatch (Teaches the `sql\`\`` tagged template with implicit parameterization, embedding raw fragments inside the builder, typing with `sql<T>`, `db.execute` for one-offs, and `sql.raw` reserved for fixed-string identifier interpolation.)
 - 9 Quiz
 
