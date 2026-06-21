@@ -544,3 +544,19 @@ Relations v2 | relations v2 API | Drizzle's single-call relations API (from/to/t
 relational query builder | relational query API, db.query | The db.query.* findFirst/findMany API that reads the relations graph to assemble nested typed objects. | first defined: Chapter 037 L9
 pure junction | - | A junction table holding only foreign keys, walked through with .through() rather than related to. | first defined: Chapter 037 L9
 self-referential relation | self-relation | A relation whose from and to columns both live on one table (e.g. a comment's parent). | first defined: Chapter 037 L9
+database index | index | A separate sorted structure mapping keys to row locations, letting the engine skip a full scan. | first defined: Chapter 039 L1
+sequential scan | seq scan | Reading every row in a table in order, with no shortcut to the matching rows. | first defined: Chapter 039 L1
+query planner | planner | Postgres component that estimates each execution path's cost and picks the cheapest. | first defined: Chapter 039 L1
+selectivity | selective | The fraction of a table's rows a predicate keeps; few rows = highly selective. | first defined: Chapter 039 L1
+B-tree | btree | Balanced sorted tree; default Postgres index, fast for equality, ranges, and ordered reads. | first defined: Chapter 039 L1
+composite index | multi-column index | One index over several columns, sorted left to right. | first defined: Chapter 039 L1
+leftmost-prefix rule | leftmost prefix | A composite index serves only queries using a left-anchored prefix of its columns. | first defined: Chapter 039 L1
+partial index | - | An index over only the rows matching a .where() predicate. | first defined: Chapter 039 L1
+expression index | - | An index on a computed expression (lower(col), a cast) instead of the raw column. | first defined: Chapter 039 L1
+unique index | uniqueIndex | A B-tree that also enforces uniqueness; rejects duplicate values at write time. | first defined: Chapter 039 L1
+partial unique index | - | uniqueIndex(...).where(...) enforcing uniqueness only among rows matching a predicate. | first defined: Chapter 039 L1
+GIN | generalized inverted index | Index mapping each value contained in a column back to the rows that hold it. | first defined: Chapter 039 L1
+operator class | opclass | Per-type strategy an index uses to compare values, e.g. jsonb_path_ops. | first defined: Chapter 039 L1
+write tax | - | The extra writes every insert/update/delete pays to keep each index in sync. | first defined: Chapter 039 L1
+low-cardinality column | low cardinality | A column with few distinct values (booleans, small enums); usually not worth a full index. | first defined: Chapter 039 L1
+CONCURRENTLY | - | CREATE INDEX option that builds without locking the table's writes. | first defined: Chapter 039 L1

@@ -1,0 +1,420 @@
+---
+title: The Drizzle Kit migration loop
+tagline: How Drizzle Kit turns a schema edit into a versioned SQL migration and applies it to your Postgres database.
+chapter-id: 40
+course-progress: 0.3935
+rewrites: 2
+sidebar:
+  order: 1
+  label: The Drizzle Kit loop
+---
+
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import DiffEngineLoop from '../../../components/lessons/040/1/DiffEngineLoop.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { FileTree, CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Your `db/schema.ts` describes your organizations, invoices, and line items in precise TypeScript.
+But point `db.select().from(invoices)` at a fresh Neon branch and it errors: relation "invoices" does not exist.
+The schema is only a description; nothing has built a database to match it.
+
+Making the tables exist is the first problem.
+The harder one is reaching every database the same way: your teammate's laptop, CI, production, and every change you make after.
+Add a column next week and it has to reach all of them, with a record of exactly what ran and when.
+That is the migration problem, and Drizzle Kit solves it for this stack.
+This lesson runs the full loop: edit the schema, generate a migration, read its SQL, apply it, confirm the result, and commit the right files so the next person to pull your branch gets exactly what you got.
+
+## Drizzle Kit is a diff engine
+
+One distinction trips people up, so start with it.
+`drizzle-orm` is the runtime library your app imports to build and run queries.
+Drizzle Kit is a separate command-line tool that lives in your <Term definition="Packages needed only during development, never shipped to the production bundle.">`devDependencies`</Term> and never runs in your deployed app.
+Its one job is to read `db/schema.ts` and turn it into SQL migration files.
+
+This is the default here, rather than writing SQL by hand, because the tool lives in the same TypeScript codebase as your schema.
+There is no second language to learn and no hand-maintained pile of SQL files drifting out of sync with your types: you edit the schema, and the tool derives the rest.
+
+One idea anchors the rest of the lesson.
+When you run `generate`, Drizzle Kit compares your current `db/schema.ts` against a saved snapshot of the last known schema, and the difference becomes a new SQL file.
+The diagram below walks through one round of editing the schema and shipping the change.
+
+<DiagramSequence>
+  <DiagramStep>
+    <DiffEngineLoop step={1} />
+    <Fragment slot="caption">
+      The snapshot is the saved schema state on disk, the file `generate` diffs against.
+      Here it matches `db/schema.ts`, so there is nothing to generate and the database is untouched.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <DiffEngineLoop step={2} />
+    <Fragment slot="caption">
+      Adding an `archivedAt` column moves the schema ahead of the snapshot.
+      Nothing has run yet; this is just an edited file.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <DiffEngineLoop step={3} />
+    <Fragment slot="caption">
+      `generate` produces two things: a numbered `0001_….sql` file you can read, and a refreshed snapshot that matches the schema again.
+      Postgres is still untouched.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <DiffEngineLoop step={4} />
+    <Fragment slot="caption">
+      `migrate` runs the pending file against the database, so `archived_at` now exists, and records the run in a `__drizzle_migrations` table so it never runs twice.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+The refreshed snapshot from step 3 is the part people forget, and the part that makes the next diff possible.
+
+The SQL in these files is <Term definition={"Data Definition Language — the CREATE / ALTER / DROP subset of SQL that changes a database's structure, as opposed to the INSERT / UPDATE / DELETE statements that change its rows."}>DDL</Term>, the statements that change a database's structure.
+
+## The `drizzle.config.ts` contract
+
+Before any command runs, Drizzle Kit needs four things: which database dialect you're targeting, where your schema lives, where to write migrations, and how to connect.
+You answer all four in one file at the repo root, `drizzle.config.ts`, which `generate`, `migrate`, `push`, and `studio` all read.
+
+<AnnotatedCode lang="ts" code={`
+import { defineConfig } from 'drizzle-kit';
+
+export default defineConfig({
+  dialect: 'postgresql',
+  schema: './src/db/schema.ts',
+  out: './drizzle',
+  dbCredentials: { url: process.env.DATABASE_URL_UNPOOLED! },
+  casing: 'snake_case',
+  verbose: true,
+  strict: true,
+});
+`}>
+  <AnnotatedStep meta="{4}" color="blue">
+    Drizzle Kit speaks several SQL dialects.
+    This pins it to Postgres, so it emits Postgres SQL: `timestamptz`, `serial`, and the rest.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="blue">
+    The input path.
+    Drizzle Kit reads only what this file exports, so a table you defined but forgot to export doesn't exist as far as migrations are concerned.
+    If your schema spans several files, point this at a glob instead: `'./src/db/*.ts'`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="blue">
+    Where the SQL files and their snapshots get written.
+    This folder is checked into git; the next section opens it up.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7}" color="blue">
+    The connection `migrate`, `push`, and `studio` use, and it's the **unpooled** URL on purpose.
+    Migration DDL holds long transactions that don't survive transaction-mode pooling, so the pooled URL would truncate or fail them.
+    The `!` is a non-null assertion: TypeScript can't prove the env var is set, so you promise it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="blue">
+    Mirrors the same setting on your `db` client, telling Drizzle Kit to emit `created_at` for a TypeScript field named `createdAt`.
+    The client and this config **must agree**: if they disagree, the SQL Kit generates won't match the column names your app queries at runtime.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9-10}" color="blue">
+    `verbose` prints the SQL Kit is about to run, so nothing happens behind your back.
+    `strict` makes `push` confirm before it touches the database.
+    Both are safety defaults; leave them on.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+:::caution
+Point the connection at the *pooled* URL and the pooler cuts off long `ALTER TABLE` statements mid-transaction, breaking migrations in ways that are hard to debug.
+Migrations always use the unpooled connection, no exceptions.
+:::
+
+## What lives in the `drizzle` folder
+
+The `drizzle` folder is source code, not build output or a cache, so commit it like the rest of `src/`.
+Here it is after a couple of migrations.
+
+<FileTree>
+- drizzle/
+  - 0000_lively_punisher.sql
+  - 0001_add_invoices_archived_at.sql
+  - meta/
+    - _journal.json the ordered ledger of migrations
+    - 0000_snapshot.json
+    - 0001_snapshot.json
+</FileTree>
+
+The numbered `.sql` files are your migrations.
+The `0000_`, `0001_` prefix is a sequential counter, Drizzle Kit's default, so the folder reads top to bottom as history.
+(Some teams use a timestamp instead; more on why at the end of the lesson.)
+The word after the number is either a random label or a name you supplied.
+
+`meta/` holds two kinds of file.
+`_journal.json` is the ordered ledger: which migrations exist and the order they apply in.
+Drizzle Kit reads it to know what's next; the migration runner reads it to know what's already done.
+The `*_snapshot.json` files capture the full schema at each migration, and they're what `generate` diffs against: it never inspects your live database, it compares your schema file to the latest snapshot on disk.
+
+So three artifacts always move together, in one commit:
+
+1. the `db/schema.ts` edit,
+2. the new `.sql` file,
+3. the new `meta/` snapshot.
+
+Split them across commits, or commit the schema and SQL but leave the snapshot behind, and the history desyncs.
+
+:::danger
+The classic mistake is a `.gitignore` rule that excludes `meta/` because it looks like generated junk.
+It isn't.
+Leave it uncommitted and every teammate's next `generate` diffs against a snapshot missing from their machine, so Drizzle Kit re-emits migrations that already ran.
+`meta/` is source. Commit it.
+:::
+
+## `generate`: turning a schema change into a SQL file
+
+`drizzle-kit generate` reads `db/schema.ts`, diffs it against the latest snapshot, and writes a new numbered `.sql` file plus a fresh snapshot.
+You never hand-write the file, but once it's on disk it's an ordinary text file you can open and edit before committing, which the next lesson covers.
+
+We'll add an `archivedAt` column to the `invoices` table: a nullable timestamp marking an invoice as archived.
+This single change is the worked example for the rest of the lesson, so we can watch one edit travel the whole loop.
+
+The schema edit is one line:
+
+```ts title="src/db/schema.ts" ins={3}
+export const invoices = pgTable('invoices', {
+  // ...existing columns
+  archivedAt: timestamp('archived_at', { withTimezone: true }),
+});
+```
+
+Then run generate, passing a name:
+
+```bash
+pnpm db:generate --name add_invoices_archived_at
+```
+
+Drizzle Kit sees a column the snapshot doesn't have and writes this:
+
+```sql title="drizzle/0001_add_invoices_archived_at.sql"
+ALTER TABLE "invoices" ADD COLUMN "archived_at" timestamptz;
+```
+
+The mapping back to your schema is direct.
+The field `archivedAt` became the column `archived_at`, which is `casing: 'snake_case'` at work, and `timestamp(..., { withTimezone: true })` became `timestamptz`, the timezone-aware Postgres type.
+You wrote no SQL; the tool derived all of it.
+
+### Naming migrations with `--name`
+
+Without `--name`, Drizzle Kit names the file with a random adjective-noun pair like `0001_brave_phoenix.sql`.
+With it, you get `0001_add_invoices_archived_at.sql`.
+The difference shows up months later: named migrations turn `git log -- drizzle/` into an ordered changelog of every structural change to the database, while `brave_phoenix` and `lively_punisher` tell you nothing.
+
+Random names are fine for a throwaway experiment; name production migrations every time, as a verb-and-noun phrase describing the change: `add_invoices_archived_at`, `create_line_items_table`, `drop_legacy_status`.
+
+## `migrate`: applying pending files to the database
+
+Generating a file changes nothing in your database: the column still isn't there.
+To apply it, run `drizzle-kit migrate`.
+It connects to `DATABASE_URL_UNPOOLED`, walks the journal in order, applies every file that hasn't run yet, and records each one in a `__drizzle_migrations` table.
+
+Two properties make this command safe to lean on.
+
+It's **idempotent**.
+With nothing pending, it checks `__drizzle_migrations`, sees every file recorded, and exits a no-op, so it's safe to run on every deploy.
+
+It's **ordered**.
+Files apply strictly in journal order: `0001` before `0002` before `0003`, on every machine.
+
+That ordering lets the same migrations run in three places with identical results.
+You run `pnpm db:migrate` on your laptop right after generating.
+CI runs it against a staging branch to confirm the migration applies cleanly before anyone merges.
+The production deploy runs it against the production database before the new app version goes live, so the tables exist by the time the new code queries them (the deploy pipeline orchestrates this; that's later material).
+
+:::caution
+`migrate` runs the longest transactions of any command, and the pooled URL chokes on them.
+The config already points at the unpooled URL; don't override it.
+:::
+
+Run `pnpm db:migrate` now and the worked example is complete: `archived_at` exists on the real `invoices` table, with a row in `__drizzle_migrations` recording that `0001` ran.
+
+<VideoCallout videoId="dHTGEQnogPw" videoTitle="How database migrations work when using Drizzle ORM">
+  Web Dev Cody walks the whole generate → review → migrate loop in 6 minutes, including the `__drizzle_migrations` table and applying migrations on deploy.
+</VideoCallout>
+
+### The in-app `migrate()` function
+
+The same operation is also available programmatically, as a function you call from your own code:
+
+```ts title="src/db/migrate.ts" "drizzle-orm/neon-serverless/migrator"
+import { migrate } from 'drizzle-orm/neon-serverless/migrator';
+import { dbUnpooled } from './db';
+
+await migrate(dbUnpooled, { migrationsFolder: './drizzle' });
+```
+
+One detail to get right: the import path is **driver-specific**.
+This course uses the Neon serverless driver, so the migrator comes from `drizzle-orm/neon-serverless/migrator`.
+The generic Drizzle docs usually show `drizzle-orm/node-postgres/migrator`, a different driver whose import won't resolve here, so match the path to the driver your `db` client uses.
+Note the client too: `dbUnpooled`, not the pooled `db`, since the unpooled rule holds here as for the CLI.
+
+Reach for this when something needs to apply migrations in code rather than by shelling out to the CLI, such as a custom CI script or an app-startup hook.
+It uses the same `__drizzle_migrations` table and journal as the CLI, so the two are interchangeable.
+The course's default stays the CLI in the deploy pipeline.
+
+## Reviewing a migration as code
+
+A migration is code, so it goes through code review.
+
+A schema-changing pull request carries the three artifacts you know: the `db/schema.ts` edit, the generated `.sql`, and the `meta/` snapshot.
+The habit that matters: read the SQL, not the schema diff.
+The diff shows what someone intended; the SQL is what runs against production.
+They usually agree, but when they don't, the SQL is the only place the gap shows.
+
+That gap is dangerous because an innocent-looking edit can emit a destructive `DROP`.
+Rename a column carelessly and the generated SQL may drop the old column and add a new empty one, losing every value in it.
+The diff reads like a rename; the SQL says `DROP COLUMN`.
+Reading the SQL is how a team catches this before it ships.
+
+Merged migrations are also immutable: a merged file is a permanent record of what ran against real databases, so you never edit it and never reorder it.
+If one turns out wrong, you fix it forward with a new migration that corrects it.
+
+:::danger
+Editing a migration after it has been applied is the most damaging mistake in this stack.
+Once you have run a file, even a tiny tweak on your laptop leaves the on-disk snapshot out of step with the database.
+The next `generate` then diffs your schema against a snapshot that no longer matches reality and emits nonsense: migrations to "fix" differences that don't exist, or to redo work already done.
+**An applied migration is frozen.** If it is wrong, fix it forward with a new migration.
+:::
+
+You've seen the loop in pieces; drag these into the order you'd follow to ship a schema change.
+
+<Sequence instructions="Order the steps of shipping a schema change with Drizzle Kit.">
+  <Step>Edit `db/schema.ts` to add the column</Step>
+  <Step>Run `drizzle-kit generate --name ...` to produce the migration file</Step>
+  <Step>Review the emitted `.sql` to see exactly what will run</Step>
+  <Step>Run `drizzle-kit migrate` against the unpooled URL to apply it</Step>
+  <Step>Commit the schema, the `.sql`, and the `meta/` snapshot together</Step>
+</Sequence>
+
+## Drizzle Studio: the in-stack dev GUI
+
+You'll often want to look at the database directly: to confirm a migration applied, eyeball a few rows, or sanity-check a query.
+Run `drizzle-kit studio` and it serves a local web app at `https://local.drizzle.studio`, pointed at whatever database is in `dbCredentials.url`.
+You can browse, filter, sort, run ad-hoc queries, and create, edit, or delete rows inline, with no setup beyond the `drizzle.config.ts` you already wrote.
+
+What sets it apart from a generic SQL client is that it's **schema-aware**.
+It reads your relations file, so you can start at an invoice and click through to its line items, following foreign keys as links instead of writing a join.
+It knows your column types too, and renders and validates them accordingly.
+
+To finish the worked example, open Studio, find the `invoices` table, and confirm the `archived_at` column is there with type `timestamptz`.
+You'll use Studio this way throughout development, including to check a seed run later in this chapter.
+
+Studio isn't your only option.
+TablePlus, pgAdmin, DataGrip, and Neon's web console all connect to the same Postgres, trading Studio's wired-in schema awareness for heavier features like query-plan visualization and saved connections.
+This course uses Studio for its zero-config, schema-aware browsing, but the real advice is to pick one and learn it well.
+
+One hard line: **Studio is not a production tool.**
+Your credentials sit in plaintext in `drizzle.config.ts`, and Studio has no authentication of its own.
+It belongs on your local machine, pointed at your development database, and nowhere else.
+
+:::caution
+Studio's inline editing writes straight to the connected database, with no staging and no confirmation beyond the click.
+On a shared dev branch, a careless delete does the same damage as a `DELETE` with no `WHERE` clause, just behind a friendlier button.
+Treat every edit as the real, immediate mutation it is.
+:::
+
+## The `package.json` scripts
+
+Every command above ran as `pnpm db:something` rather than the full `drizzle-kit` invocation, because the short names are wrapper scripts:
+
+```json title="package.json"
+{
+  "scripts": {
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio",
+    "db:push": "drizzle-kit push"
+  }
+}
+```
+
+None of the scripts mention `DATABASE_URL_UNPOOLED`.
+The runner (your framework's env loader, or a `dotenv`-style wrapper) loads the connection string into the environment, and `drizzle.config.ts` reads it from there; the script only names the command.
+The project starters ship exactly these scripts.
+
+## The Drizzle Kit commands at a glance
+
+You'll run `generate` and `migrate` daily; the rest are situational or covered next lesson, so recognize them rather than reach for them by default.
+
+| Command | What it does | When |
+| --- | --- | --- |
+| `generate` | Emit a migration file from the schema-vs-snapshot diff | The daily move; this lesson |
+| `migrate` | Apply pending files to the database in journal order | The daily move; this lesson |
+| `studio` | Open the schema-aware GUI on your dev database | This lesson |
+| `push` | Skip the file, apply the diff directly to the database | Local prototyping only; has a silent-data-loss failure mode covered next lesson |
+| `pull` | Introspect an *existing* database into a schema file | When adopting Drizzle on a database that already exists |
+| `drop` | Remove a migration from the journal | Dev-only, for an unapplied migration; the production rule is next lesson |
+| `check` | Lint the migration history for collisions | When two branches each added a migration; see below |
+
+### When two branches each add a migration
+
+Sequential numbering has one team-scale failure mode.
+Picture two pull requests, both branched off `0005`.
+Each adds a column and runs `generate`, and each produces a `0006_*.sql`, because each branch's snapshot only knew about `0005`.
+Merge both and the journal has two `0006`s.
+
+`drizzle-kit check` flags the duplicate.
+Whichever branch merges second renumbers: delete its `0006`, then re-run `generate` so the change lands as `0007` on top of the merged `0006`.
+Some teams avoid the collision with timestamp prefixes (`migrations: { prefix: 'timestamp' }` in the config), which almost never collide.
+The course default stays sequential numbering plus `check` plus renumber-on-conflict.
+
+Sort each command by how often you reach for it.
+
+<Buckets twoCol instructions="Sort each Drizzle Kit command by how often you reach for it.">
+  <Bucket name="daily" label="Daily loop" description="The everyday reflex" />
+  <Bucket name="later" label="Recognize / deferred" description="Situational or taught later" />
+
+  <Item bucket="daily">`generate`</Item>
+  <Item bucket="daily">`migrate`</Item>
+  <Item bucket="daily">`studio`</Item>
+  <Item bucket="later">`push`</Item>
+  <Item bucket="later">`pull`</Item>
+  <Item bucket="later">`drop`</Item>
+  <Item bucket="later">`check`</Item>
+  <Item bucket="later">`migrate()` in app code</Item>
+</Buckets>
+
+## External resources
+
+The official Drizzle docs are the reference for everything here: the full flag set for each command, edge cases, and the config options this lesson didn't touch.
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle Kit — migrations overview"
+    href="https://orm.drizzle.team/docs/kit-overview"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The generate / migrate / push / pull workflow and every drizzle.config.ts option."
+  />
+  <ExternalResource
+    title="Drizzle Studio"
+    href="https://orm.drizzle.team/docs/drizzle-kit-studio"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="Running the local GUI, what it can do, and its limits."
+  />
+</CardGrid>

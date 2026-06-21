@@ -1,0 +1,473 @@
+---
+title: A deterministic, idempotent seed
+chapter-id: 041
+course-progress: 0.4028
+sidebar:
+  order: 4
+  label: Deterministic seed
+rewrites: 2
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+An empty database is impossible to build on: the reads you write next need rows to page through, and the inspector banner needs counts to show.
+But "realistic" data is not the hard part; *repeatable* data is.
+A seed that produces the exact same rows on every run turns verification from a guess into one glance at a number.
+
+In this lesson you write that seed.
+One command, `pnpm db:seed`, fills the database with two organizations, four users (one belonging to both orgs), forty customers, and well over a hundred invoices, each with a few line items.
+When it finishes, the inspector banner reads `organizations: 2`, `users: 4`, `org_members: 5`, `customers: 40`, and `invoices` past 100, with `invoice_lines` proportionate.
+Run it again and nothing moves: the counts match and a sampled invoice keeps its old invoice number.
+That reproducibility makes the banner a contract rather than a coincidence.
+
+<Screenshot viewport="desktop">
+  <img
+    src="/screenshots/041/l4-desktop-1280-counts-banner.png"
+    alt="The inspector verification banner after seeding: a single rounded card with six labeled count cells reading organizations 2, users 4, org_members 5, customers 40, invoices 625, and invoice_lines 1889 — well past a hundred invoices, with line items proportionate."
+  />
+</Screenshot>
+
+## Your mission
+
+Write the body of `runSeed` in `scripts/seed.ts`: a `reset(dbUnpooled, schema)` call, then typed inserts in FK order — `organizations`, `users`, `orgMembers`, `customers`, `invoices`, `invoiceLines` — with every random choice drawn from a single generator seeded by `env.SEED`.
+The `db:seed` script is already wired (`dotenv -e .env -- tsx scripts/seed.ts`).
+
+Two properties define correctness, and they pull in different directions.
+**Determinism**: the same `SEED` must always produce the same data, which holds only if *all* randomness flows through your one generator — a stray `Math.random()` or `Date.now()` silently breaks it.
+Reshape the dataset by bumping `SEED`, never by editing the insert logic.
+**Idempotency**: a re-run must leave identical row counts, not stack a second dataset on the first.
+That is what `reset(db, schema)` buys you — its `TRUNCATE ... CASCADE` clears every table before the inserts, so run two ends exactly where run one did.
+
+`drizzle-seed`'s generators shine on *shapeless* fixtures, piles of rows where each field is independently random.
+This invoicing model is the opposite: it is dense with cross-row invariants — one user in both orgs, per-tenant invoice sequences, line positions renumbered from one, each `dueAt` derived from its own `issuedAt`, child rows needing the keys their parent just generated.
+Those are trivial with a deterministic generator and direct inserts you control, awkward through a bulk generator.
+So use only `reset()` from `drizzle-seed` and write the inserts by hand: `drizzle-seed` for shapeless fixtures, a fixed-seed generator plus direct inserts once the data has structure.
+
+The seed is **local-only** and uses `dbUnpooled`, not `db`, the same rule migrations follow: its `TRUNCATE ... CASCADE` and long insert transaction hold locks that are fine against local Docker Postgres but must never touch a shared database.
+Primary keys come from the schema's `uuidv7()` default; capture them back through `.returning()` so a child can reference the parent just inserted.
+The shape to hit: two orgs (Acme and Globex); four users with **Ada Lovelace in both orgs**, the overlapping membership the multi-tenant story rests on; forty customers split across both orgs; twelve to eighteen invoices per customer (clearing a hundred with room to spare); two to four line items each; and a realistic status mix, mostly paid with a few overdue.
+
+Out of scope: reads over this data arrive in the next two lessons, and writes from the app belong to the Server Actions unit.
+The queries stay stubbed, so the inspector renders empty rows over your seeded data — the banner is your proof.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">After seeding, the database holds exactly 2 organizations and 4 users.</ChecklistItem>
+  <ChecklistItem chip="tested">There are 5 org_members, and exactly one user belongs to both organizations (the overlapping-membership invariant).</ChecklistItem>
+  <ChecklistItem chip="tested">There are 40 customers, split across the two organizations with neither org left empty.</ChecklistItem>
+  <ChecklistItem chip="tested">The database holds 100 or more invoices, every one belonging to one of the two seeded organizations.</ChecklistItem>
+  <ChecklistItem chip="tested">Running the seed twice leaves every table's row count unchanged (idempotency).</ChecklistItem>
+  <ChecklistItem chip="tested">Running the seed twice with the same `SEED` reproduces a sampled invoice's `number`, and exactly one invoice carries it (determinism).</ChecklistItem>
+  <ChecklistItem chip="tested">Every invoice has between 2 and 4 line items, numbered `1..n` by `position` with no gaps.</ChecklistItem>
+  <ChecklistItem chip="untested">Each invoice's `dueAt` falls exactly 30 days after its `issuedAt`.</ChecklistItem>
+  <ChecklistItem chip="untested">Seeded invoice statuses show a realistic spread — paid most common, overdue least — not a uniform distribution.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Write the body of `runSeed` in `scripts/seed.ts` against the brief above and the Lesson 4 tests.
+When it works, run `pnpm db:seed` twice and compare the banners: the counts and a sampled invoice number should match.
+Do that comparison yourself before opening the walkthrough, since watching the second run hold unaided is the habit this lesson builds.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+#### `scripts/seed.ts` — imports, constants, and the data tables
+
+The file opens with imports and a block of constants that fix the dataset's shape up front.
+`reset` is the only import from `drizzle-seed`; the rest are the schema's tables and insert types, the `dbUnpooled` client, and the validated `env`.
+The constants are the levers for reshaping the data: customer count, where invoice dates start, and the status weights, named so the insert code stays readable and the tunable numbers live in one place.
+
+```ts title="scripts/seed.ts" frame="code"
+import { pathToFileURL } from 'node:url';
+
+import { reset } from 'drizzle-seed';
+
+import { dbUnpooled } from '@/db/index';
+import type {
+  NewCustomer,
+  NewInvoice,
+  NewInvoiceLine,
+  NewOrgMember,
+} from '@/db/schema';
+import * as schema from '@/db/schema';
+import { env } from '@/env';
+
+type InvoiceStatus = (typeof schema.invoiceStatus.enumValues)[number];
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const CUSTOMER_COUNT = 40;
+const SEED_EPOCH = Date.UTC(2025, 0, 1);
+
+const ORG_SEEDS = [
+  { name: 'Acme Corporation', slug: 'acme' },
+  { name: 'Globex Industries', slug: 'globex' },
+] as const;
+
+const USER_SEEDS = [
+  { name: 'Ada Lovelace', email: 'ada@acme.test' },
+  { name: 'Grace Hopper', email: 'grace@acme.test' },
+  { name: 'Alan Turing', email: 'alan@globex.test' },
+  { name: 'Edsger Dijkstra', email: 'edsger@globex.test' },
+] as const;
+
+const STATUS_BANDS: readonly { status: InvoiceStatus; weight: number }[] = [
+  { status: 'paid', weight: 50 },
+  { status: 'sent', weight: 25 },
+  { status: 'draft', weight: 15 },
+  { status: 'overdue', weight: 10 },
+];
+```
+
+`InvoiceStatus` is derived from `schema.invoiceStatus.enumValues` rather than re-typed by hand, so the seed's valid statuses can never drift from the schema's enum.
+`STATUS_BANDS` weights `paid` far heavier than `overdue`, so seeded invoices read like a real app where most get paid and a few go overdue: requirement 9, expressed as data rather than logic.
+
+#### The pseudo-random generator
+
+All randomness flows through one generator, so the whole run replays from a single seed number.
+It is a linear-congruential generator, a one-line recurrence that turns a seed into a repeatable stream of numbers, wrapped in a few typed helpers the inserts reach for.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const createPrng = (seed: number) => {
+  let state = seed >>> 0 || 1;
+  const nextFloat = () => {
+    state = (state * 1103515245 + 12345) & 0x7fffffff;
+    return state / 0x80000000;
+  };
+  return {
+    int: (min: number, max: number) =>
+      min + Math.floor(nextFloat() * (max - min + 1)),
+    money: (min: number, max: number) =>
+      (min + nextFloat() * (max - min)).toFixed(2),
+    pick: <T>(items: readonly T[]): T => {
+      const item = items[Math.floor(nextFloat() * items.length)];
+      if (item === undefined) {
+        throw new Error('seed: cannot pick from an empty list');
+      }
+      return item;
+    },
+    weightedStatus: (): InvoiceStatus => {
+      const total = STATUS_BANDS.reduce((sum, band) => sum + band.weight, 0);
+      let roll = nextFloat() * total;
+      let chosen: InvoiceStatus = 'paid';
+      for (const band of STATUS_BANDS) {
+        roll -= band.weight;
+        if (roll < 0) {
+          chosen = band.status;
+          break;
+        }
+      }
+      return chosen;
+    },
+  };
+};
+`}>
+  <AnnotatedStep meta="{2}" color="orange">
+    The seed becomes the generator's starting state. `>>> 0` coerces it to an unsigned 32-bit integer, and `|| 1` guards against a seed of `0`, which would lock the recurrence at zero. The same seed always replays the same stream.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-6}" color="violet">
+    Each call advances `state` by the textbook LCG formula and returns a float in `[0, 1)`. This is the single source of every random decision below; nothing reaches for `Math.random`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7-9} "int"`} color="blue">
+    `int(min, max)` returns an integer in the inclusive range, used for per-customer invoice counts (`12..18`) and per-invoice line counts (`2..4`).
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{10-11} "money"`} color="green">
+    `money` returns a `.toFixed(2)` **string**, not a number, because Drizzle maps a `numeric` column to a JS string; a float would be a type error at the insert. This is the money-as-decimal schema decision showing up in the seed.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{12-18} "pick"`} color="blue">
+    `pick` chooses one element from a list. The `undefined` guard satisfies `noUncheckedIndexedAccess`, which types an array index as possibly-undefined, and doubles as an empty-list safety net.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{19-31} "weightedStatus"`} color="orange">
+    `weightedStatus` rolls against the cumulative `STATUS_BANDS` weights, so `paid` comes up far more often than `overdue`, giving the invoices a believable status distribution.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The seed number is the whole determinism contract: bump `SEED` and the dataset reshapes on purpose; touch the generator or insert order without bumping it and you have quietly broken reproducibility.
+
+#### Reset, then insert parents first
+
+`runSeed` builds the generator from `env.SEED`, clears the database, then inserts.
+Foreign keys dictate the order: a row can only reference a parent that already exists, so organizations and users go first.
+
+```ts title="scripts/seed.ts (continued)" frame="code"
+export const runSeed = async (): Promise<void> => {
+  const prng = createPrng(env.SEED);
+
+  await reset(dbUnpooled, schema);
+
+  const [acme, globex] = await dbUnpooled
+    .insert(schema.organizations)
+    .values(ORG_SEEDS.map((org) => ({ name: org.name, slug: org.slug })))
+    .returning({ id: schema.organizations.id });
+  if (!acme || !globex) {
+    throw new Error('seed: expected two organizations');
+  }
+
+  const [ada, grace, alan, edsger] = await dbUnpooled
+    .insert(schema.users)
+    .values(USER_SEEDS.map((user) => ({ name: user.name, email: user.email })))
+    .returning({ id: schema.users.id });
+  if (!ada || !grace || !alan || !edsger) {
+    throw new Error('seed: expected four users');
+  }
+```
+
+`reset(dbUnpooled, schema)` is the idempotency move: it truncates every table before any insert, so a re-run starts clean and the counts match across runs.
+
+Each insert captures its generated ids through `.returning({ id })` for the children to reference; the schema's `uuidv7()` default produces the primary key, so you never hand-generate a UUID.
+The guards narrow `.returning()`'s possibly-empty array type and fail loudly if an insert came back short, rather than letting an `undefined` surface three inserts later.
+
+#### Memberships: Ada in both orgs
+
+The five membership rows are written by hand rather than generated, because the central invariant, one user in two organizations, is a specific arrangement, not a random one.
+Ada is inserted twice, once per org; the other three users each sit in one org.
+
+```ts title="scripts/seed.ts (continued)" frame="code"
+  // Ada belongs to BOTH orgs (overlapping membership); the rest split per org.
+  const orgMemberRows: NewOrgMember[] = [
+    { organizationId: acme.id, userId: ada.id, role: 'owner' },
+    { organizationId: globex.id, userId: ada.id, role: 'admin' },
+    { organizationId: acme.id, userId: grace.id, role: 'member' },
+    { organizationId: globex.id, userId: alan.id, role: 'owner' },
+    { organizationId: globex.id, userId: edsger.id, role: 'member' },
+  ];
+  await dbUnpooled.insert(schema.orgMembers).values(orgMemberRows);
+
+  const acmeUserIds = [ada.id, grace.id];
+  const globexUserIds = [ada.id, alan.id, edsger.id];
+```
+
+Ada in both orgs is why every tenant read in the next two lessons scopes by `organizationId` and never by user: a query filtered by "Ada's data" would cross the tenant boundary, since Ada has data in two tenants.
+`acmeUserIds` and `globexUserIds` are derived from the same memberships, so an invoice's `createdBy` can only pick a user who belongs to that invoice's org.
+
+#### Customers: forty, alternating orgs
+
+Forty customers are generated in a loop, alternating org by index parity: even to Acme, odd to Globex, so both orgs get a share and neither is empty.
+
+```ts title="scripts/seed.ts (continued)" frame="code"
+  const customerRows: NewCustomer[] = Array.from(
+    { length: CUSTOMER_COUNT },
+    (_, i) => {
+      const org = i % 2 === 0 ? acme : globex;
+      const slug = i % 2 === 0 ? 'acme' : 'globex';
+      return {
+        organizationId: org.id,
+        name: `Customer ${i + 1}`,
+        email: `customer${i + 1}@${slug}.test`,
+      };
+    },
+  );
+  const customers = await dbUnpooled
+    .insert(schema.customers)
+    .values(customerRows)
+    .returning({
+      id: schema.customers.id,
+      organizationId: schema.customers.organizationId,
+    });
+```
+
+The email carries the org slug because the schema scopes customer-email uniqueness to `(organizationId, email)`, not `email` alone.
+So `customer1@acme.test` and `customer1@globex.test` coexist while a collision within one org is rejected.
+The `.returning()` pulls back both the id and the `organizationId`, because the invoice loop needs the id to reference and the org to keep the invoice in the right tenant and pick a valid author.
+
+#### The invoice loop
+
+Each customer gets twelve to eighteen invoices.
+The loop walks the returned customers, draws a per-customer count, and pushes a fully-formed invoice row for each: a monotonically increasing number, a weighted status, a money total, and dates anchored to a fixed epoch.
+
+```ts title="scripts/seed.ts (continued)" frame="code"
+  let invoiceNumber = 0;
+  const invoiceRows: NewInvoice[] = [];
+  const lineCounts: number[] = [];
+  for (const customer of customers) {
+    const userIds =
+      customer.organizationId === acme.id ? acmeUserIds : globexUserIds;
+    const invoiceCount = prng.int(12, 18);
+    for (let i = 0; i < invoiceCount; i += 1) {
+      invoiceNumber += 1;
+      const issuedAt = new Date(SEED_EPOCH + prng.int(0, 364) * DAY_MS);
+      invoiceRows.push({
+        organizationId: customer.organizationId,
+        customerId: customer.id,
+        createdBy: prng.pick(userIds),
+        number: `INV-${String(invoiceNumber).padStart(5, '0')}`,
+        status: prng.weightedStatus(),
+        total: prng.money(50, 5000),
+        currency: 'USD',
+        issuedAt,
+        dueAt: new Date(issuedAt.getTime() + 30 * DAY_MS),
+      });
+      lineCounts.push(prng.int(2, 4));
+    }
+  }
+
+  const invoices = await dbUnpooled
+    .insert(schema.invoices)
+    .values(invoiceRows)
+    .returning({ id: schema.invoices.id });
+```
+
+`invoiceNumber` increments across the whole run and formats as `INV-#####`, keeping every number unique within its org and giving the determinism test a stable target to sample.
+`createdBy` is picked only from the current org's `userIds`, so an invoice's author always belongs to its own org.
+`issuedAt` is zero to 364 days off the fixed `SEED_EPOCH`; anchoring to a constant rather than `Date.now()` keeps the dataset reproducible.
+`dueAt` is exactly thirty days later, which is requirement 8.
+
+`lineCounts.push(...)` draws each invoice's line-item count here and stashes it in a parallel array, even though the lines are not inserted until the invoices come back with their ids.
+Drawing it once matters: re-rolling the count in the line loop would consume the stream in a different order and shift every downstream value.
+
+#### Line items, by position
+
+With the invoices inserted and their ids returned, `flatMap` expands each invoice into its two-to-four lines, numbered by `position` from one.
+
+```ts title="scripts/seed.ts (continued)" frame="code"
+  const lineRows: NewInvoiceLine[] = invoices.flatMap((invoice, index) => {
+    const lineCount = lineCounts[index];
+    if (lineCount === undefined) {
+      return [];
+    }
+    return Array.from({ length: lineCount }, (_, i) => {
+      const position = i + 1;
+      return {
+        invoiceId: invoice.id,
+        description: `Line item ${position}`,
+        quantity: prng.money(1, 10),
+        unitPrice: prng.money(20, 500),
+        position,
+      };
+    });
+  });
+  await dbUnpooled.insert(schema.invoiceLines).values(lineRows);
+};
+```
+
+`flatMap` fits because each invoice produces a variable-length array of lines that all flatten into one list for a single insert.
+The `index` lines up with the `lineCounts` array from the invoice loop, so each invoice gets the exact count drawn for it.
+`position` runs `1..n` per invoice, respecting the `(invoiceId, position)` uniqueness constraint and satisfying requirement 7: every invoice's lines numbered from one with no gaps.
+The `lineCount === undefined` guard satisfies `noUncheckedIndexedAccess`; in practice the arrays are the same length, so it never returns the empty array.
+
+#### Running it from the command line
+
+The last block lets the file run as a script while still exporting `runSeed` for the tests.
+
+```ts title="scripts/seed.ts (continued)" frame="code"
+// Run as a CLI: pathToFileURL normalizes the entry path so the guard fires even
+// when the project path contains a space (import.meta.url percent-encodes it
+// while process.argv[1] keeps it literal — a naive compare would silently skip).
+const entry = process.argv[1];
+if (entry && import.meta.url === pathToFileURL(entry).href) {
+  runSeed()
+    .then(() => process.exit(0))
+    .catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+}
+```
+
+The usual "am I being run directly?" idiom compares `import.meta.url` against the entry path, but the two differ in format: `import.meta.url` percent-encodes a space as `%20`, while `process.argv[1]` keeps it literal.
+Under a project path with a space, a naive compare never matches and the script silently does nothing.
+Running `process.argv[1]` through `pathToFileURL` normalizes both sides to the same URL form, so the guard fires regardless.
+On success the script exits `0`; on a thrown error it logs and exits `1`, so a broken seed fails the command rather than passing quietly.
+
+#### Why this clears a hundred
+
+The invoice count falls out of the loop rather than being tuned.
+Forty customers at twelve to eighteen invoices each lands between 480 and 720 total, well past the hundred the data layer needs to make pagination and plans worth exercising.
+You get there by shaping the inputs, not hard-coding the output.
+
+:::note
+This seed is local-only and uses `dbUnpooled` rather than `db`, the same rule the migration followed.
+`reset`'s `TRUNCATE ... CASCADE` and the long insert transaction take locks that are harmless against local Docker Postgres but unacceptable against a shared database.
+Locally `dbUnpooled` is just an alias for `db`, so nothing behaves differently yet; the deployment chapters make the split real with Neon, where this habit keeps long-running work off the pooled connection.
+:::
+
+:::caution
+The fixed `SEED` is the determinism contract, and it is easy to break by accident.
+Bumping `SEED` is the intentional way to reshape the data: a new number replays a different stream.
+But letting a `Math.random()` or `Date.now()` slip in while leaving `SEED` unchanged breaks reproducibility silently: the command still succeeds and the counts still look right, but the second-run check no longer holds.
+Whenever you change how the data is built, re-run the seed twice and confirm a sampled invoice number still matches.
+:::
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="drizzle-seed — reset() and TRUNCATE CASCADE"
+    href="https://orm.drizzle.team/docs/seed-overview"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="Official reference for the reset() call this seed leans on for idempotency, with the per-dialect truncation behavior."
+  />
+  <ExternalResource
+    title="Drizzle ORM — Insert, .values() and .returning()"
+    href="https://orm.drizzle.team/docs/insert"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The multi-row insert and selective .returning() pattern used to capture generated ids for the child rows."
+  />
+</CardGrid>
+
+## Moment of truth
+
+The suite calls `runSeed` twice in setup and reads back through a separate connection, so you need not run `pnpm db:seed` first, but local Postgres must be up with the schema migrated.
+If you tore the database down, run `docker compose up -d` and `pnpm db:migrate` first.
+
+```bash title="Terminal"
+pnpm test:lesson 4
+```
+
+Expect all seven requirement groups to pass:
+
+```bash title="Expected output" frame="code"
+ ✓ tests/lessons/Lesson 4.test.ts (13)
+   ✓ seeds exactly two organizations and four users (req 1) (2)
+     ✓ inserts exactly two organizations
+     ✓ inserts exactly four users
+   ✓ models overlapping membership: five members, one user in both orgs (req 2) (2)
+     ✓ inserts exactly five org_members
+     ✓ has exactly one user that belongs to both organizations
+   ✓ seeds forty customers split across both orgs (req 3) (2)
+     ✓ inserts exactly forty customers
+     ✓ places customers in both organizations, none orphaned
+   ✓ seeds at least one hundred invoices, all tenant-owned (req 4) (2)
+     ✓ inserts one hundred or more invoices
+     ✓ attaches every invoice to one of the two seeded organizations
+   ✓ is idempotent: a second run leaves every row count unchanged (req 5) (1)
+     ✓ matches all six table counts across two runs
+   ✓ is deterministic: same SEED reproduces a sampled invoice’s data (req 6) (2)
+     ✓ reproduces the sampled invoice number across two same-SEED runs
+     ✓ reproduces exactly one invoice carrying the sampled number
+   ✓ numbers invoice lines 1..n per invoice with two to four lines each (req 7) (2)
+     ✓ gives every invoice between two and four line items
+     ✓ numbers each invoice’s lines 1..n by position with no gaps
+
+ Test Files  1 passed (1)
+      Tests  13 passed (13)
+```
+
+The determinism check rewards a close read.
+An invoice's primary key comes from the column's `uuidv7()` default, so it is freshly generated on every insert and is not identical across runs.
+The fixed seed instead guarantees that PRNG-driven business data reproduces: the sampled invoice's `number` is the same run to run, and exactly one invoice carries it.
+Confirm the rest by hand, ticking each as you go:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Run `pnpm db:seed`, then read the inspector banner: `organizations: 2`, `users: 4`, `org_members: 5`, `customers: 40`, and `invoices` at 100 or more.</ChecklistItem>
+  <ChecklistItem chip="untested">Open `pnpm db:studio` and eyeball `org_members` — Ada Lovelace appears in both organizations (requirement 2, seen directly).</ChecklistItem>
+  <ChecklistItem chip="untested">In Studio, the invoice `status` spread leans heavily toward paid with only a few overdue, not an even split (requirement 9).</ChecklistItem>
+  <ChecklistItem chip="untested">In Studio, each invoice carries 2–4 line items numbered `1, 2, 3...` by `position` (requirement 7, seen directly).</ChecklistItem>
+  <ChecklistItem chip="untested">Spot-check one invoice: its `dueAt` is exactly 30 days after its `issuedAt` (requirement 8).</ChecklistItem>
+  <ChecklistItem chip="untested">Run `pnpm db:seed` a second time and confirm the banner counts are identical to the first run, and a sampled invoice's `number` is unchanged.</ChecklistItem>
+</Checklist>

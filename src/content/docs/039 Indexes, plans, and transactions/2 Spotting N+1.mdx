@@ -1,11 +1,12 @@
 ---
 title: Spotting and fixing N+1
-tagline: The N+1 query problem, the most common Drizzle performance bug, and how to collapse it back into a single query.
+tagline: The N+1 query problem in Drizzle, and how to collapse it back into a single query.
 chapter-id: 39
 course-progress: 0.386
 sidebar:
   order: 2
   label: Spotting N+1
+rewrites: 2
 ---
 
 import Figure from '../../../components/figures/Figure.astro';
@@ -26,15 +27,20 @@ import { CardGrid } from '@astrojs/starlight/components';
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-Picture the most ordinary screen in the invoicing app: a list of invoices, and next to each one a small summary of its line items. You wrote it last chapter, it passed review, and on your dev database of twenty seeded invoices it renders the instant you click. Then a customer with eight hundred invoices opens the same page, and it takes six seconds. Or worse, it doesn't render at all, because the connection pool ran out of connections and the request errored.
+Picture the most ordinary screen in the invoicing app: a list of invoices, each with a summary of its line items.
+You wrote it last chapter, and on your dev database of twenty seeded invoices it renders the instant you click.
+Then a customer with eight hundred invoices opens the same page, and it takes six seconds, or fails outright when the connection pool runs dry.
 
-Nothing about your code changed; the data changed. The bug was there the whole time, just invisible at twenty rows.
+Nothing about your code changed; the data changed.
+The bug was there the whole time, just invisible at twenty rows.
 
-This is the <Term definition="One query to fetch N parent rows, then one more query per row to fetch its children — N+1 queries where one would do.">N+1</Term> query problem, and it is the most common performance bug in this stack. You already have the cure, because last chapter you wrote both tools that fix it: the relational query API with `with`, and joins with `db.select`. This lesson isn't about learning a new tool. It's about training one habit: scan a chunk of data-access code and ask whether the query runs once, or once per row. Once you can see that shape, the fix is the API you already know.
+This is the <Term definition="One query to fetch N parent rows, then one more query per row to fetch its children.">N+1</Term> query problem, the most common performance bug in this stack.
+You already have the cure: last chapter you wrote both tools that fix it, the relational query API with `with` and joins with `db.select`.
+So this lesson trains a habit, not a tool: scan a chunk of data-access code and ask whether the query runs once, or once per row.
 
 ## The shape of the bug
 
-Let's write the bug on purpose, in its clearest form. The page fetches the invoices, then for each invoice fetches its line items.
+The page fetches the invoices, then for each invoice fetches its line items.
 
 ```ts
 const invoiceList = await db.select().from(invoices);
@@ -48,9 +54,13 @@ for (const invoice of invoiceList) {
 }
 ```
 
-Count the queries. The first `select` is one query, and it returns N invoices. Then the loop runs once per invoice, and each iteration fires its own `select` for that invoice's line items, which is N more queries. One for the parents and N for the children gives you **N+1**. For a twenty-invoice page, that's twenty-one queries. For eight hundred invoices, eight hundred and one.
+Count the queries.
+The first `select` is one query, returning N invoices.
+The loop then runs once per invoice, each iteration firing its own `select` for that invoice's line items, which is N more.
+One parent query plus N child queries is **N+1**: twenty-one queries for a twenty-invoice page, eight hundred and one for eight hundred.
 
-Why does that hurt so much? Because every one of those statements is a separate <Term definition="One request-and-response cycle between the app and the database over the connection pool. Its cost is mostly network latency, paid once per statement.">round-trip</Term> to the database. Each statement gets parsed, planned, and executed by Postgres, and the expensive part is that each one travels across the network to the database and back. Even if a single line-items query takes only two milliseconds, eight hundred of them running one after another add up to well over a second of pure waiting. The database isn't even busy for most of that time; it's sitting idle while the request crosses the wire, again and again.
+That hurts because every statement is a separate <Term definition="One request-and-response cycle between the app and the database over the connection pool. Its cost is mostly network latency, paid once per statement.">round-trip</Term> to the database, and the cost is the trip across the network, not the work Postgres does.
+Even at two milliseconds each, eight hundred line-items queries run one after another add up to well over a second of pure waiting, most of it with the database sitting idle.
 
 The arithmetic is the whole bug, so the diagnostic question is the whole skill:
 
@@ -58,39 +68,38 @@ The arithmetic is the whole bug, so the diagnostic question is the whole skill:
 **Is this query running once, or once per row?** That single question is the N+1 reflex. Once per row is the bug; once is the fix. Ask it of every data-access call you read.
 :::
 
-It helps to *see* the round-trips rather than reason about them. Scrub through this sequence, with the app on the left, the database on the right, and one trip across the wire per step.
+It helps to *see* the round-trips rather than reason about them.
+Scrub through this sequence, one trip across the wire per step.
 
 <DiagramSequence>
-  <DiagramStep caption="One round-trip: the app asks for the invoice list, and the database returns 20 rows. This is the single query you'd expect.">
+  <DiagramStep caption="One round-trip: the app asks for the invoice list and the database returns 20 rows. This is the single query you'd expect.">
     <RoundtripFrame step={1} />
   </DiagramStep>
 
-  <DiagramStep caption="Round-trip 2: now the loop starts. It fires a line-items query for invoice #1, a brand-new trip across the wire, with the parent query already behind it (dimmed).">
+  <DiagramStep caption="The loop starts: a line-items query for invoice #1, a fresh trip across the wire, with the parent query now behind it (dimmed).">
     <RoundtripFrame step={2} />
   </DiagramStep>
 
-  <DiagramStep caption="Round-trip 3: and again, for invoice #2. It's the same query shape with a different bound id ($2). Every invoice is going to cost one of these.">
+  <DiagramStep caption="And again for invoice #2, same query shape with a different bound id ($2). Every invoice will cost one of these.">
     <RoundtripFrame step={3} />
   </DiagramStep>
 
-  <DiagramStep caption="Round-trips 4 through 20, one per remaining invoice. The loop keeps firing the same query with the next id, 17 more crossings of the wire, collapsed here.">
+  <DiagramStep caption="The loop fires the same query for the remaining invoices, 17 more crossings of the wire, collapsed here.">
     <RoundtripFrame step={4} />
   </DiagramStep>
 
-  <DiagramStep caption="21 round-trips to render one page: one for the parent list, twenty for the children. Each row paid its own trip to the database, and that's the N+1.">
+  <DiagramStep caption="21 round-trips to render one page: one for the parent list, twenty for the children. Each row paid its own trip, and that's the N+1.">
     <RoundtripFrame step={5} />
   </DiagramStep>
 </DiagramSequence>
 
-That picture is the shape: one parent query, then one child query per returned row. The rest of this lesson is about what to do once you recognize it.
+The rest of this lesson is what to do once you recognize that shape.
 
-## Why `Promise.all` doesn't fix it
+## Why `Promise.all` doesn't fix N+1
 
-Here's where almost everyone takes a wrong turn, so let's take it together and then find our way back.
-
-You just saw the cost of the sequential loop: twenty queries, one after another, each waiting for the last to finish. The obvious instinct is to make them parallel, firing all the line-items queries at once instead of waiting in line. `Promise.all` does exactly that, and the page genuinely gets faster. So the problem is solved?
-
-It is not. Look at the two side by side, the same wrong idea at two speeds.
+The sequential loop ran its twenty queries in single file, each awaiting the last.
+The obvious fix is to fire them in parallel with `Promise.all`.
+The page gets faster, but it's the same bug at a different speed.
 
 <CodeVariants>
   <CodeVariant label="Sequential loop">
@@ -108,7 +117,7 @@ It is not. Look at the two side by side, the same wrong idea at two speeds.
     ```
 
     </div>
-    **N+1, run one at a time.** Each child query waits for the previous one to come back. This is the slowest possible shape, because the round-trips happen in single file.
+    **N+1, run one at a time.** Each child query waits for the previous one to return. This is the slowest shape, because the round-trips happen in single file.
   </CodeVariant>
 
   <CodeVariant label="Promise.all">
@@ -124,32 +133,36 @@ It is not. Look at the two side by side, the same wrong idea at two speeds.
     ```
 
     </div>
-    **Faster, and still N+1.** The database does the exact same N+1 work, now all at once instead of in a line. Fewer seconds of waiting, but the same number of queries.
+    **Faster, and still N+1.** The database does the same N+1 work, now all at once instead of in a line. Less waiting, the same number of queries.
   </CodeVariant>
 </CodeVariants>
 
-The mark is red in both tabs on purpose: both are the same bug. The distinction that matters is this. `Promise.all` parallelizes **JavaScript awaits**. It does *not* collapse **database queries**. Those are two different layers, and `Promise.all` only touches the top one.
+`Promise.all` parallelizes **JavaScript awaits**, not **database queries**, and those are different layers.
+Underneath, the database still parses, plans, and executes N separate statements with no idea they were launched together.
+The <Term definition="A fixed set of reused database connections shared across all requests. Each in-flight query holds one connection until it returns.">connection pool</Term> still serves N round-trips, but now concurrently, so this one page grabs N connections at once.
+A pool only has so many: fire enough of these in parallel on a busy server and you starve it, leaving other requests waiting for a connection tied up running your eight-hundredth line-items query.
+Parallelizing trades a slow page for a possible pool incident, a failure we return to later.
 
-Think about what's still happening underneath. The database parses, plans, and executes N separate statements just as before. It has no idea they were launched together; it just sees N queries arrive. The <Term definition="A fixed set of reused database connections shared across all requests. Each in-flight query holds one connection until it returns.">connection pool</Term> still serves N round-trips, except now it serves them *concurrently*, which means this one page can grab N connections from the pool at the same moment. A pool only has so many connections. Fire enough of these in parallel on a busy server and you starve the pool: other requests wait for a connection that's tied up running your eight hundredth line-items query. That pool-contention failure is its own topic a couple of lessons from now. For now, just notice that making it parallel can trade a slow page for a pool incident.
-
-So `Promise.all` is a real win over the sequential loop, because parallel network traffic beats serial. But it's a win *within* a broken shape. You went from sequential N+1 to parallel N+1, and the N+1 itself is untouched. The floor on how fast the page can be is no longer one query's worth of time; it's the *slowest* query in the batch, plus whatever contention the pool adds.
-
-Here is that layer confusion drawn out:
+So `Promise.all` beats the sequential loop, but it's a win inside a broken shape: the floor on page speed is now the slowest query in the batch plus pool contention.
 
 <Figure>
   <TwoLanesPromiseAll />
   <Fragment slot="caption">
-    `Promise.all` rearranges the top lane and leaves the bottom lane, the one that actually costs, completely identical.
+    `Promise.all` rearranges the top lane and leaves the bottom one, the one that actually costs, identical.
   </Fragment>
 </Figure>
 
-One guardrail before you leave this section, so you don't over-correct into avoiding `Promise.all` entirely. It is a perfectly good tool, and the problem isn't the function but what you map over it. Running several different queries at once is exactly what it's for. Fetching the invoice list, the current organization, and the user's notifications concurrently for one page is correct and fast, because those are independent reads with no relationship to each other. The bug is specifically `Promise.all` over the **same query shape parameterized by an id**, like `lineItems where invoiceId = $1`, `$2`, `$3`, and so on. That isn't parallel work, it's an N+1 fired all at once. So before you add a `Promise.all`, ask whether these are different queries or the same query repeated. Different queries are fine; the same query once per row is the bug.
+One guardrail, so you don't over-correct into avoiding `Promise.all`.
+The problem isn't the function, it's what you map over it.
+Running several **different** queries at once is exactly what it's for: fetching the invoice list, the current organization, and the user's notifications together is correct and fast, because they're independent reads.
+The bug is `Promise.all` over the **same query shape parameterized by an id**, like `lineItems where invoiceId = $1`, `$2`, `$3` — an N+1 fired all at once.
+So before adding one, ask: different queries, or the same query repeated once per row?
 
 ## The four shapes N+1 hides in
 
-You've now seen two forms of the bug, the loop and the `Promise.all`. But N+1 is a *shape*, not a particular piece of syntax, and it shows up in disguises. Here are the four you'll meet, so you can recognize it however it appears.
+N+1 is a *shape*, not a syntax, and it wears disguises. Here are the four you'll meet.
 
-**1. A loop with `await` inside.** This is the one from the top of the lesson. It's the sequential N+1, the worst-performing form and, mercifully, the easiest to spot, because the `await` sitting inside the `for` is a visible tell that it fires one query on every iteration.
+**1. A loop with `await` inside.** The sequential N+1. It performs worst and is the easiest to spot: the `await` inside the `for` fires a query on every iteration.
 
 ```ts "await getLineItems(invoice.id)"
 for (const invoice of invoiceList) {
@@ -157,7 +170,7 @@ for (const invoice of invoiceList) {
 }
 ```
 
-**2. `Promise.all` over a parameterized map.** This is the parallel N+1. It's faster than the loop, and the *hardest* to spot, because it looks like good, modern, concurrent code. You read it as "nice, this is parallelized" and move on. The tell isn't the `Promise.all` itself; it's that the map issues the same query with a different id each time.
+**2. `Promise.all` over a parameterized map.** The parallel N+1, faster than the loop and the *hardest* to spot, because it reads like good concurrent code. The tell isn't the `Promise.all`; it's the map issuing the same query with a different id each time.
 
 ```ts "getLineItems(invoice.id)"
 const items = await Promise.all(
@@ -165,7 +178,7 @@ const items = await Promise.all(
 );
 ```
 
-**3. A component tree where each card fetches its own data.** This is the sneaky one, because there's no loop in sight. The list renders an `<InvoiceCard>` per invoice, and each card is a Server Component that awaits its *own* line-items query inside it. The N+1 is spread across the component tree instead of sitting in one function, so it's invisible in any single file you open.
+**3. A component tree where each card fetches its own data.** No loop in sight. The list renders one `<InvoiceCard>` per invoice, and each card is a Server Component that awaits its *own* line-items query. The N+1 is spread across the tree, so no single file reveals it.
 
 ```tsx "invoiceId={invoice.id}"
 {invoiceList.map((invoice) => (
@@ -173,9 +186,7 @@ const items = await Promise.all(
 ))}
 ```
 
-This component-tree form has its own depth. Deciding parallel data needs at one layer instead of at each leaf is a Server Component skill the course returns to much later. Here it's just one more disguise to recognize: a list of cards where each leaf fetches its own data is an N+1.
-
-**4. A `findMany` followed by a `findFirst` per row.** This is the relational-API version of the same bug. Each invoice does its own `findFirst` to look up the one organization it belongs to, a many-to-one lookup back up to the parent. The irony is that the very tool that *prevents* N+1, the relational query API, is here being used in the shape that *causes* it.
+**4. A `findMany` followed by a `findFirst` per row.** The relational-API version: each invoice runs its own `findFirst` to look up the organization it belongs to. The query API that *prevents* N+1 is here being used in the shape that *causes* it.
 
 ```ts
 const invoiceList = await db.query.invoices.findMany();
@@ -186,13 +197,11 @@ for (const invoice of invoiceList) {
 }
 ```
 
-All four are the same shape: one list read, then one more query per returned row, whether that query reaches down to the row's children or up to its parent. That gives you the code-review heuristic, the thing to actually scan for when reading a PR:
+All four are one list read, then one more query per returned row, whether that query reaches down to the row's children or up to its parent. That gives you the code-review heuristic:
 
 :::tip
 Scan for `Promise.all`, `for (const … of …)`, and `.map(` sitting near a `db.` call, and for component trees where a leaf fetches its own data. Each is a place N+1 hides. When you find one, ask the question: *once, or once per row?*
 :::
-
-Try sorting these. Each chip is a small data-access snippet. Decide whether it's N+1 (one query per row) or fine (one query, or several genuinely independent queries run in parallel).
 
 <Buckets twoCol instructions="Sort each snippet by whether it issues one query per row (N+1) or not (fine).">
   <Bucket name="nplus1" label="N+1" description="One query per row" />
@@ -210,17 +219,15 @@ Try sorting these. Each chip is a small data-access snippet. Decide whether it's
 
 ## One query instead of N
 
-Now the fix, and the point is that it's an anticlimax. The cure is the API you already wrote last chapter, so there's nothing new to learn here. When the data access is shaped right, N+1 never arises in the first place.
+The fix is the API you wrote last chapter: shape the data access right and N+1 never arises.
+The move is always the same, **collapse the N child queries into the one parent query**, and you pick the tool by the *shape* you want back, not by performance.
 
-The cure is always the same move: **collapse the N child queries into the one parent query**. Two tools do it, and which you pick is decided by the *shape* you want back, not by performance.
+**The relational query API, for tree-shaped reads.** To get each invoice with its line items nested inside, `db.query.invoices.findMany({ with: { lineItems: true } })` emits *one* SQL statement that aggregates the children into a JSON array per parent, typed as `(Invoice & { lineItems: LineItem[] })[]`: nested and ready to render.
 
-**The relational query API, the default for tree-shaped reads.** When you want each invoice with its line items nested inside it, `db.query.invoices.findMany({ with: { lineItems: true } })` emits *one* SQL statement that aggregates the children into a JSON array per parent. That's one round-trip, and the result comes back already shaped as `(Invoice & { lineItems: LineItem[] })[]`: typed, nested, and ready to render. You learned the mechanics of `with` last chapter; here you're just reaching for it as the cure.
+**A join with `db.select`, when the shape is flat or aggregated.** For a flat projection instead, such as columns from both tables in one row or a `count`/`sum`, hand-write the `innerJoin` or `leftJoin`, then fold the rows into parent-with-children groups in app code if you need them. Either way it's one statement.
 
-**A join with `db.select`, when the shape is flat or aggregates enter.** When you don't want a nested tree but a flat projection, such as columns from both tables in one row or a `count`/`sum` rolled up, you hand-write the `innerJoin` or `leftJoin`. If you still need the parent-with-children grouping, you fold the flat rows in app code. Either way, it's one statement.
-
-The decision is shape-driven: a nested tree calls for the relational API, while flat or aggregated calls for a join. Both are one round-trip, and both are fully typed. There is no version of the fix that is "loop, but smarter."
-
-Here's the fix in place, on the running example. The first tab is the bug, and the next two are the two cures.
+Here's the fix on the running example.
+The first tab is the bug; the next two are the cures.
 
 <CodeVariants>
   <CodeVariant label="N+1 (Promise.all)">
@@ -249,7 +256,7 @@ Here's the fix in place, on the running example. The first tab is the bug, and t
     ```
 
     </div>
-    **1 statement.** Each invoice comes back with its `lineItems` array nested inside. There's no hand-written `InvoiceWithItems` type, because the nested shape is inferred straight from the query.
+    **1 statement.** Each invoice comes back with its `lineItems` array nested inside, and the nested shape is inferred from the query, so there's no hand-written `InvoiceWithItems` type.
   </CodeVariant>
 
   <CodeVariant label="Fixed (join)">
@@ -268,20 +275,21 @@ Here's the fix in place, on the running example. The first tab is the bug, and t
     ```
 
     </div>
-    **1 statement, flat rows.** This is the shape you reach for when you want a flat projection or an aggregate. Group the rows by invoice in app code if you need the nested shape.
+    **1 statement, flat rows.** Reach for this when you want a flat projection or an aggregate. Group the rows by invoice in app code if you need the nested shape.
   </CodeVariant>
 </CodeVariants>
 
-Two things are won here, and both are worth naming.
+The fix wins twice.
+**Round-trips drop from 21 to 1**: the same data and page in one trip across the wire instead of twenty-one, the difference between a page that stays fast at eight hundred invoices and one that falls over.
 
-First, the obvious one: **round-trips drop from 21 to 1.** The same data and the same page, with one trip across the wire instead of twenty-one. That gap doesn't widen gently with data; it's the difference between a page that stays fast at eight hundred invoices and one that falls over.
+And **the type comes for free.** Pass the relational result straight into a Server Component as a prop; rename a column or change a `with` key and the type updates itself, with no `InvoiceWithItems` interface to keep in sync.
 
-Second, the quieter one: **the type comes for free.** The relational result is typed `(Invoice & { lineItems: LineItem[] })[]` with no interface written by hand. You can pass it straight into a Server Component as a prop, and if you rename a column or change a `with` key, the type updates itself. That's the inferred-types thread from last chapter paying off again: the query owns its own result type, so the fix doesn't saddle you with a hand-maintained `InvoiceWithItems` to keep in sync.
-
-Now try the fix yourself. The sandbox below has the N+1 already written as a loop. Rewrite it as a single query that returns each invoice with its line items.
+Now try it.
+The sandbox below has the N+1 written as a loop.
+Rewrite it as a single query that returns each invoice with its line items.
 
 :::note
-This sandbox runs the **SQL builder**, so `db.query` and its relations graph aren't wired up here. Finish the equivalent join instead. The result it returns is flat, with each invoice's columns repeating once per line item. That's exactly the trade-off from the section above: the relational API would hand you the same data already folded into `{ ...invoice, lineItems: [...] }`. The point of the drill is the *one-statement* shape, whichever builder you use.
+This sandbox runs the **SQL builder**, so `db.query` and its relations graph aren't wired up. Finish the equivalent join instead. It returns flat rows, with each invoice's columns repeating once per line item, exactly the trade-off from above: the relational API would hand you the same data already folded into `{ ...invoice, lineItems: [...] }`. The point of the drill is the *one-statement* shape, whichever builder you use.
 :::
 
 <DrizzleCoding
@@ -329,11 +337,13 @@ INSERT INTO line_items (id, invoice_id, description, amount) VALUES
   ordered={true}
 />
 
-## Proving it with query logging
+## Proving N+1 with query logging
 
-So far you've reasoned your way to N+1, picturing the round-trips and counting them in your head. But you should be able to *catch* it, not just suspect it. The fastest way to make N+1 reveal itself is to watch the SQL the database actually receives.
+You've been counting round-trips in your head.
+To catch N+1 for real, watch the SQL the database actually receives.
 
-Drizzle gives you that for one line of config. Setting `logger: true` on the Drizzle client makes it print every SQL statement it emits to the console. Turn it on in dev, load the page, and the N+1 shows itself at once: a single invoices query, then a burst of near-identical line-items queries scrolling past back to back:
+Setting `logger: true` on the Drizzle client prints every statement it emits to the console.
+Turn it on in dev, load the page, and the N+1 shows itself: one invoices query, then a burst of near-identical line-items queries scrolling past back to back.
 
 ```bash
 Query: select … from "invoices"
@@ -344,31 +354,34 @@ Query: select … from "line_items" where "invoice_id" = $4
 Query: select … from "line_items" where "invoice_id" = $5
 ```
 
-That stack of identical statements, differing only by the bound `$1`, `$2`, `$3`, is the *visual signature* of N+1. Once you've seen it, you spot it across the room. After the fix, the same page logs exactly one statement.
+That stack of identical statements, differing only by the bound `$1`, `$2`, `$3`, is the visual signature of N+1.
+After the fix, the same page logs one statement.
 
-One thing in that output trips people up: the logged SQL says `line_items` and `invoice_id` (snake_case), while your TypeScript says `lineItems` and `invoiceId` (camelCase). That's not a bug. The Drizzle client is configured to map camelCase TS properties to snake_case columns automatically, so the SQL you read in the log is the database's spelling of the same thing. Expect the gap: it's the casing translation doing its job.
+The logged SQL says `line_items` and `invoice_id` (snake_case) while your TypeScript says `lineItems` and `invoiceId` (camelCase): Drizzle maps the property names to columns automatically, so the log shows the database's spelling.
 
-The metric to watch is **statements per render**, not statements per user. One render of the page should emit a bounded, predictable number of statements, and if that number grows with the number of rows on the page, you have an N+1. Hold onto "per render," because the next section shows how a cache can quietly hide repeat statements *within* one render and make the count lie.
+The metric to watch is **statements per render**, not per user.
+One render should emit a bounded, predictable number of statements; if that number grows with the rows on the page, you have an N+1.
 
-There's one boundary worth drawing here, because the next lesson teaches a different diagnostic and it's easy to reach for the wrong one. You might think *I have a slow query problem, let me run `EXPLAIN ANALYZE` on it.* For N+1, that's the wrong tool, and understanding why sharpens what N+1 actually is.
-
-`EXPLAIN ANALYZE` shows you the execution plan of **one** statement. But each individual statement in an N+1 batch has a perfectly *fine* plan: `select … from line_items where invoice_id = $1` does a fast index scan on a single id and returns in a millisecond. Run `EXPLAIN ANALYZE` on it and the plan looks great, because it *is* great. The cost of N+1 isn't in any one plan; it's the round-trip latency and connection overhead summed across all N statements. That cost lives at the *call site*, in the code shape that fires the query once per row, not in the SQL of any single query.
+You might reach for `EXPLAIN ANALYZE`, but it's the wrong tool here: it shows the plan of one statement, and each statement in an N+1 batch has a fine plan, a fast index scan returning in a millisecond.
+The cost isn't in any plan; it's the round-trip latency summed across all N statements, and it lives at the call site, in the code shape that fires the query once per row.
 
 :::note
 N+1 is invisible to plan inspection. `EXPLAIN ANALYZE` (the next lesson's tool) diagnoses *one slow query*, while counting statements in the query log diagnoses *many queries firing*. Different bug, different tool: reach for the log when statements-per-render grows with the data.
 :::
 
-## Why caching, batching, and DataLoader aren't the answer here
+## Three tempting non-fixes for N+1
 
-You know the fix now: reshape the data access into one query. But there are three tempting non-fixes that look like they solve N+1 and don't. Knowing why each one is the wrong move is what makes your mental model precise, so it's worth ruling them out one at a time.
+The fix is to reshape the access into one query.
+Three other moves look like fixes and aren't; ruling them out sharpens the model.
 
-**A cache is not the fix.** The instinct might be *the queries are slow, so cache the results.* A request-scoped cache (React's `cache`, Next's `'use cache'`) will hide the N+1 from a user who hits a warm cache, but it doesn't fix anything. The database still ran all N queries the first time. The cache still expires, and the next cold request pays the full N+1 again. The structural shape is still wrong; you've just put a curtain in front of it. Worse, a cache can *mask the bug in dev*. If the same component renders twice and only the first render pays, your query log shows fewer statements than production will actually run, which is exactly why the metric is statements per *render*, not per user. A cache is for reusing the *same* query across components, not for collapsing N *parameterized* queries into one. Caching proper is a whole topic the course covers elsewhere; here it's only ruled out as the N+1 fix.
+**A cache is not the fix.** A request-scoped cache (React's `cache`, Next's `'use cache'`) hides the N+1 from a user who hits a warm cache, but the database still ran all N queries to fill it, and the next cold request pays again. A cache reuses the *same* query across components; it can't collapse N *parameterized* queries into one.
 
-**DataLoader belongs to a different world, so name it but don't reach for it.** If you've come from GraphQL, you may know the <Term definition="A batching utility from the GraphQL world. It coalesces many per-id loads fired within one tick into a single query, so resolvers that each ask for one row become one batched read.">DataLoader</Term> pattern: collect all the `.load(id)` calls fired within one tick and batch them into a single query. It's the resolver world's answer to N+1, and it earns its weight there, in GraphQL servers or deeply nested tRPC routers, where the call sites genuinely can't see each other and there's no single place to write one query. But in a Server Component and Server Action codebase with Drizzle, you *do* have that single place. The relational query API solves the same problem at the query layer, with full typing and zero extra machinery. Recognize DataLoader when you see it; you won't need it here.
+**DataLoader belongs to a different world.** From GraphQL you may know the <Term definition="A batching utility from the GraphQL world. It coalesces many per-id loads fired within one tick into a single query, so resolvers that each ask for one row become one batched read.">DataLoader</Term> pattern: batch the `.load(id)` calls fired within one tick into a single query. It fits GraphQL servers and deeply nested tRPC routers, where call sites can't see each other and there's no single place to write one query. Server Components and Server Actions with Drizzle have that single place: the relational query API solves it at the query layer, fully typed, with no extra machinery.
 
-**Don't regress the fix.** One last trap, and the easiest to miss, because it looks like optimization. Once a `with` query works, someone may notice it pulls child columns the page doesn't use and "optimize" by dropping `with` and re-fetching the children by hand, quietly re-introducing the N+1 you just removed. That's a regression, not a tuning. If a `with` tree over-fetches, the fix is to *narrow the one query* with a `columns` projection on the relation, not to split it back into N. Re-shape the single query; never go back to the loop.
+**Don't regress the fix.** Once a `with` query works, someone may notice it pulls child columns the page doesn't use and "optimize" by dropping `with` to fetch the children by hand, quietly restoring the N+1. If a `with` tree over-fetches, narrow it with a `columns` projection on the relation; never split it back into N.
 
-Here is the one line to carry out the door: an N+1 across twenty dev rows stays invisible right up until production scales it to five thousand. **Design for the load, not for the dev sample.** The bug ships green, passes review, and surfaces months later as a slow page or a pool-exhaustion incident, *unless* a reviewer trained to ask "once, or once per row?" catches the shape before it merges. Becoming that reviewer is the point of this lesson.
+An N+1 across twenty dev rows stays invisible until production scales it to five thousand.
+**Design for the load, not the dev sample.**
 
 ## External resources
 

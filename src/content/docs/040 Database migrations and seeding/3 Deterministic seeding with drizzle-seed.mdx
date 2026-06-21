@@ -1,0 +1,467 @@
+---
+title: Deterministic seeding with drizzle-seed
+tagline: Fill dev and test databases with realistic, repeatable, foreign-key-correct data from one command, using drizzle-seed, the schema-aware seeder for Drizzle.
+chapter-id: 40
+course-progress: 0.3975
+rewrites: 2
+sidebar:
+  order: 3
+  label: Seeding with drizzle-seed
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import FkThreeTierStrip from '../../../components/lessons/040/3/fk-three-tier-strip.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You've shipped the schema, run the migration, and written the queries. You start the app against a fresh Neon dev branch, open the invoices page, and it's empty: every list, chart, and paginated table renders its empty state, because the database has no rows yet.
+
+You could write `INSERT` statements by hand, but think about what you actually need: enough invoices across a couple of organizations to fill more than one page, each with a few line items; statuses that look real (mostly paid, some pending, a few overdue); dates scattered across the last several months so the charts have a shape. You need that same data tomorrow when you wipe the branch, and on a teammate's machine when they reproduce a bug on one specific invoice. Hand-written inserts give you none of that: they're tedious, they drift, and no two runs match.
+
+This lesson builds one re-runnable script, `pnpm db:seed`, that fills the dev or test database with realistic data, identical on every run and every machine. The tool is `drizzle-seed`, and it earns its place by being schema-aware, deterministic, and able to resolve your foreign keys for you.
+
+## Generating data from your schema
+
+`drizzle-seed` is a `devDependencies` package: like Drizzle Kit, it never ships to production. What sets it apart from a generic fake-data library is that it reads the same `db/schema.ts` you already treat as your source of truth. That one file feeds your row types and your insert types; now your test <Term definition="The pre-defined data a development or test environment starts from — the rows that already exist before you do anything.">fixtures</Term> derive from it too. The seeder reads each column's type and constraints and generates a value to fit: a `text` column gets a string, a `numeric` gets a number with the right precision, a `pgEnum` gets one of its allowed values. You never write a field-by-field mapping.
+
+That schema-awareness is the first of three properties. It's also **<Term definition="Same inputs always produce the same output — no randomness leaks between runs.">deterministic</Term>**: a fixed seed number produces byte-identical data on every run. And it's **foreign-key-aware**: it reads your `references()` declarations and inserts parent rows before the children that point at them, so you never do id math by hand.
+
+Other tools generate fake data, Faker.js, Mockoon, and snaplet among them, but each makes you describe your data a second time in its own shape, separate from your schema. `drizzle-seed` wires straight to the schema you already wrote.
+
+## The minimal call and its defaults
+
+The smallest call that works takes three arguments.
+
+```ts
+import { seed } from 'drizzle-seed';
+
+import { db } from '@/db';
+import * as schema from '@/db/schema';
+
+await seed(db, schema, { seed: 1 });
+```
+
+`db` is your Drizzle client. `schema` is the bag of every table you export from `db/schema.ts`; `import * as schema` pulls them all in, and the seeder needs all of them. The options object's `seed` key controls determinism: `1` is the number that makes every run identical.
+
+With no further configuration, the seeder inserts ten rows into every table, each column filled with a type-appropriate value. That confirms the wiring works, but rarely gives you the data you want: ten invoices won't fill a second page to test pagination, and ten rows won't show a realistic status distribution.
+
+The first knob to reach for is `count`, a global option:
+
+```ts
+await seed(db, schema, { seed: 1, count: 50 });
+```
+
+That bumps every table to fifty rows. But a flat fifty is still blunt: you want two organizations, not fifty, and you want control over what goes into each invoice. That's what the next section is for.
+
+:::caution
+Always pass the **whole schema bag**. If you hand the seeder a subset, say just `invoices`, and an invoice has a `NOT NULL` foreign key pointing at `organizations`, the seeder has no parent table to draw a valid id from, so it throws. Use `import * as schema` and pass all of it.
+:::
+
+<ExternalResource
+  title="Seeding partially exposed tables"
+  href="https://orm.drizzle.team/docs/guides/seeding-with-partially-exposed-tables"
+  icon="simple-icons:drizzle"
+  iconColor="#C5F74F"
+  description="The escape hatch for when you genuinely can't pass the full schema bag: you tell the seeder how to fill the orphaned foreign-key columns yourself."
+/>
+
+## Shaping realistic data with `.refine()`
+
+The defaults get you rows; `.refine()` gets you rows that look real. Chain it onto `seed()`. It takes a callback that receives `f`, the catalog of value generators, and returns an object keyed by table name. We'll build that object in three steps.
+
+**Step one: counts.** The simplest thing `.refine` does is override the row count for one table.
+
+```ts
+await seed(db, schema, { seed: 1 }).refine((f) => ({
+  invoices: { count: 200 },
+}));
+```
+
+Each table you name takes up to three keys: `count`, `columns`, and `with`. Here `count` requests two hundred invoices instead of the global default of ten; tables you don't name keep that default.
+
+**Step two: column generators.** A `columns` map controls what fills each row, and that's where `f` comes in. There are around three dozen generators, grouped by category, with the rest in the docs:
+
+- **People and organizations:** `f.firstName()`, `f.lastName()`, `f.fullName()`, `f.email()`, `f.companyName()`.
+- **Numbers and dates:** `f.int()`, `f.number({ minValue, maxValue, precision })`, `f.boolean()`, `f.date({ minDate, maxDate })`, `f.timestamp()`.
+- **Set-driven:** `f.valuesFromArray({ values: [...] })` picks from a fixed set you supply; `f.default()` falls back to the column's own schema default.
+
+These are function calls: `f.email()`, not `f.email`. Two rules to keep in mind. For any `pgEnum` column, use `valuesFromArray` with the same allowed values you declared in the schema. And `f.email()` is unique by default; most generators aren't, so pass `isUnique: true` to keep another generator's output from repeating.
+
+**Step three: distributions.** Fill `status` with a plain `valuesFromArray` over `['paid', 'pending', 'overdue']` and the seeder picks uniformly, roughly a third each, nothing like a real account where most invoices are paid and few are overdue. Weight the choices instead, which `valuesFromArray` supports directly:
+
+```ts
+status: f.valuesFromArray({
+  values: [
+    { weight: 0.6, values: ['paid'] },
+    { weight: 0.3, values: ['pending'] },
+    { weight: 0.1, values: ['overdue'] },
+  ],
+}),
+```
+
+Now 60% of invoices land on `paid`, 30% on `pending`, and 10% on `overdue`.
+
+Here is the whole `invoices` refine block, one concern at a time.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+await seed(db, schema, { seed: 1 }).refine((f) => ({
+  invoices: {
+    count: 200,
+    columns: {
+      status: f.valuesFromArray({
+        values: [
+          { weight: 0.6, values: ['paid'] },
+          { weight: 0.3, values: ['pending'] },
+          { weight: 0.1, values: ['overdue'] },
+        ],
+      }),
+      total: f.number({ minValue: 50, maxValue: 9999, precision: 100 }),
+      customerName: f.valuesFromArray({
+        values: ['Acme Corp', 'Globex', 'Initech', 'Umbrella', 'Soylent'],
+      }),
+      createdAt: f.date({ minDate: '2025-12-01', maxDate: '2026-06-01' }),
+    },
+  },
+}));
+`}>
+  <AnnotatedStep meta="{2-3}" color="blue">
+    The table key and row count. Two hundred invoices, overriding the default ten, fill several pages and exercise pagination.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5-11}" color="green">
+    The weighted status distribution from above: mostly `paid`, fewer `pending`, a sliver `overdue`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12}" color="orange">
+    The money column. `total` is `numeric`, so `f.number` with `precision: 100` keeps two decimal places (cents) rather than a lossy float. The generator must match the type you chose for money.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13-15}" color="violet">
+    A curated `valuesFromArray` of real-sounding company names. For demo-facing columns, hand-picked strings screenshot better than lorem noise.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{16}" color="blue">
+    A six-month date spread via `f.date` with `minDate` and `maxDate`, giving time-series charts and "recent" sorting something to show.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+One caution follows from a schema decision you already made. Your `id` columns are UUIDv7, filled by a `$defaultFn` so they sort by creation time. The catalog's `f.uuid()` emits v4, which is random and unordered, so leave `id` out of the `columns` map: the column's own default fills it and the v7 time-ordering survives.
+
+Fill the blanks so each column gets the right generator and option.
+
+<Dropdowns
+  instructions="Complete the refine config so each column maps to the right generator."
+  answers={[
+    { answer: 'count', options: ['count', 'rows', 'limit'] },
+    { answer: 'valuesFromArray', options: ['valuesFromArray', 'int', 'default'] },
+    { answer: 'precision', options: ['precision', 'digits', 'scale'] },
+  ]}
+>
+```ts
+await seed(db, schema, { seed: 1 }).refine((f) => ({
+  invoices: {
+    ___: 200,
+    columns: {
+      status: f.___({ values: ['paid', 'pending', 'overdue'] }),
+      total: f.number({ minValue: 50, maxValue: 9999, ___: 100 }),
+    },
+  },
+}));
+```
+</Dropdowns>
+
+## How drizzle-seed resolves foreign keys
+
+Every example so far touched one table. Seed two tables linked by a foreign key and a problem appears: you can't insert an invoice before its organization exists, since `organizationId` has to point at a real row. By hand you insert the parents first, capture their generated ids, and thread those ids into the children. The seeder does all of that for you.
+
+The first half is insertion order. The seeder reads every `references()` in your schema, builds a dependency graph, and inserts tables in <Term definition="An ordering of nodes in a dependency graph where every node comes after the things it depends on.">topological order</Term>: parents before children. For our three-level chain that's `organizations`, then `invoices`, then `lineItems`. For each child row it picks a valid id from the already-inserted parents.
+
+The second half is `with`, which declares the fanout. Put `with: { lineItems: 5 }` on the `invoices` refine and each invoice gets five line items. The trap is mixing it up with `count`. `count` is the table total: `invoices: { count: 200 }` means two hundred invoices across all organizations, not per organization. But `with` is per parent: those two hundred invoices each get five line items, a thousand in total. One key counts the whole table; the other multiplies per row.
+
+<Figure caption="One `references()` declaration does double duty: it sets the insertion order and, via `with`, the per-parent fanout.">
+  <FkThreeTierStrip />
+</Figure>
+
+Given the schema below, drag the tables into the order the seeder runs them.
+
+<Sequence instructions="Order the inserts drizzle-seed performs for this schema.">
+
+```ts
+export const organizations = pgTable('organizations', { /* ... */ });
+
+export const invoices = pgTable('invoices', {
+  organizationId: uuid().references(() => organizations.id),
+});
+
+export const lineItems = pgTable('line_items', {
+  invoiceId: uuid().references(() => invoices.id),
+});
+
+export const taxRates = pgTable('tax_rates', { /* no references */ });
+```
+
+  <Step>`organizations` — referenced by `invoices`, depends on nothing</Step>
+  <Step>`invoices` — references `organizations`, must come after it</Step>
+  <Step>`lineItems` — references `invoices`, the deepest child</Step>
+  <Step>`taxRates` — no `references()`, so it can land anywhere; last is fine</Step>
+</Sequence>
+
+## Determinism: pinning seed and version
+
+Run the script with `{ seed: 1 }` today, then again with `{ seed: 1 }` tomorrow on a wiped database, and you get the identical two hundred invoices, row for row: same statuses, totals, dates, and line-item counts. The seed number is the entire input. A teammate who runs your script debugs against your exact dataset, and CI produces the same rows your laptop did, so a test that passes locally won't go flaky elsewhere for want of the right data.
+
+So pin the seed and leave it pinned. Vary it only to explore a different shape, such as another spread of statuses or scatter of dates, then pin it again. A wandering seed throws the guarantee away.
+
+The seeder's value-generation logic is itself versioned:
+
+```ts
+await seed(db, schema, { seed: 1, version: '2' });
+```
+
+`version: '2'` pins the generator to a specific release of the library's logic (`'2'` is the current long-term-support version). Without it, a future `drizzle-seed` upgrade could change how a generator produces values and silently shift your output even though the seed never moved. Bare `{ seed: 1 }` defaults to the latest, fine for a first example, but the script you commit pins both.
+
+Determinism is tied to the shape of your config, not the seed alone. Change `.refine` in a way that alters a table's count or column order and the output can shift on the same seed, so when you change the shape deliberately, bump the seed to acknowledge it or accept that the rows are now different.
+
+<TabbedContent>
+  <TabbedItem label="seed: 1" caption="Same seed, identical rows: Run A and Run B match exactly.">
+    <div style="display: flex; gap: 1.5rem; flex-wrap: wrap;">
+      <div style="flex: 1; min-width: 13rem;">
+        <p style="margin: 0 0 0.5rem; font-weight: 600;">Run A</p>
+        <table>
+          <thead>
+            <tr><th>invoice</th><th>status</th><th>total</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>#1</td><td>paid</td><td>$120.00</td></tr>
+            <tr><td>#2</td><td>pending</td><td>$80.00</td></tr>
+            <tr><td>#3</td><td>paid</td><td>$340.00</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="flex: 1; min-width: 13rem;">
+        <p style="margin: 0 0 0.5rem; font-weight: 600;">Run B</p>
+        <table>
+          <thead>
+            <tr><th>invoice</th><th>status</th><th>total</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>#1</td><td>paid</td><td>$120.00</td></tr>
+            <tr><td>#2</td><td>pending</td><td>$80.00</td></tr>
+            <tr><td>#3</td><td>paid</td><td>$340.00</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </TabbedItem>
+
+  <TabbedItem label="seed: 2" caption="A different seed gives a different, equally repeatable dataset.">
+    <div style="max-width: 16rem;">
+      <table>
+        <thead>
+          <tr><th>invoice</th><th>status</th><th>total</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>#1</td><td>overdue</td><td>$55.00</td></tr>
+          <tr><td>#2</td><td>paid</td><td>$910.00</td></tr>
+          <tr><td>#3</td><td>pending</td><td>$200.00</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </TabbedItem>
+</TabbedContent>
+
+## Reset before seed, for a re-runnable script
+
+Everything so far assumed a clean database, but in practice it rarely is: you seeded yesterday, the rows are still there, and you run `seed` again. You get double the data, or the run fails on a unique constraint or a leftover foreign-key violation. A seed script you can run only once against an empty database isn't a tool you'll use.
+
+The fix is to make the script **idempotent**: runnable any number of times, always landing in the same clean state. That takes two steps in one script:
+
+```ts
+import { reset, seed } from 'drizzle-seed';
+
+import { dbUnpooled } from '@/db';
+import * as schema from '@/db/schema';
+
+await reset(dbUnpooled, schema);
+await seed(dbUnpooled, schema, { seed: 1, version: '2' }).refine((f) => ({
+  /* ... */
+}));
+```
+
+**`reset(db, schema)` clears every row, in foreign-key-safe order, and stops there.** It empties the tables but leaves the structure (tables, columns, constraints) intact: this is not a migration or a `drop`, it removes rows and nothing more. Because reset always returns you to empty and seed always fills from the same seed, the pair always lands the same state, which is what makes the script idempotent. You'll reach for it constantly: when local data gets weird, `pnpm db:seed` gives you a clean slate.
+
+**Use `dbUnpooled`, not `db`.** Your `db/index.ts` exports two clients: `db`, the pooled connection your app uses, and `dbUnpooled`, the direct one. Reset runs `TRUNCATE ... CASCADE`, which holds long locks that transaction-mode pooling chokes on, the same reason migrations use the unpooled client. Anything that holds long locks goes through `dbUnpooled`.
+
+:::caution
+`reset` deletes **everything** in the schema, the seed-script equivalent of a `DELETE` with no `where` clause: total and irreversible. It's safe here only because this script targets a dev or test database. Never wire it to a production credential, where a `reset` would wipe your real data.
+:::
+
+<CodeVariants>
+  <CodeVariant label="seed alone">
+    <div data-mark-color="red">
+
+    ```ts {1}
+    await seed(dbUnpooled, schema, { seed: 1 }).refine((f) => ({
+      invoices: { count: 200 },
+    }));
+    ```
+
+    </div>
+    **Breaks on the second run.** The first run fills the table; the second leaves the prior rows in place, so you get four hundred invoices, or a unique or foreign-key violation aborts it. It works exactly once, useless as a repeatable tool.
+  </CodeVariant>
+
+  <CodeVariant label="reset + seed">
+    <div data-mark-color="green">
+
+    ```ts {1}
+    await reset(dbUnpooled, schema);
+    await seed(dbUnpooled, schema, { seed: 1, version: '2' }).refine((f) => ({
+      invoices: { count: 200 },
+    }));
+    ```
+
+    </div>
+    **Idempotent.** `reset` clears the tables first, so every run starts from empty and lands the same two hundred rows. Run it as often as you like; the state is identical each time. This is the shape the script ships in.
+  </CodeVariant>
+</CodeVariants>
+
+## Wiring the db:seed script
+
+By convention the script lives at `scripts/seed.ts`, invoked through a `db:seed` entry in `package.json`:
+
+```json
+{
+  "scripts": {
+    "db:seed": "tsx scripts/seed.ts"
+  }
+}
+```
+
+Why `tsx` and not bare `node`? The script imports through the `@/db` path alias, which Node's native type-stripping doesn't resolve, so the import fails. A standalone `.ts` script with path aliases runs through `tsx`.
+
+The file imports `dbUnpooled` and the schema, runs reset then the refined seed, and exits explicitly: `process.exit(0)` on success, `process.exit(1)` in a `catch`. The explicit exit lets CI gate a pipeline on the code, and stops the unpooled connection from holding the Node process open after the work is done. Production never runs `db:seed`; its environment is dev or test only.
+
+Here is the whole file assembled:
+
+```ts title="scripts/seed.ts"
+import { reset, seed } from 'drizzle-seed';
+
+import { dbUnpooled } from '@/db';
+import * as schema from '@/db/schema';
+
+const main = async () => {
+  await reset(dbUnpooled, schema);
+  await seed(dbUnpooled, schema, { seed: 1, version: '2' }).refine((f) => ({
+    organizations: {
+      count: 2,
+      columns: {
+        name: f.companyName(),
+      },
+    },
+    invoices: {
+      count: 200,
+      columns: {
+        status: f.valuesFromArray({
+          values: [
+            { weight: 0.6, values: ['paid'] },
+            { weight: 0.3, values: ['pending'] },
+            { weight: 0.1, values: ['overdue'] },
+          ],
+        }),
+        total: f.number({ minValue: 50, maxValue: 9999, precision: 100 }),
+        customerName: f.valuesFromArray({
+          values: ['Acme Corp', 'Globex', 'Initech', 'Umbrella', 'Soylent'],
+        }),
+        createdAt: f.date({ minDate: '2025-12-01', maxDate: '2026-06-01' }),
+      },
+      with: {
+        lineItems: 5,
+      },
+    },
+  }));
+};
+
+main()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+```
+
+Run `pnpm db:seed`, then open Drizzle Studio and look over the invoices list: two hundred rows, weighted statuses, money with cents, dates fanned across six months, and five line items on each invoice. Run it again and confirm the rows are identical. Seed, inspect, re-seed, compare: that's the workflow.
+
+## Seeding tests, and where the seeder stops
+
+The seeder is for datasets, not for every "I need a row" problem. Three boundaries keep you from over-applying it.
+
+**In tests, seed a baseline in `beforeEach`, then add the specific rows under test.** Resetting and seeding a small dataset before each test gives every run the same starting point, but that data is a baseline shape, not a fixture tailored to one assertion. When a test needs a particular row, say an invoice of exactly `$0.00` for an edge case, do a small, targeted `db.insert` on top of the baseline. The seeder sets the stage; the per-test insert places the row the test is about.
+
+**For one or two ad-hoc rows, a factory beats a full seed.** A unit test that needs a single paid invoice doesn't want the whole reset-and-seed machinery. Reach for a factory helper instead, something like `buildInvoice({ status: 'paid', total: '100.00' })` that inserts one row through Drizzle and returns it. Seeder for datasets, factories for per-test rows.
+
+**Some data isn't the seeder's job at all.** Deeply domain-specific text, like an invoice description or a support-ticket message, comes out lorem-grade from any generator: fine for the shape, flat in a screenshot. Fix that with a hand-curated `valuesFromArray` of realistic strings for the few columns a demo shows, and lorem-grade for the rest. Production "fixture" data, like the default workspace created on signup, the seed RBAC roles, or a system organization, is a one-shot data migration: written by hand, run once, then retired. Point the seeder at dev and test, never at production.
+
+<Buckets twoCol instructions="Sort each task into the tool that fits it.">
+  <Bucket name="seeder" label="drizzle-seed" description="Datasets, distributions, fixtures" />
+  <Bucket name="elsewhere" label="Reach elsewhere" description="Per-test rows or production data" />
+
+  <Item bucket="seeder">Fifty invoices for the dev list page</Item>
+  <Item bucket="seeder">A weighted status spread across the table</Item>
+  <Item bucket="seeder">Realistic company names for a demo screenshot</Item>
+  <Item bucket="elsewhere">One paid invoice for this test's assertion</Item>
+  <Item bucket="elsewhere">The exact three rows a pagination test needs</Item>
+  <Item bucket="elsewhere">The default workspace created at signup</Item>
+</Buckets>
+
+With schema, migrations, and the seed script all driven off that one `db/schema.ts`, you can stand up your data layer from scratch, reproducibly, on any machine.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="drizzle-seed overview"
+    href="https://orm.drizzle.team/docs/seed-overview"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The official guide to seed, reset, .refine, and determinism — the canonical reference for everything in this lesson."
+  />
+  <ExternalResource
+    title="Generator functions reference"
+    href="https://orm.drizzle.team/docs/seed-functions"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The full catalog of f.* generators and their options — the rest of the three dozen this lesson only sampled."
+  />
+  <ExternalResource
+    title="Seeding one-to-many with the with option"
+    href="https://orm.drizzle.team/docs/guides/seeding-using-with-option"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="A focused walkthrough of per-parent fanout — exactly the lineItems-per-invoice multiplication from this lesson."
+  />
+  <ExternalResource
+    title="Seed versioning"
+    href="https://orm.drizzle.team/docs/seed-versioning"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="Why the version key matters: how pinning generator behavior keeps deterministic output stable across library upgrades."
+  />
+</CardGrid>
+
+(The "partially exposed tables" guide is already linked earlier in the lesson, so it's not repeated here.)

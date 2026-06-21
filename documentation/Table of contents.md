@@ -342,25 +342,25 @@
 - 9 Quiz
 
 ### Chapter 039 — Indexes, plans, and transactions
-- 1 Indexes that earn their weight (Teaches the four senior triggers for adding an index (FK columns, selective `where`, `order by` keys, unique constraints), the index-type decision tree (B-tree default, GIN, partial, composite, expression, unique), how to declare them in Drizzle, and the write/disk cost that bounds when not to add one.)
+- 1 Choosing Postgres indexes in Drizzle (Teaches the four senior triggers for adding an index (FK columns, selective `where`, `order by` keys, unique constraints), the index-type decision tree (B-tree default, GIN, partial, composite, expression, unique), how to declare them in Drizzle, and the write/disk cost that bounds when not to add one.)
 - 2 Spotting and fixing N+1 (Teaches the four canonical N+1 shapes (await-in-loop, `Promise.all` over a parameterized map, per-card RSC fetches, mixed `findMany`/`findFirst`), why `Promise.all` doesn't fix it, and the structural fix via the relational query API or a hand-written join.)
 - 3 Reading EXPLAIN ANALYZE (Teaches how to run `EXPLAIN (ANALYZE, BUFFERS)` through Drizzle, read the plan tree bottom-up, interpret the node types (`Seq Scan`, `Index Scan`, `Nested Loop`, `Hash Join`, `Sort`) and the numbers that matter (estimated vs. actual rows, loop counts, buffer hits), and run the measure-hypothesize-verify loop one change at a time.)
 - 4 Transactions and isolation levels (Teaches the `db.transaction(async (tx) => …)` shape, the four senior triggers for a transaction, the four Postgres isolation levels with their SaaS use cases, the SQLSTATE 40001 retry pattern, `SELECT ... FOR UPDATE` for row locking, and the pool-starvation rule that keeps external IO outside the transaction.)
 - 5 Quiz
 
-### Chapter 040 — Migrations and seeding
-- 1 The Drizzle Kit daily loop (Teaches the `drizzle.config.ts` contract, the migration folder layout, the `generate` → review → `migrate` workflow, and Drizzle Studio as the in-stack dev GUI.)
+### Chapter 040 — Database migrations and seeding
+- 1 The Drizzle Kit migration loop (Teaches the `drizzle.config.ts` contract, the migration folder layout, the `generate` → review → `migrate` workflow, and Drizzle Studio as the in-stack dev GUI.)
 - 2 Production-safe migrations (Teaches the push-vs-generate decision, the five-question SQL review checklist, `CREATE INDEX CONCURRENTLY` with statement breakpoints, the column-change patterns that bite, and expand-backfill-contract as the zero-downtime reflex.)
 - 3 Deterministic seeding with drizzle-seed (Teaches the `seed().refine(...)` call shape, FK-aware insertion order, the idempotent reset-and-seed script, the same-seed determinism guarantee, and the test-factory boundary.)
 - 4 Quiz
 
-### Chapter 041 — Project: the org-scoped invoicing data layer
-- 1 Project Overview
-- 2 Type-safe environment variables with @t3-oss/env-nextjs
-- 3 Authoring the schema and shipping the init migration
-- 4 A deterministic, idempotent seed for two orgs
-- 5 The tenant-scoped invoice list with cursor pagination
-- 6 The single-round-trip invoice detail read
+### Chapter 041 — Project: org-scoped invoicing data layer
+- 1 Project overview (Frames the project: build only the data layer of a tenant-scoped invoicing SaaS — six tables, one migration, a deterministic seed, two org-scoped reads — verified through the provided `/inspector` page, with no auth or mutations.)
+- 2 Type-safe env vars with @t3-oss/env-nextjs (Routes all config through one typed `env.ts` boundary so a missing or invalid variable fails `pnpm build` locally instead of crashing the first request after deploy.)
+- 3 Authoring the schema and init migration (Authors the six-table schema and relations, then runs the generate-read-migrate loop to create the structure on an empty Postgres.)
+- 4 A deterministic, idempotent seed (Writes `runSeed` so one command fills the database with two orgs, four users, forty customers, and 100+ invoices that reproduce on every run.)
+- 5 Tenant-scoped invoice list with a cursor (Implements `listInvoices`: scopes invoices to one org, pages via a compound cursor, and filters by status server-side.)
+- 6 The single-round-trip invoice detail read (Implements `getInvoiceDetail` to load one invoice with its customer and line items in a single org-scoped query.)
 
 ---
 
