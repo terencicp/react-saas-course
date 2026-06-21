@@ -265,6 +265,7 @@ dynamic import | import() | `import('...')` returning `Promise<Module>`; code-sp
 re-export | - | `export ... from` republishing another module's binding. | first defined: Chapter 006 L1
 barrel file | barrel | `index.ts` re-exporting many symbols; banned in the course. | first defined: Chapter 006 L1
 code-splitting | code split | Splitting a bundle into on-demand chunks. | first defined: Chapter 006 L1
+bundle | - | The JS the browser downloads and runs for your app; a Server Component adds zero bytes. | first defined: Chapter 006 L2
 bare specifier | - | Import with no `./`/`../`/absolute path; resolved via node_modules. | first defined: Chapter 006 L1
 exports field | - | package.json field declaring importable subpaths. | first defined: Chapter 006 L1
 import attribute | with attribute | `with { type: 'json' }` telling the runtime how to parse a resource. | first defined: Chapter 006 L1
@@ -522,15 +523,18 @@ beforeInteractive | - | next/script strategy: loads before Next.js code, root la
 worker strategy | strategy="worker" | next/script strategy offloading a script to a Web Worker via Partytown; Pages Router only. | first defined: Chapter 034 L5
 Web Worker | - | Background browser thread running JS off the main thread, no DOM access. | first defined: Chapter 034 L5
 Partytown | - | Library relaying third-party scripts into a Web Worker, off the main thread. | first defined: Chapter 034 L5
-GDPR | - | EU law requiring a legal basis (usually consent) before processing personal data. | first defined: Chapter 034 L5
+GDPR | - | EU law requiring a legal basis (usually consent) before processing personal data. | first defined: Chapter 034 L4
 ePrivacy | cookie law | EU directive governing cookies and trackers; non-essential trackers await consent. | first defined: Chapter 034 L5
+inline script | - | A next/script with its JS as content, not a src URL; needs an id to dedupe. | first defined: Chapter 034 L5
+vendor SDK | npm SDK | Typed npm package a vendor ships instead of a raw snippet; imported, tree-shakable, React-wired. | first defined: Chapter 034 L5
+@next/third-parties | - | Official Next.js package wrapping vendor snippets (GA, GTM) in tuned components. | first defined: Chapter 034 L5
 numeric | NUMERIC, DECIMAL | Postgres exact-decimal type; stores literal digits, no float rounding; reads as string in Drizzle. | first defined: Chapter 037 L3
 precision | - | Total count of significant digits a numeric column stores, both sides of the point. | first defined: Chapter 037 L3
 scale | - | Number of digits a numeric column stores after the decimal point. | first defined: Chapter 037 L3
 timestamptz | timestamp with time zone | Postgres type storing an absolute UTC instant, converting on in/out. | first defined: Chapter 037 L3
-UUID | universally unique identifier | 128-bit value, 32 hex digits, unique without central coordination; maps to TS string. | first defined: Chapter 037 L3
-UUIDv4 | uuid v4 | Fully-random UUID; Postgres gen_random_uuid() / Drizzle .defaultRandom(). | first defined: Chapter 037 L3
-UUIDv7 | uuid v7 | Time-ordered UUID; leading bits are a timestamp so IDs sort by creation; native in Postgres 18. | first defined: Chapter 037 L3
+UUID | universally unique identifier | 128-bit value, 36-char string, unique without central coordination; crypto.randomUUID() mints v4. | first defined: Chapter 016 L1
+UUIDv4 | uuid v4 | Fully-random UUID, 122 bits entropy; not time-sortable; Postgres gen_random_uuid() / Drizzle .defaultRandom(). | first defined: Chapter 016 L1
+UUIDv7 | uuid v7 | Time-ordered UUID; leading bits are a timestamp so IDs sort by creation; native in Postgres 18. | first defined: Chapter 016 L1
 surrogate key | - | Primary key with no business meaning, generated solely to identify the row. | first defined: Chapter 037 L3
 pgEnum | Postgres enum | Drizzle builder declaring a named Postgres enum type and a column for a fixed value set. | first defined: Chapter 037 L3
 lookup table | - | A table with one row per allowed value, the alternative to an enum when values need attributes. | first defined: Chapter 037 L3
@@ -542,21 +546,978 @@ foreign key | FK | A column constraint Postgres enforces on writes, rejecting ro
 defineRelations | - | Drizzle Relations v2 API declaring the whole traversal graph in one call, keyed by table name. | first defined: Chapter 037 L9
 Relations v2 | relations v2 API | Drizzle's single-call relations API (from/to/through), replacing the v1 per-table relations() helper. | first defined: Chapter 037 L9
 relational query builder | relational query API, db.query | The db.query.* findFirst/findMany API that reads the relations graph to assemble nested typed objects. | first defined: Chapter 037 L9
-pure junction | - | A junction table holding only foreign keys, walked through with .through() rather than related to. | first defined: Chapter 037 L9
+Relations v1 | relations v1, legacy relations API | Drizzle's older per-table relations() helper (drizzle-orm/_relations), queried via db._query. | first defined: Chapter 037 L9
+.through() | through | Relations v2 chain on from/to naming a junction column, so a many-to-many hops through the junction. | first defined: Chapter 037 L9
+pure junction | - | A junction table holding only foreign keys, walked through with .through() rather than related to. | first defined: Chapter 037 L8
 self-referential relation | self-relation | A relation whose from and to columns both live on one table (e.g. a comment's parent). | first defined: Chapter 037 L9
 database index | index | A separate sorted structure mapping keys to row locations, letting the engine skip a full scan. | first defined: Chapter 039 L1
-sequential scan | seq scan | Reading every row in a table in order, with no shortcut to the matching rows. | first defined: Chapter 039 L1
+sequential scan | seq scan | Reading every row in a table in order, with no shortcut to the matching rows. | first defined: Chapter 038 L6
 query planner | planner | Postgres component that estimates each execution path's cost and picks the cheapest. | first defined: Chapter 039 L1
 selectivity | selective | The fraction of a table's rows a predicate keeps; few rows = highly selective. | first defined: Chapter 039 L1
-B-tree | btree | Balanced sorted tree; default Postgres index, fast for equality, ranges, and ordered reads. | first defined: Chapter 039 L1
+B-tree | btree | Balanced sorted tree; default Postgres index, fast for equality, ranges, and ordered reads. | first defined: Chapter 037 L5
 composite index | multi-column index | One index over several columns, sorted left to right. | first defined: Chapter 039 L1
 leftmost-prefix rule | leftmost prefix | A composite index serves only queries using a left-anchored prefix of its columns. | first defined: Chapter 039 L1
-partial index | - | An index over only the rows matching a .where() predicate. | first defined: Chapter 039 L1
-expression index | - | An index on a computed expression (lower(col), a cast) instead of the raw column. | first defined: Chapter 039 L1
-unique index | uniqueIndex | A B-tree that also enforces uniqueness; rejects duplicate values at write time. | first defined: Chapter 039 L1
+partial index | - | An index over only the rows matching a .where() predicate. | first defined: Chapter 037 L7
+expression index | functional index | An index on a computed expression (lower(col), a cast) instead of the raw column. | first defined: Chapter 037 L7
+unique index | uniqueIndex | A B-tree that also enforces uniqueness; rejects duplicate values at write time. | first defined: Chapter 037 L7
 partial unique index | - | uniqueIndex(...).where(...) enforcing uniqueness only among rows matching a predicate. | first defined: Chapter 039 L1
 GIN | generalized inverted index | Index mapping each value contained in a column back to the rows that hold it. | first defined: Chapter 039 L1
 operator class | opclass | Per-type strategy an index uses to compare values, e.g. jsonb_path_ops. | first defined: Chapter 039 L1
 write tax | - | The extra writes every insert/update/delete pays to keep each index in sync. | first defined: Chapter 039 L1
 low-cardinality column | low cardinality | A column with few distinct values (booleans, small enums); usually not worth a full index. | first defined: Chapter 039 L1
 CONCURRENTLY | - | CREATE INDEX option that builds without locking the table's writes. | first defined: Chapter 039 L1
+fetch | fetch API | Async network primitive: `fetch(input, init)` resolving to a Response; rejects only on transport failure. | first defined: Chapter 015 L1
+Response | - | Resolved result of `await fetch`: status, ok, headers, and a body read once via a consumer method. | first defined: Chapter 015 L1
+Request | - | Web Platform outbound request type: URL, method, headers, body; built inline via init or `new Request`. | first defined: Chapter 015 L1
+Headers | - | Case-insensitive multimap of header name to value(s); .get/.set/.append/.entries. | first defined: Chapter 015 L1
+init object | init | fetch's second argument carrying method, headers, body, signal. | first defined: Chapter 015 L1
+five seams | fetch seams, seam (fetch) | build, send, ok-branch, parse, catch — the five stages of every fetch call. | first defined: Chapter 015 L1
+response.ok | ok | True for any 200–299 status; the branch separating an error answer from no answer. | first defined: Chapter 015 L1
+consumer method | body consumer | A Response body reader (json/text/formData/blob/arrayBuffer); drains the stream, callable once. | first defined: Chapter 015 L1
+multipart boundary | boundary marker | Random marker in a multipart Content-Type the server uses to split fields; browser sets it for FormData. | first defined: Chapter 015 L1
+XMLHttpRequest | XHR | Legacy request primitive fetch replaced, surviving only for upload-progress events. | first defined: Chapter 015 L1
+apiFetch | - | In-house typed fetch helper factoring the five seams into one place; extract on the third repetition. | first defined: Chapter 015 L1
+FormData | - | Multipart body shape that can carry files; set no Content-Type so the browser adds the boundary. | first defined: Chapter 015 L1
+ReadableStream | - | Pull-based stream of chunks; response.body is one, read with for await. | first defined: Chapter 015 L2
+stream chunk | chunk (stream) | One network frame of a streamed body; a Uint8Array, sized by the network not your data. | first defined: Chapter 015 L2
+Uint8Array | - | Fixed-length array of bytes; each stream chunk is one, decoded to text by TextDecoder. | first defined: Chapter 015 L2
+buffering | buffered | Reading a body to completion before acting, the opposite of pulling chunks as they arrive. | first defined: Chapter 015 L2
+TextDecoder | - | Platform object turning bytes to a string; { stream: true } holds back split multi-byte chars. | first defined: Chapter 015 L2
+TextEncoder | - | Platform object turning a string to its UTF-8 bytes; used to write onto a stream. | first defined: Chapter 015 L2
+Server-Sent Events | SSE | One-way server→client convention over a text/event-stream response: data: lines split by blank lines. | first defined: Chapter 015 L2
+Last-Event-ID | - | Request header the browser sends on SSE reconnect, carrying the last id: so the server resumes. | first defined: Chapter 015 L2
+EventSource | - | Browser API opening an SSE connection, parsing events, and auto-reconnecting with last-id replay. | first defined: Chapter 015 L2
+polling | poll | Default live-update channel: a normal request-response call repeated on an interval. | first defined: Chapter 015 L2
+WebSockets | WebSocket | Bidirectional connection where client and server send on the same live channel; no HTTP cache. | first defined: Chapter 015 L2
+Web Crypto | crypto global, crypto | Built-in crypto global: randomUUID, getRandomValues, and the subtle algorithm surface; never imported. | first defined: Chapter 016 L1
+CSPRNG | cryptographically secure PRNG | Random source unpredictable even to an attacker who saw prior outputs; unlike Math.random(). | first defined: Chapter 016 L1
+base64url | - | URL-safe base64: - and _ for + and /, no = padding; drops into URLs, headers, JWTs. | first defined: Chapter 016 L1
+entropy | - | Amount of unpredictable randomness in a value, in bits; each bit doubles the possible-value space. | first defined: Chapter 016 L1
+CryptoKey | - | Opaque handle to key material held by the platform; passed to sign/verify, raw bytes not readable unless extractable. | first defined: Chapter 016 L1
+HMAC | - | Keyed hash: one shared secret signs and verifies, proving a payload came from a secret-holder. | first defined: Chapter 016 L1
+digest | - | One-shot hash (e.g. SHA-256) of a byte buffer; same input always yields the same fixed-length output. | first defined: Chapter 016 L1
+ArrayBuffer | - | Raw byte container you can't index; wrap in a Uint8Array view to read it; subtle methods return one. | first defined: Chapter 016 L1
+timing attack | constant-time compare | Leaking secret bytes via how long a short-circuiting compare (===) takes; fixed by comparing every byte. | first defined: Chapter 016 L1
+transient user activation | user activation, user gesture | Short-lived 'user just interacted' flag set on a gesture and cleared ~1s later; clipboard write needs it live. | first defined: Chapter 016 L2
+Client Component | use client | File starting with 'use client'; ships to the browser, can use state and browser APIs. | first defined: Chapter 016 L2
+ClipboardItem | - | Object holding one clipboard entry as several MIME-typed representations, so each paste target picks its format. | first defined: Chapter 016 L2
+live region | role=status | Element assistive tech announces when its text changes, e.g. role="status" for a 'Copied' message. | first defined: Chapter 016 L2
+Blob | - | Immutable, fixed-length byte sequence carrying a claimed MIME type; the universal in-memory binary container. | first defined: Chapter 016 L3
+MIME type | content type | Short string like image/png labeling the kind of bytes; a claim, not verified against content. | first defined: Chapter 016 L3
+File | - | A named Blob subclass the browser hands you from a file input; adds name and lastModified. | first defined: Chapter 016 L3
+FileList | - | Array-like list of File objects from a file input or drop; spread it before mapping. | first defined: Chapter 016 L3
+object URL | URL.createObjectURL, blob: URL | Temporary blob:<origin>/<uuid> handle mapping to bytes in browser memory; pins them until revoked. | first defined: Chapter 016 L3
+URL.revokeObjectURL | revokeObjectURL | Removes an object URL's map entry so its bytes can be collected; matches every createObjectURL. | first defined: Chapter 016 L3
+data URL | - | data:<type>;base64,... string embedding bytes inline; ~33% larger than raw, re-encoded each use. | first defined: Chapter 016 L3
+presigned URL | signed URL | Server-signed, short-expiry URL letting the holder PUT straight to object storage; bytes skip the app server. | first defined: Chapter 016 L3
+object storage | blob storage, S3/R2 | Service holding files as key-addressed objects (S3, R2, GCS); serves large binaries cheaply and directly. | first defined: Chapter 016 L3
+localStorage | Web Storage | Per-origin string key/value store; persists across reloads, tabs, and restarts; synchronous, ~5-10MB quota. | first defined: Chapter 016 L4
+sessionStorage | Web Storage | Same API as localStorage but scoped to one tab and wiped when it closes. | first defined: Chapter 016 L4
+storage event | - | Fires in OTHER same-origin tabs when a localStorage key changes; carries key, oldValue, newValue. | first defined: Chapter 016 L4
+useSyncExternalStore | - | React hook binding a component to a value outside React; getServerSnapshot supplies the SSR value. | first defined: Chapter 016 L4
+suppressHydrationWarning | - | React prop telling it one element will differ server-vs-client; not a general storage-warning silencer. | first defined: Chapter 016 L4
+IndexedDB | - | Async, queryable in-browser database; the answer for large or structured client data. | first defined: Chapter 016 L4
+BroadcastChannel | - | Browser API sending arbitrary messages between same-origin tabs. | first defined: Chapter 016 L4
+JSX | JavaScript XML | JavaScript with an XML-like element syntax; compiles to jsx() calls. | first defined: Chapter 017 L1
+JSX transform | - | Build step rewriting JSX into plain jsx() function calls. | first defined: Chapter 017 L1
+Turbopack | - | Next.js's Rust-based bundler. | first defined: Chapter 017 L1
+automatic runtime | - | Modern JSX transform that imports and emits jsx() with zero config. | first defined: Chapter 017 L1
+element descriptor | React element | Plain object describing what to render, not a DOM node. | first defined: Chapter 017 L1
+intrinsic element | - | A built-in HTML tag React knows (div, button, input). | first defined: Chapter 017 L1
+prop | - | A named input set on a JSX element; name="value" after the tag. | first defined: Chapter 017 L1
+key | React key | Stable data-tied id letting React match list items across renders. | first defined: Chapter 017 L1
+reconciliation | - | React matching previous and current elements when re-rendering. | first defined: Chapter 017 L1
+fragment | React.Fragment | <>...</> grouping siblings into one root, emitting no DOM node. | first defined: Chapter 017 L1
+void element | - | HTML element that holds no children; must self-close in JSX. | first defined: Chapter 017 L1
+JSX.IntrinsicElements | - | TS registry of every HTML element and the props it accepts. | first defined: Chapter 017 L1
+Next.js | - | React framework handling routing, rendering, and the server. | first defined: Chapter 017 L2
+App Router | - | Next.js file-based router; folders under app/ are URLs, layout.tsx/page.tsx define renders. | first defined: Chapter 017 L2
+root layout | app/layout.tsx | App Router's outermost layout; rendered once per route, owns html and body. | first defined: Chapter 017 L2
+metadata API | metadata, generateMetadata | Next.js declarative head authoring via exported metadata object or generateMetadata. | first defined: Chapter 017 L2
+quirks mode | - | Legacy rendering mode emulating 1990s browser bugs; avoided via DOCTYPE. | first defined: Chapter 017 L2
+mojibake | - | Garbled text from decoding bytes with the wrong character encoding. | first defined: Chapter 017 L2
+provider | - | Component supplying app-wide context (theme, cache, locale) to its subtree. | first defined: Chapter 017 L2
+portal target | - | Fixed DOM node React renders overlay UI (toasts, modals) into from anywhere. | first defined: Chapter 017 L2
+subsetting | subset | Shipping only the glyphs a language needs to shrink a font file. | first defined: Chapter 017 L2
+layout shift | - | Content jumping as a late-loading font or image arrives. | first defined: Chapter 017 L2
+next/font | - | Next.js font loader; self-hosts, subsets, and preloads fonts at build time. | first defined: Chapter 017 L2
+landmark | landmark region | Page region assistive tech can jump straight to, from elements like main, nav, header. | first defined: Chapter 017 L3
+WCAG | Web Content Accessibility Guidelines | W3C accessibility standard; level AA is the usual baseline target. | first defined: Chapter 017 L3
+accessibility tree | a11y tree | Browser-computed tree from the DOM holding each element's role, name, state; what assistive tech reads. | first defined: Chapter 017 L3
+role | - | An element's semantic identity in the accessibility tree (button, banner, navigation). | first defined: Chapter 017 L3
+ARIA | - | HTML attributes supplying roles, states, names to assistive tech when native HTML can't. | first defined: Chapter 017 L3
+accessible name | - | The text assistive tech announces for an element, from a heading reference or literal label. | first defined: Chapter 017 L3
+button element | <button> | HTML control that performs an action in place (submit, toggle, open); never navigates. | first defined: Chapter 017 L4
+link | anchor, <a> | The anchor element; a control that navigates to a URL. | first defined: Chapter 017 L4
+Preflight | Tailwind Preflight | Tailwind base layer zeroing default browser styling so elements start visually neutral. | first defined: Chapter 017 L4
+tabnabbing | - | Attack where a target=_blank page uses window.opener to redirect the original tab to a phishing page. | first defined: Chapter 017 L4
+Link | next/link | Next.js navigation component; renders to a plain <a href> and adds soft navigation. | first defined: Chapter 017 L4
+soft navigation | client-side navigation | JS-handled route change swapping only changed parts; no full reload or white flash. | first defined: Chapter 017 L4
+unordered list | <ul> | Bullet list where item order carries no meaning. | first defined: Chapter 017 L4
+ordered list | <ol> | Numbered list where item order is meaningful. | first defined: Chapter 017 L4
+list item | <li> | The only valid direct child of a <ul> or <ol>. | first defined: Chapter 017 L4
+form control | control | Any interactive form element the browser submits: input, select, textarea, button. | first defined: Chapter 017 L5
+progressive enhancement | - | Page works as plain HTML first; JS layers extra behavior on top of a working baseline. | first defined: Chapter 017 L5
+name attribute | name | The key a control's value lands under in FormData; the contract with the server. | first defined: Chapter 017 L5
+autoComplete | autofill token | Semantic token (email, new-password) telling browsers/password managers what a field holds. | first defined: Chapter 017 L5
+trust boundary | - | The line between bypassable client checks and the server check that actually enforces a rule. | first defined: Chapter 017 L5
+data-* attribute | data attribute, custom data attribute | Author-defined HTML attribute the browser stores but never renders or interprets; a private channel to your own scripts/styles. | first defined: Chapter 017 L6
+disclosure | - | A control that shows and hides a section of content (accordion header, more-details toggle, menu button). | first defined: Chapter 017 L6
+tabular data | - | Data shaped as a grid of like records: every row the same kind of thing, every column the same attribute, each cell at a (row, column). | first defined: Chapter 017 L6
+transpose | - | Swapping a grid's rows and columns; a positive test for whether data is genuinely tabular. | first defined: Chapter 017 L6
+scope (th attribute) | scope=col, scope=row | The <th> attribute declaring whether a header labels its column or its row, wiring each cell to the right header. | first defined: Chapter 017 L6
+utility class | utility | Single-purpose CSS class setting one declaration; p-4 = padding: 1rem. | first defined: Chapter 018 L1
+utility-first | - | Composing UI from single-purpose classes on the element instead of bespoke named classes in a stylesheet. | first defined: Chapter 018 L1
+theme token | design token | Named value in the design system (spacing 4, primary color) that utilities reference for consistency. | first defined: Chapter 018 L1
+Tailwind variant | variant prefix | Colon prefix wrapping a utility in a selector or media query (hover:, md:); changes when it applies, not what. | first defined: Chapter 018 L1
+breakpoint | min-width breakpoint | Screen-width threshold where layout changes; Tailwind's sm/md/lg are min-width gates applying at that width and up. | first defined: Chapter 018 L1
+arbitrary value | bracket value | Any CSS value in square brackets (w-[37rem]) for when no scale token fits. | first defined: Chapter 018 L1
+token namespace | namespace, @theme namespace | The prefix of a @theme token (--color-, --spacing-) that decides which utility family it mints. | first defined: Chapter 018 L2
+@theme | - | Tailwind v4 CSS directive defining design tokens that mint utility families. | first defined: Chapter 018 L2
+@utility | - | Tailwind v4 CSS directive authoring a brand-new utility in CSS. | first defined: Chapter 018 L2
+@custom-variant | - | Tailwind v4 CSS directive authoring a new variant prefix from a selector or media query. | first defined: Chapter 018 L2
+@container | container query utility | Tailwind v4 utility marking an ancestor as a query container so @-variants read its width. | first defined: Chapter 018 L2
+container query | - | CSS query styling an element by an ancestor container's size rather than the viewport. | first defined: Chapter 018 L2
+viewport | - | The browser window's visible area; its width drives sm/md/lg breakpoints. | first defined: Chapter 018 L2
+Lightning CSS | - | The Rust-based CSS engine Tailwind v4 uses to parse, transform, and minify, replacing PostCSS. | first defined: Chapter 018 L2
+OKLCH | - | Perceptually-uniform color space (lightness, chroma, hue); Tailwind v4's default palette. | first defined: Chapter 018 L2
+monorepo | - | A single repository holding multiple projects or packages built together. | first defined: Chapter 018 L2
+cn() | cn helper | clsx then tailwind-merge in one helper; flattens conditional classes, then resolves Tailwind conflicts last-wins. | first defined: Chapter 018 L3
+clsx | - | Tiny Tailwind-blind utility joining truthy class inputs (strings, arrays, objects) into one space-separated string. | first defined: Chapter 018 L3
+tailwind-merge | twMerge | Tailwind-aware utility grouping conflicting utilities by property and keeping only the last. | first defined: Chapter 018 L3
+ClassValue | - | clsx's input type: string, number, boolean, null, undefined, arrays of those, or class-key objects. | first defined: Chapter 018 L3
+group | group variant | Tailwind utility marking a parent so descendants style on its state via group-* (group-hover:). | first defined: Chapter 018 L4
+peer | peer variant | Tailwind utility marking an element so a later sibling styles on its state via peer-* (peer-invalid:); only reaches forward. | first defined: Chapter 018 L4
+has- | has variant, :has() | Tailwind variant wrapping CSS :has() so a parent styles itself by a descendant it contains. | first defined: Chapter 018 L4
+Constraint Validation | - | Browser's built-in form validity from HTML attributes (required, type=email); sets :invalid with no JS. | first defined: Chapter 018 L4
+semantic token | role token, color role | Color named for its UI job (background, card, primary), not its value; theme supplies the value. | first defined: Chapter 018 L5
+foreground | -foreground token | On-surface token (text/icons) paired with each surface token for legible contrast in both themes. | first defined: Chapter 018 L5
+theme | value set | One set of values for the role tokens; same names, swapped values per theme (light/dark). | first defined: Chapter 018 L5
+@theme inline | inline theme | @theme variant emitting var() refs into utilities so per-theme overrides resolve on the element, not :root. | first defined: Chapter 018 L5
+FOUC | flash of unstyled content | Brief flash of the default/wrong theme before the correct one applies on load. | first defined: Chapter 018 L6
+next-themes | - | React library injecting a pre-paint inline script to set the theme class, persist it, and track the OS preference. | first defined: Chapter 018 L6
+prefers-color-scheme | - | CSS media query exposing the OS light/dark setting. | first defined: Chapter 018 L6
+first paint | - | The browser's first pixels, drawn before any React code runs. | first defined: Chapter 018 L6
+ThemeProvider | - | next-themes provider that wraps the app, holds theme config, and injects the pre-paint script. | first defined: Chapter 018 L6
+resolvedTheme | - | useTheme() value: the concrete theme in effect ('light'/'dark') after 'system' resolves, vs settable theme. | first defined: Chapter 018 L6
+declaration | CSS declaration | A single property: value pair inside a CSS rule. | first defined: Chapter 019 L1
+user-agent stylesheet | UA stylesheet | The browser's built-in default styles. | first defined: Chapter 019 L1
+cascade layer | layer, @layer | Named bucket of CSS rules declared with @layer; layer order outranks specificity. | first defined: Chapter 019 L1
+specificity | specificity tuple | Four-part tuple (inline, ID, class, element) ranking selectors; gate 3 of the cascade. | first defined: Chapter 019 L1
+source order | - | Last-declared-wins tiebreaker; gate 4 of the cascade. | first defined: Chapter 019 L1
+!important | important | Marks a declaration adjudicated at gate 1; inverts layer order. | first defined: Chapter 019 L1
+:where() | where | Specificity-zero selector wrapper; its contents add nothing to the tuple. | first defined: Chapter 019 L1
+:is() | is | Selector wrapper taking the specificity of its most specific argument. | first defined: Chapter 019 L1
+unlayered CSS | unlayered | A rule outside any @layer; cascades as if in a layer after every named one, beating them all. | first defined: Chapter 019 L1
+Computed panel | - | DevTools view showing each property's final resolved value and the rule and layer that supplied it. | first defined: Chapter 019 L1
+inheritance | CSS inheritance | Per-property flag; when no rule sets a property, an inheriting one copies the parent's computed value. | first defined: Chapter 019 L2
+computed value | - | Final value the browser uses after the cascade and unit math; what inheritance copies. | first defined: Chapter 019 L2
+initial value | - | A property's spec-defined default, used when the cascade supplies none and it does not inherit. | first defined: Chapter 019 L2
+currentColor | - | CSS keyword resolving to the element's computed color; lets any property ride the inherited text color. | first defined: Chapter 019 L2
+custom property | CSS custom property, CSS variable | Author-defined --name property set once and read with var(); inherits like text properties. | first defined: Chapter 019 L2
+prose | @tailwindcss/typography, prose class | Typography-plugin class that restyles raw unclassed HTML with tokenized, themeable typographic defaults. | first defined: Chapter 019 L3
+primitive token | primitive, primitive tier | Raw palette value named for appearance (--blue-500, --spacing-4); the bottom token tier. | first defined: Chapter 019 L4
+component token | component tier | Token scoped to one component (--button-primary-bg); rare top tier above semantic. | first defined: Chapter 019 L4
+@property | at-property | CSS at-rule typing a custom property (syntax/inherits/initial-value) so it can interpolate. | first defined: Chapter 019 L4
+box model | - | The four nested boxes (content, padding, border, margin) every element renders as. | first defined: Chapter 020 L1
+content box | - | Innermost box where text and children render; what width targets under content-box. | first defined: Chapter 020 L1
+padding box | - | Box wrapping content with inside space; takes the element's background. | first defined: Chapter 020 L1
+border box | - | The visible edge box where border-* utilities draw. | first defined: Chapter 020 L1
+margin box | - | Outermost transparent band pushing neighbors away; the only box that collapses. | first defined: Chapter 020 L1
+box-sizing | - | Property deciding whether width targets the content box or the border box. | first defined: Chapter 020 L1
+content-box | - | Old box-sizing default; width sizes content only, padding and border add on top. | first defined: Chapter 020 L1
+border-box | - | box-sizing value where width includes padding and border; Preflight's default. | first defined: Chapter 020 L1
+spacing scale | - | Tailwind's --spacing-multiplier system; p-4, m-2 etc. compile to calc(--spacing * n). | first defined: Chapter 020 L1
+4px grid | - | Convention of spacing in multiples of 4px; Tailwind's default --spacing step. | first defined: Chapter 020 L1
+margin collapse | collapsing margins | Adjacent vertical block margins merge to the larger instead of summing; block-axis, normal-flow only. | first defined: Chapter 020 L1
+block-level element | block element | Element taking full width and stacking on a new line (div, p, section); vs inline. | first defined: Chapter 020 L1
+normal flow | - | Default top-to-bottom, left-to-right layout before flex, grid, or positioning. | first defined: Chapter 020 L1
+logical properties | logical property | Direction-aware properties (padding-inline-start) resolving against writing direction so layouts mirror in RTL. | first defined: Chapter 020 L1
+inline axis | - | The axis text flows along; horizontal in English. | first defined: Chapter 020 L1
+block axis | - | The axis blocks stack along; vertical in English, perpendicular to inline. | first defined: Chapter 020 L1
+RTL | right-to-left | Writing direction of Arabic, Hebrew, Persian; text and layout flow right to left. | first defined: Chapter 020 L1
+mx-auto | margin-inline: auto | Centers a fixed-width block in flow by splitting leftover horizontal space evenly. | first defined: Chapter 020 L1
+display | - | CSS property setting an element's outer role (block/inline) and inner formatting context (flow/flex/grid), or no box. | first defined: Chapter 020 L2
+formatting context | - | The layout rules a container imposes on its children; display's inner part picks flow, flex, or grid. | first defined: Chapter 020 L2
+layout tree | - | Tree of boxes the browser lays out and paints, derived from but not identical to the DOM. | first defined: Chapter 020 L2
+inline-block | - | display value flowing in the text line like inline but honoring width, height, and reserved vertical space like block. | first defined: Chapter 020 L2
+flex | flexbox | display inner context laying direct children out in one dimension, a single row or column. | first defined: Chapter 020 L2
+grid | CSS grid | display inner context placing children into a two-dimensional structure of rows and columns. | first defined: Chapter 020 L2
+display: contents | contents | display value removing an element's own box so its children rise into the grandparent's layout; element stays in the DOM. | first defined: Chapter 020 L2
+assistive technology | AT | Software helping people with disabilities use a computer: screen readers, magnifiers, switch devices, voice control. | first defined: Chapter 020 L2
+visibility: hidden | invisible | Hides an element from sight while keeping its box and reserved space; drops it from the accessibility tree. | first defined: Chapter 020 L2
+aria-hidden | - | Attribute pruning an element from the accessibility tree only; stays visible and takes space. Never on focusable elements. | first defined: Chapter 020 L2
+sr-only | - | Tailwind utility hiding an element visually while keeping it in the accessibility tree for screen readers. | first defined: Chapter 020 L2
+conditional render | - | Mounting an element only when a condition holds ({cond && <X/>}); when false it leaves both trees and React tears down its state. | first defined: Chapter 020 L2
+flex container | - | Element with display: flex; lays direct children along an axis and distributes space between them. | first defined: Chapter 020 L3
+flex item | - | Direct child of a flex container; can grow, shrink, and be aligned. | first defined: Chapter 020 L3
+main axis | - | Primary axis a flex container lays items along; horizontal in a row, vertical with flex-col. | first defined: Chapter 020 L3
+cross axis | - | Axis perpendicular to the main axis; vertical in a default row. | first defined: Chapter 020 L3
+flex-grow | flex-grow | How much an item grows to absorb free space relative to siblings; 0 means don't grow. | first defined: Chapter 020 L3
+flex-shrink | flex-shrink | How much an item gives up space when the container is too small; 0 means refuse to shrink. | first defined: Chapter 020 L3
+flex-basis | flex-basis | An item's starting size along the main axis before grow and shrink apply. | first defined: Chapter 020 L3
+min-content | min-content width | Narrowest an element can get without content overflowing; roughly its longest unbreakable run of text. | first defined: Chapter 020 L3
+min-w-0 | - | Tailwind utility overriding min-width: auto so a flex item can shrink below its content width. | first defined: Chapter 020 L3
+truncate | - | Tailwind text utility clipping overflow to one line with an ellipsis. | first defined: Chapter 020 L3
+justify-content | justify-* | Distributes flex items along the main axis (start, between, center). | first defined: Chapter 020 L3
+align-items | items-* | Positions flex items across the cross axis (stretch, center, baseline). | first defined: Chapter 020 L3
+align-self | self-* | Overrides cross-axis alignment for a single flex item. | first defined: Chapter 020 L3
+gap | gap-* | Space between siblings in a flex/grid container; not before first or after last. | first defined: Chapter 020 L6
+grid container | - | Element with display: grid; defines row and column tracks, direct children become items. | first defined: Chapter 020 L4
+grid item | - | Direct child of a grid container; occupies one or more cells, auto-placed unless it positions itself. | first defined: Chapter 020 L4
+track | grid track | A single column or row of a grid, set by grid-template-columns/rows; has a size, items fill its cells. | first defined: Chapter 020 L4
+cell | grid cell | Intersection of one column track and one row track; the box an item can occupy. | first defined: Chapter 020 L4
+fr | fr unit, fraction unit | Grid track unit equal to one share of leftover space after fixed/content tracks are subtracted. | first defined: Chapter 020 L4
+minmax | minmax(min, max) | Grid track function bounding a track between a min and max size; minmax(0,1fr) lets a track shrink below its content. | first defined: Chapter 020 L4
+media query | - | CSS @media rule applying styles only when a condition like a min viewport width holds; mechanism behind breakpoints. | first defined: Chapter 020 L4
+auto-fit | - | repeat() keyword creating as many tracks as fit and collapsing empty trailing tracks so present items stretch. | first defined: Chapter 020 L4
+auto-fill | - | repeat() keyword creating as many tracks as fit but keeping empty trailing tracks at min width. | first defined: Chapter 020 L4
+app shell | page shell | Fixed chrome around an app's scrolling content: header, sidebar, main, footer. | first defined: Chapter 020 L4
+named template areas | grid-template-areas | Grid feature mapping named regions in an ASCII-art string; children claim a region with grid-area. | first defined: Chapter 020 L4
+subgrid | grid-rows-subgrid, grid-cols-subgrid | A nested grid adopting its parent's tracks so children align on the parent's shared lines. | first defined: Chapter 020 L4
+Baseline | - | Feature supported across all current major browsers; safe to ship without a fallback. | first defined: Chapter 020 L4
+gridline | grid line | Numbered edge between/around tracks; an N-track axis has N+1 lines, used by col-start/col-end. | first defined: Chapter 020 L4
+place-items | place-items-* | Shorthand for align-items and justify-items; positions each grid item within its cell. | first defined: Chapter 020 L4
+place-content | place-content-* | Shorthand for align-content and justify-content; positions the whole track block within the container. | first defined: Chapter 020 L4
+intrinsic sizing | intrinsic, content-driven | A dimension sized by the box's own content. | first defined: Chapter 020 L5
+extrinsic sizing | extrinsic, forced | A dimension imposed from outside: a fixed length, a percentage, or a flex/grid track. | first defined: Chapter 020 L5
+max-content | max-content width | Widest the content wants with no wrapping; for text, the whole thing on one line. | first defined: Chapter 020 L5
+fit-content | w-fit | max-content capped at the space available; sizes to content when there's room, wraps when there isn't. | first defined: Chapter 020 L5
+size-* | - | Tailwind utility setting width and height together, for square elements. | first defined: Chapter 020 L5
+max-w-prose | - | Tailwind utility capping width at a readable measure (~65ch). | first defined: Chapter 020 L5
+ch | ch unit | CSS length equal to the width of the font's "0" glyph; the natural unit for character-count widths. | first defined: Chapter 020 L5
+viewport units | vh, vw | CSS lengths relative to the viewport's size. | first defined: Chapter 020 L5
+dvh | dynamic viewport height | Viewport-height unit tracking the live viewport as mobile chrome slides in and out. | first defined: Chapter 020 L5
+svh | small viewport height | Viewport-height unit measured with mobile chrome fully shown (smallest viewport). | first defined: Chapter 020 L5
+lvh | large viewport height | Viewport-height unit measured with mobile chrome collapsed (largest viewport); what vh has always meant. | first defined: Chapter 020 L5
+aspect-ratio | aspect-* | CSS property deriving one dimension from the other at a fixed ratio; reserves media height before load. | first defined: Chapter 020 L5
+object-cover | object-fit: cover | Fills a box with media, cropping to cover it rather than stretching. | first defined: Chapter 020 L5
+clamp() | clamp | CSS function clamp(min, preferred, max); a value tracks preferred but never crosses the bounds. | first defined: Chapter 020 L5
+CLS | Cumulative Layout Shift | Core Web Vitals metric measuring how much visible content unexpectedly jumps as a page loads. | first defined: Chapter 020 L5
+browser chrome | chrome | The browser's own UI around the page: address bar, tabs, toolbars. | first defined: Chapter 020 L5
+siblings | sibling | Direct children of the same parent; what a flex/grid container lays out. | first defined: Chapter 020 L6
+space-y / space-x | space-y-*, space-x-* | Legacy Tailwind spacing; margin on every child but the last. Superseded by gap. | first defined: Chapter 020 L6
+divide | divide-y-*, divide-x-* | Tailwind utility drawing a border between direct children, all but the last. | first defined: Chapter 020 L6
+multi-column | columns | Layout flowing content into side-by-side text columns via CSS columns. | first defined: Chapter 020 L6
+lobotomized owl | * + * | The * + * selector targeting all siblings but the first; legacy margin-based spacing. | first defined: Chapter 020 L6
+position (CSS) | position property | CSS property with five values (static/relative/absolute/fixed/sticky) controlling what an element is positioned against. | first defined: Chapter 020 L7
+static (position) | - | Default position; element stays in normal flow and offsets do nothing. | first defined: Chapter 020 L7
+relative (position) | - | Position keeping the element in flow but allowing offsets and making it an anchor for absolute children. | first defined: Chapter 020 L7
+absolute (position) | - | Position removing the element from flow; offsets measure from the nearest positioned ancestor. | first defined: Chapter 020 L7
+fixed (position) | - | Position removing the element from flow and anchoring it to the viewport; stays put on scroll. | first defined: Chapter 020 L7
+sticky (position) | - | Hybrid position; acts relative until a scroll offset, then pins like fixed within the parent's bounds. | first defined: Chapter 020 L7
+in flow / out of flow | in flow, out of flow | In flow reserves space and pushes siblings; out of flow reserves none, so siblings close up. | first defined: Chapter 020 L7
+containing block | - | Rectangle an out-of-flow element's offsets measure from; for absolute, the nearest positioned ancestor's padding box. | first defined: Chapter 020 L7
+initial containing block | - | Viewport-sized fallback containing block when no ancestor is positioned. | first defined: Chapter 020 L7
+inset | inset-* | CSS shorthand grouping the four offset properties top/right/bottom/left; Tailwind's inset utility family. | first defined: Chapter 020 L7
+top layer | - | Browser-managed layer painting above all page content and escaping every stacking context; where popovers and dialogs render. | first defined: Chapter 020 L7
+CSS Anchor Positioning | anchor positioning | Native CSS for tethering one element's position to another, replacing JS positioning libraries. | first defined: Chapter 020 L7
+Popover API | popover | Native browser API for popovers/dropdowns/menus with light-dismiss and focus handling. | first defined: Chapter 020 L7
+scroll container | - | Box that clips overflow and lets the user scroll inside it; created by overflow hidden/auto/scroll plus an exceedable height. | first defined: Chapter 020 L8
+overflow | overflow-* | CSS property deciding whether oversized content clips and whether the box becomes a scroll container. | first defined: Chapter 020 L8
+scroll chaining | scroll chains | Leftover scroll at a container's edge continuing into the nearest ancestor scroll container, ultimately the page. | first defined: Chapter 020 L8
+overscroll-behavior | overscroll-* | CSS property controlling what happens at a scroll container's edge; contain stops the chain, none also kills the bounce. | first defined: Chapter 020 L8
+pull-to-refresh | - | Touch gesture reloading the page when pulled past the top; scroll chaining can fire it by accident. | first defined: Chapter 020 L8
+scrollbar gutter | - | Reserved strip along a scroll container's edge that a scrollbar occupies. | first defined: Chapter 020 L8
+scrollbar-gutter | scrollbar-gutter-* | CSS property reserving the scrollbar gutter; stable keeps it reserved so content never shifts. | first defined: Chapter 020 L8
+page scroll | - | Scroll model where body is the primary scroll container and the whole page scrolls as one document. | first defined: Chapter 020 L8
+app-shell scroll | - | Scroll model where an inner main scrolls while top bar and sidebar chrome stay fixed; you own scroll restoration. | first defined: Chapter 020 L8
+min-h-0 | - | Tailwind utility overriding min-height: auto so a flex/grid child can shrink below its content height and scroll. | first defined: Chapter 020 L8
+scroll snapping | scroll snap | CSS feature making a scroll container settle on defined points; the native mechanism behind carousels and galleries. | first defined: Chapter 020 L8
+stacking context | - | Self-contained group of elements stacked among themselves, then placed as one unit in the parent; z-index only competes within one. | first defined: Chapter 020 L9
+z-index | z-* | CSS property ordering positioned elements on the z-axis within their stacking context; higher paints later, on top. | first defined: Chapter 020 L9
+paint order | - | Order the browser paints elements; later-painted cover earlier; z-index sets it within a stacking context. | first defined: Chapter 020 L9
+compositing layer | compositing layers | GPU surface the browser composites separately; roughly maps to a stacking context, a debugging hint not a precise model. | first defined: Chapter 020 L9
+isolate | isolation: isolate | Tailwind utility creating a stacking context with no visual effect; the clean way to deliberately scope layering. | first defined: Chapter 020 L9
+portal | - | Rendering a component's DOM node elsewhere (typically under body) while keeping it logically inside its React parent; escapes a trapping stacking context. | first defined: Chapter 020 L9
+font-family | - | CSS property picking the typeface; takes a comma-separated list, browser uses first available. | first defined: Chapter 021 L1
+variable font | - | Single font file holding a continuous axis (e.g. every weight), instead of one file per weight. | first defined: Chapter 021 L1
+FOUT | flash of unstyled text | Brief moment a fallback font shows before the web font loads and swaps in. | first defined: Chapter 021 L1
+FOIT | flash of invisible text | Text hidden entirely until the font loads, then appears; worse than FOUT. | first defined: Chapter 034 L4
+static font | - | One font file per weight/style, unlike a variable font's single file. | first defined: Chapter 034 L4
+.woff2 | woff2 | Compressed, universally-supported web font format; the only one worth shipping. | first defined: Chapter 034 L4
+font-display: swap | swap | next/font default; renders fallback immediately, swaps web font in when ready. | first defined: Chapter 021 L1
+rem | rem unit | CSS unit equal to the root element's font-size (16px default); scales with the user's browser setting. | first defined: Chapter 021 L1
+type scale | font-size scale | The text-xs..text-9xl set; each step a rem font-size paired with a tuned line-height. | first defined: Chapter 021 L1
+line-height | leading | Vertical distance between lines of text; Tailwind leading-* utilities. | first defined: Chapter 021 L1
+letter-spacing | tracking | Horizontal spacing between letters; Tailwind tracking-* utilities. | first defined: Chapter 021 L1
+measure | line length | Length of a line of text in characters; comfortable body range ~60-75. | first defined: Chapter 021 L1
+orphan | - | A single stranded word left alone on its own line at the end of a heading or paragraph. | first defined: Chapter 021 L1
+eyebrow | eyebrow label | Small all-caps label set above a heading or section. | first defined: Chapter 021 L1
+tabular-nums | tabular figures | font-variant-numeric forcing every digit the same width so columns of numbers align. | first defined: Chapter 021 L1
+color-mix() | color-mix | CSS function blending two colors at runtime in a chosen interpolation space; derives related colors instead of storing them. | first defined: Chapter 021 L2
+interpolation space | - | The color space the browser travels through when blending; changes the path and the midpoint color. | first defined: Chapter 021 L2
+OKLAB | oklab | Cartesian form of OKLCH with no separate hue axis; ideal for straight-line mixes like fading to transparent. | first defined: Chapter 021 L2
+gamut | - | The range of colors a display or color space can physically show. | first defined: Chapter 021 L2
+P3 | Display-P3 | Wide-gamut color space modern screens support, larger than sRGB, with more vivid greens and reds. | first defined: Chapter 021 L2
+contrast ratio | - | Luminance difference between two colors, from 1:1 (identical) to 21:1 (black on white). | first defined: Chapter 021 L2
+Windows High Contrast Mode | forced colors | Mode overriding every page color with a user-chosen system palette; targeted via forced-colors. | first defined: Chapter 021 L2
+elevation | elevation language, elevation scale, elevation ladder | How borders, radius, and shadows together signal how high a surface sits above the page; each tier maps to one shadow rung. | first defined: Chapter 021 L3
+hairline | - | A 1px border, the thinnest visible separator line between surfaces. | first defined: Chapter 021 L3
+pill | - | A fully-rounded rectangle with semicircular ends and a straight middle; rounded-full on a non-square box. Not a circle. | first defined: Chapter 021 L3
+contact shadow | - | The tight, darker shadow right where an object meets the surface; the line of contact. | first defined: Chapter 021 L3
+ambient shadow | - | The soft, diffuse shadow an object casts into the surrounding space from indirect light. | first defined: Chapter 021 L3
+focus ring | - | The visible highlight on whatever element keyboard focus is on; drawn with outline or ring-*, never border. | first defined: Chapter 021 L3
+halo | - | A focus ring drawn with a gap between element and ring, so it sits in clear space; shadcn's ring-* style. | first defined: Chapter 021 L3
+filter (CSS) | filter | CSS filter functions (blur, brightness, drop-shadow, ...) applied to an element's rendered pixels; creates a stacking context. | first defined: Chapter 021 L3
+glass-morphism | glassmorphism | The frosted-glass UI style: a translucent surface that blurs whatever shows through from behind, via backdrop-filter. | first defined: Chapter 021 L3
+GPU-composited | - | The browser hands an effect to the GPU and recomputes it every frame the surface paints; cheap for one element, costly across many. | first defined: Chapter 021 L3
+pseudo-class | - | One-colon selector for a state the browser tracks on a real element (:hover, :checked, :disabled). | first defined: Chapter 021 L4
+pseudo-element | - | Two-colon selector targeting a sub-part the markup never created as a tag (::placeholder, ::selection). | first defined: Chapter 021 L4
+:active | active | Pseudo-class matching while an element is pressed (mouse/finger down); releases on let-go. | first defined: Chapter 021 L4
+:focus-visible | focus-visible | Pseudo-class matching focus the browser decides warrants a ring; keyboard/programmatic, not plain click. | first defined: Chapter 021 L4
+:focus-within | focus-within | Pseudo-class matching an ancestor when it or any descendant has focus. | first defined: Chapter 021 L4
+:not() | not, not-* | Pseudo-class matching every element that does not match its inner selector. | first defined: Chapter 021 L4
+focus heuristic | heuristic | Browser's built-in rule deciding when a focus indicator shows; styled via :focus-visible. | first defined: Chapter 021 L4
+::placeholder | placeholder pseudo-element | Pseudo-element targeting an empty input's faint hint text; does not inherit color. | first defined: Chapter 021 L4
+::selection | selection pseudo-element | Pseudo-element targeting the highlight painted over user-selected text. | first defined: Chapter 021 L4
+shadow DOM | - | Encapsulated DOM subtree a browser keeps hidden from outside CSS and selectors; :has() can't reach in. | first defined: Chapter 021 L4
+structural pseudo-class | - | Pseudo-class matching by sibling position (:first-child, :nth-child, :empty); mostly retired by gap/divide. | first defined: Chapter 021 L4
+:visited | visited | Link pseudo-class for visited links; privacy-locked to a few styleable properties. | first defined: Chapter 021 L4
+CSS transition | transition | Interpolates a property from its old value to a new one when that value changes; needs an external trigger. | first defined: Chapter 021 L5
+tween | in-betweening | The in-between frames a transition or animation generates between two values. | first defined: Chapter 021 L5
+easing | timing function, ease-* | Timing function mapping elapsed time to animation progress; controls start-fast vs end-fast vs even. | first defined: Chapter 021 L5
+keyframes | @keyframes | A named timeline of property values from 0% to 100% that an animation plays through. | first defined: Chapter 021 L5
+tw-animate-css | - | CSS-first Tailwind v4 utility pack of enter/exit animations; maintained successor to tailwindcss-animate. | first defined: Chapter 021 L5
+Radix | Radix UI | Headless component library providing behavior and accessibility without styling; shadcn wraps it with Tailwind. | first defined: Chapter 021 L5
+View Transitions API | - | Browser API snapshotting the page before/after a DOM change and animating the difference, including across navigations. | first defined: Chapter 021 L5
+mobile-first | mobile-first reflex | Author base styles for the narrowest viewport, then layer wider-screen rules with min-width breakpoints; each adds, never overrides. | first defined: Chapter 021 L6
+min-width (media feature) | min-width query | Media query applying its rules only from the given viewport width up; the mechanism behind every breakpoint prefix. | first defined: Chapter 021 L6
+max-width (media feature) | max-width query, max-md: | Media query applying below a width; the desktop-first tool, walks the base back. | first defined: Chapter 021 L6
+hover: hover | hover media feature | Media query asking whether the device can hover (mouse yes, touch no); Tailwind v4 wraps hover: in it. | first defined: Chapter 021 L6
+sticky hover | sticky-hover bug | Pre-v4 bug where a touch tap fired :hover and left the style stuck until tapping elsewhere. | first defined: Chapter 021 L6
+pointer (media feature) | pointer: fine, pointer: coarse | Media query reporting whether the pointing device is precise (mouse) or blunt (fingertip). | first defined: Chapter 021 L6
+meta viewport | viewport meta tag | <meta name="viewport" content="width=device-width..."> making a phone report its real width; without it mobile-first base never shows. | first defined: Chapter 021 L6
+layout switch | structure switch | Responsive tier one: changing the structural primitive at a breakpoint (flex-col md:flex-row). | first defined: Chapter 021 L6
+value scaling | - | Responsive tier two: keeping structure but tuning its numbers up at a breakpoint (p-4 md:p-8). | first defined: Chapter 021 L6
+container-type | - | CSS property opting a box into being a query container; inline-size measures width, size both axes, normal off. | first defined: Chapter 021 L7
+inline-size | inline axis | The element's width axis in writing-mode terms; for LTR Latin text it is the horizontal one. | first defined: Chapter 021 L7
+containment | - | Browser isolating a subtree's layout so it can be measured and queried independently. | first defined: Chapter 021 L7
+container query unit | cqi, cqb, cqw, cqh, cqmin, cqmax | Length unit relative to the queried container's size; 1cqi is 1% of its inline (width) size. | first defined: Chapter 021 L7
+cqi | - | Container query inline-size unit; 1cqi is 1% of the nearest queried container's width. | first defined: Chapter 021 L7
+typed props contract | props contract | A component's props typed as a small named surface stating exactly what it accepts. | first defined: Chapter 022 L1
+variant union | - | One prop whose value is a finite union, collapsing mutually-exclusive boolean flags into one axis. | first defined: Chapter 022 L1
+JSX.Element | - | The type a component returns: a single rendered React element; inference supplies it. | first defined: Chapter 022 L1
+ComponentProps | - | React utility type: ComponentProps<'button'> is every prop the JSX element accepts; ComponentProps<typeof X> every prop component X accepts. | first defined: Chapter 022 L1
+rest destructuring | ...rest spread | Gathers every prop you didn't name into one object you then spread onto another element. | first defined: Chapter 022 L1
+ComponentType | - | The type of a component itself (one accepting props P), for when a component is a value you store or pass. | first defined: Chapter 022 L1
+forwardRef | - | Legacy way to let a component accept a ref; React 19 makes ref a regular prop. | first defined: Chapter 022 L1
+PropTypes | - | Legacy runtime prop validation, replaced by TypeScript's compile-time checks. | first defined: Chapter 022 L1
+higher-order component | HOC | Legacy withSomething(Component) wrapping pattern retired by hooks and composition. | first defined: Chapter 022 L1
+make illegal states unrepresentable | illegal states unrepresentable | Shape types so invalid combinations can't be expressed, not just guarded at runtime. | first defined: Chapter 005 L1
+children | children prop | The prop holding whatever JSX sits between a component's tags; React fills it in. | first defined: Chapter 022 L2
+ReactNode | - | The broad renderable type: JSX, strings, numbers, arrays, fragments, portals, null/undefined/booleans. | first defined: Chapter 022 L2
+ReactElement | - | The narrow renderable type: a single JSX element only; rejects strings, numbers, fragments. | first defined: Chapter 022 L2
+compound component | compound family | A tightly coupled family of thin subcomponents exported together, composed via JSX. | first defined: Chapter 022 L2
+prop-as-slot | - | A single named content region passed as a ReactNode prop instead of a subcomponent. | first defined: Chapter 022 L2
+render prop | - | A prop (often children) that is a function the component calls with data it owns, letting the consumer render. | first defined: Chapter 022 L2
+prop drilling | - | Threading a prop through middle components that don't use it, just to reach a deep consumer. | first defined: Chapter 022 L2
+
+class-variance-authority | cva | Tiny library declaring a component's variant-to-class mapping as data, then resolving a combination. | first defined: Chapter 022 L3
+VariantProps | - | cva type helper reading a cva call to derive its variants' optional prop types. | first defined: Chapter 022 L3
+Slot | - | Radix component taking one child and merging its props onto that child, rendering no wrapper. | first defined: Chapter 022 L3
+asChild | - | Boolean prop that swaps the component's element for the caller's single child, merging classes/behavior onto it. | first defined: Chapter 022 L3
+polymorphism | polymorphic | A component's ability to render as more than one underlying element. | first defined: Chapter 022 L3
+
+ref | - | A handle pointing at a DOM node (or value), exposed on a ref object's .current; lets a parent reach the rendered element. | first defined: Chapter 022 L4
+Ref | Ref<T> | The type an element's ref prop accepts: the union RefObject | RefCallback | null. | first defined: Chapter 022 L4
+RefObject | RefObject<T> | What useRef returns; its .current holds the value, writable in React 19. | first defined: Chapter 022 L4
+RefCallback | RefCallback<T>, callback ref | A ref in function form; React calls it with the node on mount, may return a cleanup. | first defined: Chapter 022 L4
+codemod | - | An automated source-transform script that rewrites code mechanically. | first defined: Chapter 022 L4
+IntersectionObserver | - | Browser API running a callback when an element enters or leaves the viewport. | first defined: Chapter 022 L4
+mergeRefs | merge-refs | Helper fanning one DOM node out to several refs. | first defined: Chapter 022 L4
+useImperativeHandle | - | React hook exposing a custom object of methods on a ref instead of the DOM node. | first defined: Chapter 022 L4
+createPortal | - | react-dom function rendering children's DOM under a named node while keeping the React tree intact. | first defined: Chapter 022 L5
+WAI-ARIA APG | APG, Authoring Practices Guide | W3C reference patterns for accessible widgets; its Dialog (Modal) pattern is the overlay checklist. | first defined: Chapter 022 L5
+focus trap | - | Confining Tab/Shift+Tab within an open dialog so focus can't reach the page behind it. | first defined: Chapter 022 L5
+::backdrop | backdrop pseudo-element | Pseudo-element styling the scrim behind a top-layer dialog/popover with plain CSS. | first defined: Chapter 022 L5
+native dialog | <dialog>, showModal | HTML dialog element; showModal() renders it in the top layer with Esc and focus trap for free. | first defined: Chapter 022 L5
+Sonner | sonner | shadcn's default toast: one <Toaster /> in the layout, toast() from anywhere. | first defined: Chapter 022 L5
+scroll lock | body scroll lock | Stopping the page behind a modal from scrolling; overflow hidden on body, plus position fixed on iOS. | first defined: Chapter 022 L5
+render | re-render | React calling a component function to get its JSX tree; pure computation, no DOM touched. | first defined: Chapter 023 L1
+commit | commit phase | The phase where React applies the diffed changes to the real DOM. | first defined: Chapter 023 L1
+mount | - | A component's first render; React builds DOM from nothing, no previous tree to diff. | first defined: Chapter 023 L1
+update | - | Any render after the mount; always has a previous tree to diff against. | first defined: Chapter 023 L1
+UI = f(state) | - | The model that a component's output is a pure function of its props, state, and context. | first defined: Chapter 023 L1
+React Compiler | - | Build-time tool auto-inserting memoization, replacing hand-written useMemo/useCallback. | first defined: Chapter 023 L1
+useContext | - | React hook reading a value shared from an ancestor provider; subscribes to its changes. | first defined: Chapter 023 L1
+useMemo | - | Hook caching a computed value across renders while its dependency array is unchanged. | first defined: Chapter 023 L1
+useCallback | - | Hook caching a function's identity across renders while its dependency array is unchanged. | first defined: Chapter 023 L1
+uncontrolled input | uncontrolled component | An input whose value lives in the DOM, not React state; React doesn't overwrite it on re-render. | first defined: Chapter 023 L2
+remount | - | React tearing down a component instance and mounting a fresh one (state/refs reset) when type, key, or position changes at a slot. | first defined: Chapter 023 L2
+pure function | - | A function whose output depends only on its inputs, with no observable effect outside itself. | first defined: Chapter 023 L3
+purity contract | purity | React's rule that render must not mutate props/state or perform side effects. | first defined: Chapter 023 L3
+side effect (render) | - | A render-time change to or dependence on outside state: writing a global/DOM/storage, a network call, reading the clock or random. | first defined: Chapter 023 L3
+Strict Mode | StrictMode | Dev-only wrapper that double-invokes render to surface impurity before production. | first defined: Chapter 023 L3
+concurrent rendering | - | React interrupting, abandoning, and resuming renders so a higher-priority update can jump ahead. | first defined: Chapter 023 L3
+useState | - | React hook returning a [value, setter] pair for a piece of local state. | first defined: Chapter 023 L4
+snapshot | state snapshot | A render's frozen state: each piece is baked in as a constant for that whole render. | first defined: Chapter 023 L4
+update queue | - | The per-state queue React fills with setter entries during a handler, resolving once after it finishes. | first defined: Chapter 023 L4
+batching | - | Grouping setters fired in one event into a single re-render. | first defined: Chapter 023 L4
+updater form | updater function | Passing setState a function of the pending value (c => c + 1) instead of a value; reads the queue, not the snapshot. | first defined: Chapter 023 L4
+stale closure | - | A callback running after render that reads a frozen snapshot value instead of the current one. | first defined: Chapter 023 L4
+flushSync | - | react-dom function forcing a synchronous render and DOM commit before the next line runs. | first defined: Chapter 023 L4
+Immer | - | Library letting you write mutation-style code that produces an immutable state update underneath. | first defined: Chapter 023 L4
+useReducer | - | Hook holding state plus named transitions in one reducer; for state with several coordinated fields. | first defined: Chapter 023 L4
+derived state | - | A value computed from existing state during render instead of stored in its own state. | first defined: Chapter 023 L4
+master-detail | master-detail screen | A UI with a list of records (master) beside a panel showing the selected record's details (detail). | first defined: Chapter 023 L5
+controlled component | controlled input | A form/input whose values live in React state and flow down as props, with edits reported up via callbacks. | first defined: Chapter 023 L5
+pointer capture | setPointerCapture | Routes all further pointer events to one element until release, even outside its bounds; how drag handlers stay live. | first defined: Chapter 023 L6
+initializer function | lazy initializer | The () => … form passed to useState; React calls it once on mount to produce the initial state. | first defined: Chapter 024 L1
+useRef | - | Returns a mutable .current box that persists across renders without triggering one; for values the JSX doesn't read. | first defined: Chapter 024 L1
+useEffect | effect | Hook running a callback after React commits a render, re-running when a dependency changes. | first defined: Chapter 024 L2
+server state | - | Data whose canonical home is the server or database; the component only holds a cached copy. | first defined: Chapter 024 L2
+source of truth | - | The single authoritative location a value is read from and written to; every other place shows a copy. | first defined: Chapter 024 L3
+colocation | colocate | Placing state at the narrowest component above everyone who reads it, not high in the tree by default. | first defined: Chapter 024 L3
+lifting state up | lift state | Moving state to the closest common ancestor of the components that need it, flowed back down as props. | first defined: Chapter 024 L3
+nuqs | - | Typed search-params library for React; treats URL query params like useState (parsers, defaults, batched updates). | first defined: Chapter 024 L3
+transition (state) | - | A move from one state value to the next. | first defined: Chapter 024 L4
+dispatch (function) | - | The function that sends an action to the reducer; referentially stable. | first defined: Chapter 024 L4
+payload | - | The data an action carries beyond its type. | first defined: Chapter 024 L4
+bailout | - | Returning the same state reference so React skips the re-render. | first defined: Chapter 024 L4
+grouped useState | - | One useState holding several related values updated together with spreads. | first defined: Chapter 024 L4
+debounce | debouncing | Wait until input stops changing before acting, instead of firing each keystroke. | first defined: Chapter 024 L5
+imperative | - | Telling an element to do something (focus, play, scroll) rather than describing what it should be. | first defined: Chapter 024 L5
+instance ref | instance-value ref | A useRef used as plain cross-render memory the JSX never reads, no DOM. | first defined: Chapter 024 L5
+element ref | DOM ref | A useRef attached via the ref prop, holding the live DOM node after commit. | first defined: Chapter 024 L5
+useId | - | React hook returning a unique, stable id string, identical on server and client; no arguments. | first defined: Chapter 024 L6
+htmlFor | - | JSX spelling of the HTML for attribute; names the id of the input a label describes. | first defined: Chapter 024 L6
+aria-describedby | - | ARIA attribute naming the id of an element that describes this one; read after the field's name. | first defined: Chapter 024 L6
+aria-invalid | - | ARIA attribute announcing a field as invalid to assistive tech. | first defined: Chapter 024 L6
+cleanup | cleanup function | The function an effect returns; React runs it before the next setup and on unmount to tear down what setup created. | first defined: Chapter 025 L1
+Activity API | <Activity> | React 19 feature that hides a subtree and later restores it, cleaning up its effects when hidden and re-running them when shown. | first defined: Chapter 025 L1
+synchronization | synchronize, synchronized | Making an external system's state match React's current props and state. | first defined: Chapter 025 L2
+escape hatch | - | A deliberate exit from React's normal data flow, used sparingly and on purpose. | first defined: Chapter 025 L2
+reactive value | - | A prop, state, or anything derived from them; can change between renders. | first defined: Chapter 025 L2
+dependency array | deps | useEffect's second argument; the reactive values that, when changed, re-run setup. | first defined: Chapter 025 L2
+non-reactive read | - | Reading a value's latest value at event time without listing it as a re-sync trigger. | first defined: Chapter 025 L2
+race condition | - | Async responses resolving out of order, so a stale one overwrites fresh data. | first defined: Chapter 025 L2
+tearing | - | Different parts of a single render observing different values of the same external source. | first defined: Chapter 025 L2
+useEffectEvent | - | Hook making a callback that reads the freshest props/state but is excluded from effect dependency arrays. | first defined: Chapter 025 L3
+Effect Event | - | A non-reactive callback from useEffectEvent; reads latest values when called, never a dependency. | first defined: Chapter 025 L3
+non-reactive seam | seam | Reading a value fresh inside an effect without re-syncing on it; what useEffectEvent provides. | first defined: Chapter 025 L3
+route loader | loader | Server Component or framework data function fetching a page's data before render, on the server. | first defined: Chapter 025 L4
+component identity | - | React identifies an instance by tree position plus key; change the key and state resets. | first defined: Chapter 025 L4
+server-side rendering | SSR | Server produces the page's initial HTML before sending it; effects run only in the browser. | first defined: Chapter 025 L4
+TanStack Query | react query | Client-side server-state cache: fetching, caching, polling, invalidation, optimistic updates. | first defined: Chapter 025 L4
+use() | use hook | React hook reading a promise (or context) during render, suspending until it resolves. | first defined: Chapter 025 L4
+context | React context | Mechanism broadcasting one value to every descendant of a provider without prop-drilling; propagation, not a store. | first defined: Chapter 025 L5
+consumer | context consumer | Any component reading a context with useContext; subscribes to every change of the whole value. | first defined: Chapter 025 L5
+fail-fast consumer hook | - | Custom hook wrapping useContext that throws if no provider is above, returning a non-nullable value. | first defined: Chapter 025 L5
+feature flag | feature-flag map | Runtime toggle gating which features or buttons exist; a cross-cutting value read app-wide. | first defined: Chapter 025 L5
+Zustand | - | External store; each component subscribes to just the slice it reads, for high-churn app state. | first defined: Chapter 025 L5
+transition | - | A state update marked non-urgent; React renders it in the background and interrupts it for anything urgent. | first defined: Chapter 025 L6
+useTransition | - | Hook returning [isPending, startTransition]; wrap a setter's call to mark that update non-urgent. | first defined: Chapter 025 L6
+startTransition | - | Standalone/returned function; updates run synchronously inside its callback are marked as a transition. | first defined: Chapter 025 L6
+useDeferredValue | - | Hook returning a lagging copy of a value, so consumers of it render at low priority. | first defined: Chapter 025 L6
+isPending | - | Boolean from useTransition, true from a transition's start until its background render (and any awaited work) settles. | first defined: Chapter 025 L6
+Suspense boundary | - | A wrapper showing a fallback while the UI inside it is still loading. | first defined: Chapter 025 L6
+suspend | suspends | A component pausing its render until an awaited resource is ready, yielding to the nearest Suspense boundary. | first defined: Chapter 025 L7
+error boundary | - | Component catching errors thrown by its descendants and rendering a fallback instead of crashing the tree. | first defined: Chapter 025 L7
+RSC wire | - | Serialization channel carrying values and promises from Server to Client Components. | first defined: Chapter 025 L7
+referentially stable | stable reference | Same object reference across renders, compared by Object.is. | first defined: Chapter 025 L7
+cache() | React cache | Server-only React API deduplicating same-args calls to a function within one request. | first defined: Chapter 025 L7
+hook | - | Function letting a component tap into React features (state, effects) and remember them across renders. | first defined: Chapter 025 L8
+positional slot | slot, slot model, slot pointer | React matches each hook call to its stored value by call order, not name; a per-render pointer advances one slot per call. | first defined: Chapter 025 L8
+rules of hooks | - | Call hooks at the top level every render, and only from components or other hooks; both keep the slot count stable. | first defined: Chapter 025 L8
+early return | - | Returning JSX before the function ends, short-circuiting the rest of the body including hook calls below it. | first defined: Chapter 025 L8
+referential identity | - | Which exact object a value is in memory, the notion Object.is compares. | first defined: Chapter 025 L8
+ESLint | eslint | Linter flagging problematic code patterns statically, before the code runs. | first defined: Chapter 025 L8
+eslint-plugin-react-hooks | - | ESLint plugin in the Next.js default config; provides rules-of-hooks and exhaustive-deps. | first defined: Chapter 025 L8
+rules-of-hooks (lint rule) | react-hooks/rules-of-hooks | Lint rule enforcing top-level-only calls and use*-named callers; never disabled. | first defined: Chapter 025 L8
+exhaustive-deps | react-hooks/exhaustive-deps | Lint rule flagging reactive values read inside an effect/memo/callback but missing from its dependency array. | first defined: Chapter 025 L8
+CI | continuous integration | Automated checks that run on every push, before code can merge. | first defined: Chapter 025 L8
+custom hook | - | use*-named function that calls one or more hooks; packages built-in hooks into a reusable named behavior, sharing code not state. | first defined: Chapter 026 L1
+useSearchParams | - | Next.js hook reading the current URL query params (e.g. the page number). | first defined: Chapter 026 L1
+auto-memoization | - | Memoization the compiler inserts automatically, versus hand-written useMemo/useCallback/memo. | first defined: Chapter 026 L2
+Profiler | React Profiler | React DevTools panel recording which components rendered and why. | first defined: Chapter 026 L2
+Rules of React | - | React's purity and hook-ordering contract: pure render, no mutation, hooks at top level in stable order. | first defined: Chapter 026 L2
+SWC | - | Rust-based compiler Next.js uses to turn TypeScript/JSX into JavaScript; faster than Babel. | first defined: Chapter 026 L2
+Babel | - | JavaScript compiler whose transforms run as plugins; the React Compiler ships as one. | first defined: Chapter 026 L2
+annotation mode | compilationMode annotation | Compiler mode that only compiles functions opting in with 'use memo'; for gradual migration. | first defined: Chapter 026 L2
+'use memo' | use memo directive | Directive opting a function into the compiler under annotation mode. | first defined: Chapter 026 L2
+'use no memo' | use no memo directive | Directive telling the compiler to skip a function; temporary opt-out, fixes nothing. | first defined: Chapter 026 L2
+React.memo | memo | Wraps a component so React skips its re-render while incoming props stay shallowly equal. | first defined: Chapter 026 L3
+shallowly equal | shallow prop comparison | Props compared one level deep by reference: same value for primitives, same identity for objects. | first defined: Chapter 026 L3
+headless primitive | headless component | Interactive component shipping behavior, keyboard handling, and ARIA but no styling; you bring the markup. | first defined: Chapter 027 L1
+shadcn CLI | - | Command-line tool that fetches component source from a registry and writes it into your project; no runtime package. | first defined: Chapter 027 L1
+shadcn registry | registry | Server the shadcn CLI reads component source from; shadcn's own, a third-party, or a team-private one. | first defined: Chapter 027 L1
+shadcn block | block | A whole pre-composed UI section (dashboard, login) copied in as a scaffold and trimmed, vs a single component. | first defined: Chapter 027 L1
+Base UI | @base-ui-components/react | Leaner headless-first primitive engine from the MUI team; the alternative to Radix at shadcn init. | first defined: Chapter 027 L1
+lucide-react | lucide | shadcn's default icon set; tree-shakeable, one component per icon. | first defined: Chapter 027 L1
+roving-tabindex | roving tabindex | Keyboard pattern where a group holds one tab stop and arrow keys move focus between items. | first defined: Chapter 027 L1
+type-ahead | typeahead | Typing letters while a widget is focused jumps to the matching option. | first defined: Chapter 027 L1
+AA conformance | WCAG AA, AA level | The middle WCAG level most laws and contracts require; the course's accessibility floor. | first defined: Chapter 027 L2
+tab order | DOM order | Order Tab visits controls: their document order, not their CSS-painted position. | first defined: Chapter 027 L2
+tabindex | - | Attribute setting an element's tab behavior; 0 focusable in order, -1 script-only, positives an anti-pattern. | first defined: Chapter 027 L2
+target size | hit area, success criterion 2.5.8 | Tappable area of a control; WCAG AA floor 24x24 CSS px, 44x44 comfortable under a thumb. | first defined: Chapter 027 L2
+prefers-reduced-motion | reduced motion, motion-reduce | OS preference for less on-screen motion; replace communicative motion, don't delete it. | first defined: Chapter 027 L2
+vestibular disorder | - | Inner-ear/balance condition where screen motion can trigger nausea or dizziness. | first defined: Chapter 027 L2
+Lighthouse | - | Accessibility audit built into Chrome DevTools; daily smoke test, catches only a minority of issues. | first defined: Chapter 027 L2
+axe DevTools | axe, axe-core | Browser extension and engine giving deeper automated accessibility rule coverage than Lighthouse. | first defined: Chapter 027 L2
+implicit role | - | The role an element already has from its tag before any role attribute (button is a button, nav a navigation landmark). | first defined: Chapter 027 L3
+aria-label | - | ARIA attribute supplying an accessible name when a control has no visible text (icon-only button). | first defined: Chapter 027 L3
+aria-labelledby | - | ARIA attribute naming a control by referencing the id of another element whose text becomes its name. | first defined: Chapter 027 L3
+aria-live | - | ARIA attribute marking a region as live and setting when AT announces changes: polite (when idle) or assertive (interrupts). | first defined: Chapter 027 L3
+aria-atomic | - | ARIA attribute setting how much of a live region to announce: true reads the whole region, false only the changed node. | first defined: Chapter 027 L3
+role=status | - | Live-region role implying aria-live=polite and aria-atomic=true; for informational messages that can wait. | first defined: Chapter 027 L3
+role=alert | - | Live-region role implying aria-live=assertive and atomic; interrupts AT, reserved for must-not-miss failures. | first defined: Chapter 027 L3
+role=presentation | role=none | Role stripping an element's implicit semantics so AT treats it as a plain container (legacy layout table). | first defined: Chapter 027 L3
+document.activeElement | activeElement | The one element that currently holds keyboard focus; reading it tells you where the focus cursor is. | first defined: Chapter 027 L4
+inert | - | HTML attribute making a subtree non-focusable and hidden from AT; Radix applies it to the page behind an open dialog. | first defined: Chapter 027 L4
+preventScroll | focus preventScroll | Option on element.focus() that moves focus without scrolling the element into view; default for page-level focus moves. | first defined: Chapter 027 L4
+skip link | - | First focusable link in a layout, visually hidden until focused, that jumps the cursor past the nav into main. | first defined: Chapter 027 L4
+aria-disabled | - | Marks a control disabled while keeping it focusable and discoverable; doesn't block activation, so guard the handler yourself. | first defined: Chapter 027 L4
+autoFocus | - | React prop focusing an element on mount; right for single-purpose screens, wrong on multi-section forms and dialogs. Fires per mount. | first defined: Chapter 027 L4
+skeleton | - | Placeholder mirroring the shape of loading content; shadcn's Skeleton primitive, sized to the real layout. | first defined: Chapter 027 L5
+spinner | - | Indeterminate loading indicator for short work of unknown shape; says "something is happening". | first defined: Chapter 027 L5
+CTA | call to action | Primary button or link moving the user toward resolving a state, e.g. "Create your first invoice". | first defined: Chapter 027 L5
+correlation id | reference id | Unique id on a failed operation the user quotes to support so an engineer can trace it in logs. | first defined: Chapter 027 L5
+stale data | stale-while-refetch | Previously-loaded data kept on screen during a background refetch instead of dropping to a skeleton. | first defined: Chapter 027 L5
+Sheet | shadcn Sheet | shadcn's side-anchored dialog primitive; a panel sliding in from a screen edge, wrapping Radix's Dialog for focus trap and Esc-to-close. | first defined: Chapter 028 L1
+dependency graph | - | Full set of packages an app pulls in: the named ones plus everything they depend on. | first defined: Chapter 028 L2
+transitive dependency | - | A package you never named, pulled in because something you named depends on it. | first defined: Chapter 028 L2
+phantom dependency | - | A package imported without declaring it, working only because a hoisted layout exposed it. | first defined: Chapter 028 L2
+peer dependency | - | A package a library expects the host project to provide rather than bundle. | first defined: Chapter 028 L2
+lockfile | pnpm-lock.yaml | Generated file pinning every resolved dependency to an exact version with an integrity hash. | first defined: Chapter 028 L2
+integrity hash | sha512 integrity | sha512 fingerprint of a package artifact; a tampered download fails to match. | first defined: Chapter 028 L2
+caret range | ^ range | `^2.1.1` accepting any later 2.x release; compatible-version range. | first defined: Chapter 028 L2
+manifest | package.json manifest | package.json: names the project, declares dependencies, defines scripts. | first defined: Chapter 028 L2
+content-addressed store | pnpm store | pnpm's global package store; node_modules symlinks into it, so each version lives on disk once. | first defined: Chapter 028 L2
+build script | lifecycle script | Dependency script running on your machine during install; pnpm blocks it unless allowlisted. | first defined: Chapter 028 L2
+engine-strict | - | .npmrc setting turning the engines field into a hard install error, not a warning. | first defined: Chapter 028 L2
+frozen-lockfile | --frozen-lockfile | Install flag failing when lockfile and package.json disagree; used in CI. | first defined: Chapter 028 L2
+AGENTS.md | - | Open-spec Markdown file at repo root; operational onboarding the next contributor or coding agent reads first. | first defined: Chapter 028 L3
+ADR | Architectural Decision Record | Standalone doc capturing one architectural decision with its context and trade-offs; AGENTS.md points at it, never inlines it. | first defined: Chapter 028 L3
+CLAUDE.md | - | Claude Code's tool-specific instructions file; should re-export AGENTS.md (@../AGENTS.md) rather than fork it. | first defined: Chapter 028 L3
+isolatedModules | - | TS flag requiring each file to transpile alone, banning const enum and untyped barrel re-exports; Turbopack needs it. | first defined: Chapter 028 L4
+transpile | transpilation | Convert source to an equivalent form in another language or syntax level (TS to JS). | first defined: Chapter 028 L4
+CommonJS | CJS | Node's original module format using require()/module.exports, vs ES import/export. | first defined: Chapter 028 L4
+Biome domain | linter domain | Rule set for one ecosystem (next, react, test) that auto-enables when its dependency is in package.json. | first defined: Chapter 028 L5
+safe fix | - | Biome auto-fix that cannot change program behavior (sort imports, snap quotes); applied by --write and on save. | first defined: Chapter 028 L5
+unsafe fix | --unsafe | Opt-in Biome fix that can change behavior (== to ===); never runs automatically. | first defined: Chapter 028 L5
+JSON Schema | $schema | JSON document describing another JSON file's allowed shape, so editors autocomplete and validate it. | first defined: Chapter 028 L5
+code action | - | Editor-triggered automated edit (on save or quick-fix) that rewrites code, e.g. reorder imports or apply a lint fix. | first defined: Chapter 028 L5
+wordmark | - | A brand name set as styled text, used as the logo instead of a graphic mark. | first defined: Chapter 028 L6
+hero | hero band | The headline band at the top of a marketing page: big claim, CTAs, product image. | first defined: Chapter 028 L7
+dark: variant | dark variant | Tailwind class-strategy variant applying a utility when .dark is on the ancestor; the no-flash theme hook. | first defined: Chapter 028 L7
+picture element | <picture> | HTML element wrapping one <img> plus <source> candidates; browser picks a source by media conditions. | first defined: Chapter 028 L7
+heading outline | heading hierarchy | Tree of a page's heading levels in order; assistive tech navigates by it, so levels descend by one and never skip. | first defined: Chapter 028 L8
+contentinfo | - | Landmark role a body-level footer maps to; page-wide info like copyright, one per page. | first defined: Chapter 028 L10
+hamburger | hamburger button | Three-stacked-lines icon button opening a hidden nav menu on narrow screens. | first defined: Chapter 028 L12
+drawer | mobile drawer, slide-in panel | Off-screen panel sliding in from a screen edge to hold nav on narrow screens; here a shadcn Sheet. | first defined: Chapter 028 L12
+route segment | segment | One slash-separated piece of a URL path; one folder under app/. | first defined: Chapter 029 L1
+import alias | @/ alias | tsconfig path mapping turning @/x into an absolute import from the source root. | first defined: Chapter 029 L1
+co-location | co-locate by feature | App Router practice of placing a feature's code beside its page, not in by-kind buckets. | first defined: Chapter 029 L1
+layout.tsx | layout, nested layout | App Router shared shell wrapping every page at or below its folder; persists across navigations, nests inside the layout above. | first defined: Chapter 029 L2
+route group | (folder), parentheses folder | Folder named in parentheses; organizes routes and adds no URL segment. | first defined: Chapter 029 L2
+template.tsx | template | Like layout.tsx but remounts on every navigation into its segment; state resets, effects re-fire. | first defined: Chapter 029 L2
+dynamic segment | [id], bracketed folder | Folder named in [brackets] matching any value in that URL position, captured into params. | first defined: Chapter 029 L3
+route parameter | route param, params | Value captured from a dynamic segment, handed to the page as params (a Promise in Next 16). | first defined: Chapter 029 L3
+catch-all segment | [...slug] | Folder named [...x] matching that segment and every one after it; params value is string[]; bare parent 404s. | first defined: Chapter 029 L3
+optional catch-all segment | [[...slug]] | Double-bracketed catch-all that also matches the bare parent; params value is string[] | undefined. | first defined: Chapter 029 L3
+PageProps | PageProps helper | Global type Next.js generates from routes; PageProps<'/route'> types a page's params/searchParams, no import. | first defined: Chapter 029 L3
+notFound() | notFound | next/navigation function that throws a signal rendering the nearest not-found.tsx as an HTTP 404. | first defined: Chapter 029 L3
+hard navigation | full page load | Full document reload from the URL; browser tears down and rebuilds the page. | first defined: Chapter 029 L4
+useRouter | next/navigation useRouter | Client-Component hook returning a router for imperative navigation (push, replace, back, refresh). | first defined: Chapter 029 L4
+router.push | - | Imperative soft navigation to an href, adding a history entry. | first defined: Chapter 029 L4
+prefetch | prefetching | Framework fetching a Link's destination in the background before the click. | first defined: Chapter 029 L4
+redirect | redirect() | next/navigation function that throws a 307 (303 in a Server Action) to reroute during render. | first defined: Chapter 029 L4
+permanentRedirect | permanentRedirect() | next/navigation function that throws a 308 for a permanent URL migration. | first defined: Chapter 029 L4
+307 | Temporary Redirect | HTTP status: temporary move, repeat the request with the same method at the new URL. | first defined: Chapter 029 L4
+303 | See Other | HTTP status: follow the redirect with a GET, even after a POST. | first defined: Chapter 029 L4
+308 | Permanent Redirect | HTTP status: permanent move, update caches/search engines, keep the method. | first defined: Chapter 029 L4
+404 | Not Found | HTTP status: the requested resource does not exist at this URL. | first defined: Chapter 029 L4
+parallel routes | parallel route | App Router feature rendering two or more route trees at one URL, built from @-prefixed slot folders. | first defined: Chapter 029 L5
+slot (parallel route) | @slot, named slot | Named layout region filled by a matching @-folder route tree; folder name minus @ becomes the layout prop, beside children. | first defined: Chapter 029 L5
+default.tsx | default.js | A slot's fallback file rendered when a hard navigation matches none of its routes; without it the whole route 404s. | first defined: Chapter 029 L5
+private folder | _folder, underscore folder | Folder named with a leading underscore; colocated non-routable code the router never sees. | first defined: Chapter 029 L5
+intercepting route | (.)/(..)/(...) prefix, intercepter | Route folder prefixed to intercept a soft navigation to another URL and render in its place; paired with a non-intercepting sibling for hard nav. | first defined: Chapter 029 L6
+deep link | - | A URL that reproduces a specific in-app view; paste it cold and you land exactly there. | first defined: Chapter 029 L6
+@next/bundle-analyzer | bundle analyzer | Next.js dev tool rendering the client bundle as a treemap so you can see which files and deps add bytes; run with ANALYZE=true next build. | first defined: Chapter 030 L2
+RPC | remote procedure call | Calling a function that runs on another machine as if local; Server Actions are React's RPC. | first defined: Chapter 030 L3
+transitive import | indirect import | A module pulled in through an import chain, not imported directly. | first defined: Chapter 030 L3
+RSC payload | RSC wire payload | Serialized React tree the server streams beside the HTML so the browser rebuilds the component tree. | first defined: Chapter 030 L4
+structured clone | structuredClone | Deep-copy algorithm carrying data but dropping functions and DOM nodes; baseline for what crosses the RSC wire. | first defined: Chapter 001 L1
+non-deterministic | - | A value differing between two evaluations of the same code; depends on the clock, randomness, locale/timezone, or a browser-only API. | first defined: Chapter 030 L5
+suspend signal | - | The signal a component emits when not yet ready to render; Suspense treats it as wait, not error. | first defined: Chapter 031 L1
+streaming (page) | HTTP response streaming, page streaming | Server opens the response and writes it in pieces, sending ready parts while it works on the rest. | first defined: Chapter 031 L2
+shell (streaming) | static shell | The page's outer UI not behind any Suspense boundary; rendered first because it waits on no slow data. | first defined: Chapter 031 L2
+response chunk | streaming chunk, flush | A partial write to an open HTTP response, sent before the response finishes; writing one is a flush. | first defined: Chapter 031 L2
+chunked transfer encoding | - | HTTP/1.1 mechanism sending a response body in pieces without declaring its total length up front. | first defined: Chapter 031 L2
+Promise.all | - | Starts all given promises at once and awaits them as a group; rejects if any rejects, so latency is max not sum. | first defined: Chapter 031 L2
+Promise.allSettled | - | Like Promise.all but resolves with a result per promise regardless of individual failures. | first defined: Chapter 031 L2
+boundary | - | A wrapper React places around a subtree to handle one cross-cutting concern, loading, errors, or a missing resource. | first defined: Chapter 031 L3
+segment file | - | A specially-named file dropped beside page.tsx that the framework turns into a boundary: loading.tsx, not-found.tsx, error.tsx. | first defined: Chapter 031 L3
+bubble up | bubbling | Throws propagate upward through the tree until a boundary catches them, like an exception up the call stack. | first defined: Chapter 031 L3
+Cache Components | - | Next.js 16 rendering mode: routes dynamic by default, caching an explicit opt-in. The course default. | first defined: Chapter 031 L3
+global-error.tsx | - | App Router's outermost Error Boundary, wrapping the root layout; replaces it as the whole document, so it renders its own html and body. | first defined: Chapter 031 L4
+internationalization | i18n | Adapting an app's copy and formatting to the user's locale. | first defined: Chapter 031 L4
+'use cache' | use cache directive | Directive opting a component subtree into build-time caching; the explicit opt-in under Cache Components. | first defined: Chapter 032 L1
+cacheComponents | - | Next.js 16 config flag enabling dynamic-by-default, the 'use cache' opt-in, and Partial Prerendering. | first defined: Chapter 032 L1
+Full Route Cache | - | Next.js 13–15 build-time-rendered HTML/RSC payload of a whole route, served per request until revalidated. | first defined: Chapter 032 L1
+Partial Prerendering | PPR | Rendering mode: cached static shell ships instantly, dynamic holes stream in via Suspense. | first defined: Chapter 032 L1
+request-time API | - | Value existing only per request: searchParams, cookies, headers; awaiting one forces dynamic rendering. | first defined: Chapter 032 L1
+connection() | - | next/server function; awaiting it marks everything below as dynamic, for request-time code the framework cannot detect. | first defined: Chapter 032 L1
+dynamic bailout | bails out | Build can't prerender a component reading request data; it must be cached or wrapped in Suspense. | first defined: Chapter 032 L2
+cache key | - | Identity a cached result is stored/looked up under; same key means shared stored value. | first defined: Chapter 032 L3
+serializable | - | Encodable to a transferable form and reconstructable later; the requirement for crossing the cache boundary. | first defined: Chapter 032 L3
+pass-through | - | Non-serializable value (children, slot, Server Action) a cached component places but never inspects, so it stays out of the key. | first defined: Chapter 032 L3
+in-memory LRU | LRU | Default 'use cache' store; least-recently-used eviction drops the least recently used entries when full. | first defined: Chapter 032 L3
+cacheLife | - | next/cache call inside a cached body setting its freshness timeout via stale/revalidate/expire or a preset. | first defined: Chapter 032 L4
+cacheTag | - | next/cache call attaching a named string handle to a cache entry so invalidation can target it. | first defined: Chapter 032 L4
+stale (cacheLife) | - | cacheLife window where a client reuses its copy without contacting the server. | first defined: Chapter 032 L4
+revalidate (cacheLife) | - | cacheLife point past which a request is served the cached value but a background refresh fires. | first defined: Chapter 032 L4
+expire (cacheLife) | - | cacheLife hard ceiling; past it the next request blocks for a fresh fetch. | first defined: Chapter 032 L4
+stale-while-revalidate | SWR | Serve the old value now and refresh in the background, so the user never waits. | first defined: Chapter 032 L4
+revalidation | revalidate | Re-running a cached function to replace its stored value. | first defined: Chapter 032 L4
+cache tag | tag | A string handle attached to a cache entry that the invalidation API targets. | first defined: Chapter 032 L4
+invalidate | invalidation | Mark a cached entry stale so the next read refreshes it. | first defined: Chapter 032 L4
+timeout (cache) | pull policy | Clock-based refresh cacheLife controls; the cache re-runs on a timer regardless of changes. | first defined: Chapter 032 L4
+push (cache) | push policy | Tag-plus-invalidation refresh fired by the source the moment data changes. | first defined: Chapter 032 L4
+cache preset | named preset | Named cacheLife profile tuned to a data shape rather than a stopwatch reading. | first defined: Chapter 032 L4
+request-scoped | per-request | Lives only for one server render of one request, then is discarded. | first defined: Chapter 032 L5
+read-your-writes | - | After a write, the very next read reflects it; the writer never sees stale data. | first defined: Chapter 032 L6
+updateTag | - | next/cache call expiring a tag so the next read blocks for fresh data; Server Actions only, gives read-your-writes. | first defined: Chapter 032 L6
+revalidateTag | - | next/cache call marking a tag stale with a cacheLife profile; stale-while-revalidate, runs anywhere on the server. | first defined: Chapter 032 L6
+revalidatePath | - | next/cache call invalidating by URL instead of tag; for path-as-resource cases like sitemaps and OG images. | first defined: Chapter 032 L6
+router.refresh | - | next/navigation client call re-pulling the route's Server Components without clearing the server cache. | first defined: Chapter 032 L6
+path-as-resource | - | The cached thing is a URL's output (file, image, feed) with no underlying entity to tag. | first defined: Chapter 032 L6
+route segment config | segment config | The legacy `export const` constants (dynamic, revalidate, fetchCache, runtime) Next 13-15 read at module scope to set render disposition; retired under Cache Components. | first defined: Chapter 032 L7
+ISR | Incremental Static Regeneration | Next 13-15 model re-generating a static page in the background after a fixed time window. | first defined: Chapter 032 L7
+next typegen | typegen | Next.js command generating route-typed PageProps/LayoutProps helpers from the app/ folder; runs with dev and build. | first defined: Chapter 032 L7
+draftMode() | draft mode | Async next/headers API returning { isEnabled, enable, disable }, the toggle a CMS preview uses to show unpublished content. | first defined: Chapter 032 L7
+cookies() | next/headers cookies | Async next/headers function returning the request's read-only cookie store; get/getAll/has during render. | first defined: Chapter 033 L1
+headers() | next/headers headers | Async next/headers function returning the read-only request Headers; server-only. | first defined: Chapter 033 L1
+Headers (web API) | Headers object | Standard browser API for reading/writing HTTP header name/value pairs (get/has/entries). | first defined: Chapter 033 L1
+request surface | - | A route's only inputs: the URL, the headers, and the cookies. | first defined: Chapter 033 L1
+A/B test | A/B-test | Experiment showing different variants to different users to measure which performs better. | first defined: Chapter 033 L1
+session | cookie-backed identity | The verified, cookie-backed identity the server trusts for authorization, never a raw header. | first defined: Chapter 033 L1
+matcher | - | proxy.ts config export of path patterns deciding which requests run the proxy. | first defined: Chapter 033 L2
+Node.js runtime | - | The full Node environment proxy.ts runs on in Next.js 16; same APIs as the rest of the app. | first defined: Chapter 033 L2
+Edge runtime | - | Stripped-down JS environment with a limited API subset; the old middleware target, not for new code. | first defined: Chapter 033 L2
+path-to-regexp | - | Library turning matcher path patterns like /dashboard/:path* into regular expressions. | first defined: Chapter 033 L2
+negative lookahead | - | Regex (?!...) group matching only when the enclosed pattern is absent. | first defined: Chapter 033 L2
+NextRequest | - | Next.js extension of the web-platform Request with conveniences like nextUrl and cookies. | first defined: Chapter 033 L2
+NextResponse | - | Next.js extension of the web-platform Response with next/redirect/rewrite helpers. | first defined: Chapter 033 L2
+defense in depth | - | Layered checks: a fast non-authoritative gate plus the real validation behind it. | first defined: Chapter 033 L2
+allow-list | allowlist | Enumerate permitted values and reject the rest; safer than a deny-list. | first defined: Chapter 033 L2
+@vercel/functions | - | Vercel helper package; geolocation() and ipAddress() replace removed request.geo/request.ip. | first defined: Chapter 033 L2
+open-redirect | open redirect | Redirect to a URL from unvalidated input, letting an attacker bounce the user to a hostile site. | first defined: Chapter 033 L2
+link equity | - | Ranking value search engines pass through links; a 308 forwards it, a temporary redirect does not. | first defined: Chapter 033 L3
+protocol-relative URL | - | URL starting with // that the browser resolves using the current page's protocol, e.g. //evil.com. | first defined: Chapter 033 L3
+waterfall | fetch waterfall | Requests forced to run in sequence because each waits on the prior; latency stacks. | first defined: Chapter 033 L4
+pagination cursor | cursor | Opaque token encoding where the last page ended (sort key + tiebreaker), handed back to resume. | first defined: Chapter 033 L4
+tiebreaker | - | Secondary sort key making ordering deterministic when the primary key ties. | first defined: Chapter 033 L4
+opaque | - | Data the user receives and returns unchanged but isn't meant to read or edit. | first defined: Chapter 033 L4
+ReadonlyURLSearchParams | - | Read-only URLSearchParams subclass returned by useSearchParams; get/getAll/has but no set/delete. | first defined: Chapter 033 L5
+usePathname | - | next/navigation Client-Component hook returning the current path as a string, no query or hash. | first defined: Chapter 033 L5
+useParams | - | next/navigation Client-Component hook returning the route's dynamic segments as an object; synchronous. | first defined: Chapter 033 L5
+router.replace | - | Soft navigation that overwrites the current history entry instead of pushing a new one; for filter/sort/pagination. | first defined: Chapter 033 L5
+next.config.ts | next.config | Typed Next.js project config module, read once at startup/build; shapes build and serving, ships nothing to the browser. | first defined: Chapter 034 L1
+native binding | native addon | A compiled .node module: machine code for one platform a bundler can't read, only require at runtime. | first defined: Chapter 034 L1
+serverExternalPackages | - | next.config key listing packages Next leaves unbundled and requires at runtime; for native/dynamic-require packages. | first defined: Chapter 034 L1
+transpilePackages | - | next.config key listing raw, un-compiled packages (e.g. monorepo .tsx) Next must compile in before bundling. | first defined: Chapter 034 L1
+next/image | <Image> | Next.js image component: sizing, lazy-loading, format negotiation, and reserved box by default. | first defined: Chapter 034 L2
+static import (image) | - | Importing an image file as a module; build-time width/height and blurDataURL ride on the typed object. | first defined: Chapter 034 L2
+blurDataURL | - | Tiny build-time blurred preview baked into a static image import, shown while the full file streams in. | first defined: Chapter 034 L2
+fill | - | next/image prop making the image expand to cover its nearest positioned ancestor; requires sizes. | first defined: Chapter 034 L2
+srcset | - | A set of the same image at several widths, letting the browser pick the right-sized file. | first defined: Chapter 034 L2
+sizes | - | next/image prop telling the browser the image's rendered width per breakpoint, so it picks the right srcset entry. | first defined: Chapter 034 L2
+image optimizer | optimizer | The /_next/image endpoint that fetches, transcodes, resizes, and caches images on demand through your server. | first defined: Chapter 034 L2
+preload (next/image) | - | next/image prop inserting a preload link for the LCP image; Next 16 rename of priority. | first defined: Chapter 034 L2
+placeholder="blur" | - | next/image prop showing a blurred preview in the reserved box until the full image loads. | first defined: Chapter 034 L2
+qualities | - | next.config images allowlist of permitted quality values; a quality off the list coerces to the closest allowed. | first defined: Chapter 034 L2
+remotePatterns | - | next.config allowlist of external image origins the optimizer may fetch; closes the open-proxy hole. | first defined: Chapter 034 L2
+localPatterns | - | next.config allowlist for local image src values that carry a query string. | first defined: Chapter 034 L2
+provenance | - | Where an asset came from: build-time (static import) vs runtime/third-party (remote src + remotePatterns). | first defined: Chapter 034 L2
+WebP | - | Modern image format ~25-35% smaller than PNG/JPEG; next/image's default negotiated output. | first defined: Chapter 034 L2
+AVIF | - | Image format ~20% smaller than WebP but ~50% slower to encode; opt-in via images.formats. | first defined: Chapter 034 L2
+unoptimized | - | next/image escape hatch serving original bytes untouched; default for .svg sources. | first defined: Chapter 034 L2
+dangerouslyAllowSVG | - | next.config flag forcing SVGs through the optimizer; an XSS risk, so reserve for trusted SVGs. | first defined: Chapter 034 L2
+open proxy | open image proxy | A server that fetches arbitrary attacker-supplied URLs on its own behalf; what remotePatterns prevents. | first defined: Chapter 034 L2
+redirects() | redirects | next.config async function returning request-blind redirect rules (source/destination/permanent) applied at the CDN edge with no function invocation. | first defined: Chapter 034 L3
+rewrites() | rewrites | next.config async function returning rules that change what serves a URL while the address bar stays put; flat array or beforeFiles/afterFiles/fallback stages. | first defined: Chapter 034 L3
+has / missing | has, missing | Per-rule arrays of cookie/header/host/query conditions narrowing a config rule by presence or literal value, without decoding or trusting it. | first defined: Chapter 034 L3
+trailingSlash | - | next.config flag picking one canonical URL form (slash or no slash) for the whole app; a launch-time decision costly to flip later. | first defined: Chapter 034 L3
+reverse proxy | - | A server that forwards a request to an upstream origin and relays the response under your own URL. | first defined: Chapter 034 L3
+Open Graph | OG, og tags | Protocol letting a page describe its link preview (title, description, image) via og: meta tags read by Slack, Discord, etc. | first defined: Chapter 034 L6
+canonical URL | rel-canonical | The one URL a search engine should treat as a page's real address when the same content has several; consolidates ranking signal. | first defined: Chapter 034 L6
+Satori | - | Engine behind ImageResponse; renders a flexbox-only JSX/CSS subset to SVG then PNG, inline styles, no JS runtime. | first defined: Chapter 034 L6
+metadataBase | - | Metadata field setting the absolute origin once so relative metadata URLs (canonical, OG image) resolve against it. | first defined: Chapter 034 L6
+title template | - | Root metadata title pattern (%s — Brand) each child page's title segment drops into, with a default for segments setting none. | first defined: Chapter 034 L6
+ImageResponse | next/og | next/og class rendering JSX to a PNG via Satori; the engine of generated OG images. | first defined: Chapter 034 L6
+opengraph-image | - | Route-segment file convention (.png static, or .tsx generated) Next wires into the og:image tags automatically. | first defined: Chapter 034 L6
+unfurl | link preview | The card (thumbnail, title, description) a chat or social app renders when a link is pasted. | first defined: Chapter 034 L6
+statically optimized | static optimization | Rendered at build time and cached, with no per-request work, unless it reads request data or uncached reads. | first defined: Chapter 034 L6
+crawler | bot, web crawler | Automated program fetching pages to build a search index; Googlebot, Bingbot, social/AI scrapers. | first defined: Chapter 034 L7
+Robots Exclusion Standard | robots.txt protocol | Site-wide voluntary protocol telling well-behaved crawlers which paths they may request. | first defined: Chapter 034 L7
+duplicate content | - | Same content at multiple URLs splits ranking signals; a leaked staging deploy is the classic cause. | first defined: Chapter 034 L7
+sitemap | sitemap.xml | XML file listing URLs you want crawled, with optional last-modified and change-frequency hints. | first defined: Chapter 034 L7
+favicon | - | Small icon shown in a browser tab, bookmark, and history; historically a single favicon.ico at the site root. | first defined: Chapter 034 L7
+PWA | Progressive Web App | Installable web app; manifest gives Add to Home Screen, full PWA adds offline support. | first defined: Chapter 034 L7
+apple touch icon | apple-icon | Raster icon iOS uses when a site is added to the home screen. | first defined: Chapter 034 L7
+web app manifest | manifest.webmanifest | JSON the browser reads to present an installed web app: name, icons, display mode, colors. | first defined: Chapter 034 L7
+standalone display | display: standalone | Manifest display mode running the installed app full-screen with no browser chrome. | first defined: Chapter 034 L7
+theme-color | theme_color | meta tag tinting the mobile browser chrome (address/status bar) to a chosen color. | first defined: Chapter 034 L7
+generateStaticParams | - | Build-time named export returning the param list that turns a dynamic segment into a static catalog. | first defined: Chapter 034 L8
+static catalog | - | A dynamic route segment prerendered into a fixed set of static URLs at build. | first defined: Chapter 034 L8
+static generation | - | Building a page's HTML once at build and serving it without running the render per request. | first defined: Chapter 034 L8
+materialize | - | Generate the concrete HTML for one specific URL at build time. | first defined: Chapter 034 L8
+build environment | - | The Node process running once at next build, before any request; DB, filesystem, APIs reachable. | first defined: Chapter 034 L8
+surgical invalidation | - | Busting one record's cache by its tag instead of rebuilding everything. | first defined: Chapter 034 L8
+on-demand rendering | - | Rendering a URL on first request and caching the result, versus rendering it at build. | first defined: Chapter 034 L8
+getStaticPaths | - | Legacy Pages-Router export declaring which URLs to build; replaced by generateStaticParams. | first defined: Chapter 034 L8
+getStaticProps | - | Legacy Pages-Router export supplying each prerendered page's data; replaced by the page's async body. | first defined: Chapter 034 L8
+degit | - | Tool copying a repo folder into a fresh directory with no git history; scaffolds a starter. | first defined: Chapter 035 L1
+empty state | - | The UI a surface shows when there is nothing to display yet; a normal, expected state, not an error. | first defined: Chapter 027 L5
+modal-with-real-URL pattern | URL-backed modal | A form/view shown as a modal on soft nav and a full page on hard nav, both from one URL via an intercepting route and its twin. | first defined: Chapter 035 L3
+history stack | browser history | Ordered list of URLs visited in a tab; navigating pushes an entry, the back button pops the top. | first defined: Chapter 035 L3
+relational model | - | Data as a set of tables, each a set of rows, each row typed columns, with references between tables. | first defined: Chapter 036 L1
+primary key | PK | A column (or column set) whose value uniquely names each row. | first defined: Chapter 036 L1
+composite key | - | A primary key formed from two or more columns, unique only in combination. | first defined: Chapter 036 L1
+DDL | data definition language | The subset of SQL that defines the shape of tables, not the rows inside them. | first defined: Chapter 036 L1
+normalization | normalize | Organizing tables so each fact is stored exactly once. | first defined: Chapter 036 L1
+1NF | first normal form | Every cell holds one atomic value, no lists or repeated columns. | first defined: Chapter 036 L1
+2NF | second normal form | No column depends on only part of a composite key. | first defined: Chapter 036 L1
+3NF | third normal form | No non-key column depends on another non-key column. | first defined: Chapter 036 L1
+atomic (column) | - | A single indivisible value; not a list or struct. | first defined: Chapter 036 L1
+update anomaly | - | A duplicated fact updated in some copies but not others, leaving the database self-contradicting. | first defined: Chapter 036 L1
+denormalization | denormalize | Deliberately duplicating or flattening data to speed a measured read path. | first defined: Chapter 036 L1
+cardinality (relationship) | - | How many rows on one side of a relationship match how many on the other. | first defined: Chapter 036 L1
+one-to-one | 1:1 | A relationship where one row in A matches at most one row in B. | first defined: Chapter 036 L1
+one-to-many | 1:N | A relationship where one row in A relates to many rows in B; FK on the many side. | first defined: Chapter 036 L1
+many-to-many | N:M | A relationship needing a junction table, each side having many of the other. | first defined: Chapter 036 L1
+EXPLAIN ANALYZE | - | Postgres command running a query and reporting where it actually spends its time. | first defined: Chapter 036 L1
+Postgres | PostgreSQL | Open-source relational database; the course default for SaaS backends. | first defined: Chapter 036 L1
+connection string | database URL, DATABASE_URL | One URL encoding scheme, credentials, host, port, and database name to reach a database. | first defined: Chapter 036 L2
+Docker | - | Tool that packages a program into a container and runs it the same on any machine. | first defined: Chapter 036 L2
+image (Docker) | Docker image | Read-only disk template a container is created from; pulled from a registry. | first defined: Chapter 036 L2
+container (Docker) | - | A running, isolated instance of a Docker image. | first defined: Chapter 036 L2
+volume (Docker) | named volume | Persistent storage mounted into a container so its files outlive the container. | first defined: Chapter 036 L2
+port mapping | port binding | Maps a port inside a container to a port on the host, exposing the container's service. | first defined: Chapter 036 L2
+proxy | - | A local stand-in exposing a normal interface and forwarding every connection to a real backend elsewhere. | first defined: Chapter 036 L2
+Neon | - | Managed serverless Postgres platform separating storage from compute; cheap branching and scale-to-zero. | first defined: Chapter 036 L2
+Neon Local | - | Docker proxy exposing localhost while routing to an ephemeral Neon branch in the cloud. | first defined: Chapter 036 L2
+scale-to-zero | - | Database compute suspends after idle and wakes on the next query; idle bills storage only. | first defined: Chapter 036 L2
+prod-parity | production parity, parity | Local DB matching production's major version, extensions, and pooler so code behaves the same. | first defined: Chapter 036 L2
+version drift | major-version drift | Local DB diverging from production's build/version; top cause of works-on-my-machine bugs. | first defined: Chapter 036 L2
+ephemeral (branch) | - | Created fresh on start and deleted on stop, leaving nothing to clean up by hand. | first defined: Chapter 036 L2
+stateless | - | A process holding no permanent data; kill it and nothing is lost, since state lives in storage. | first defined: Chapter 036 L3
+branch (Neon) | Neon branch | A compute pointed at a copy-on-write snapshot of a parent branch's storage at a point in time. | first defined: Chapter 036 L3
+copy-on-write | CoW | A copy sharing the original's pages until changed; only changed pages are written fresh. | first defined: Chapter 036 L3
+point-in-time | - | A branch reflects its parent as it was at creation time; later changes never cross over either way. | first defined: Chapter 036 L3
+primary (Neon) | primary branch | A Neon project's root branch, created with it and never deletable; all branches descend from it. | first defined: Chapter 036 L3
+preview deployment | preview | A full running copy of the app per pull request, on its own URL, for review before merge. | first defined: Chapter 036 L3
+handshake (connection) | - | The TCP, TLS, and auth round-trips paid before a connection runs a query. | first defined: Chapter 036 L4
+backend (Postgres) | Postgres backend | A dedicated Postgres OS process serving one connection, with its own memory. | first defined: Chapter 036 L4
+max_connections | - | Postgres's server-side hard cap on simultaneous connections/backends. | first defined: Chapter 036 L4
+node-postgres | pg | The standard Postgres driver for long-lived Node processes; the pg package and its Pool. | first defined: Chapter 036 L4
+serverless function | - | Ephemeral compute that boots for one request and is gone after; no process persists. | first defined: Chapter 036 L4
+PgBouncer | - | Lightweight connection pooler sitting between clients and Postgres, reusing a small set of server connections. | first defined: Chapter 036 L4
+transaction mode (PgBouncer) | - | Pooler mode lending a server connection for one transaction, then reclaiming it; vs session mode. | first defined: Chapter 036 L4
+multiplexing (connections) | - | Many short-lived client connections sharing a few long-lived server connections by taking turns. | first defined: Chapter 036 L4
+pooled URL | -pooler host | Neon connection string routing through PgBouncer; the default for serverless app traffic. | first defined: Chapter 036 L4
+unpooled URL | direct URL, DATABASE_URL_UNPOOLED | Neon direct-host connection string skipping the pooler; for migrations and long sessions. | first defined: Chapter 036 L4
+LISTEN/NOTIFY | - | Postgres built-in publish/subscribe, scoped to one connection. | first defined: Chapter 036 L4
+advisory lock | - | An application-defined Postgres lock identified by a number your code chooses. | first defined: Chapter 036 L4
+@neondatabase/serverless | Neon serverless driver | Neon's serverless driver; a node-postgres drop-in talking to Postgres over HTTP or WebSocket. | first defined: Chapter 036 L4
+interactive transaction | - | A transaction that begins, reads, branches on the result, then writes, all on one held connection; vs a fixed batch. | first defined: Chapter 036 L4
+neon-http | drizzle-orm/neon-http | Drizzle wrapper over the Neon HTTP driver; one fetch per query, for one-shot reads. | first defined: Chapter 036 L4
+neon-serverless | drizzle-orm/neon-serverless | Drizzle wrapper over the Neon WebSocket Pool; a held connection for interactive transactions. | first defined: Chapter 036 L4
+schema drift | drift, four-way drift | Hand-copied data shapes silently diverging from the schema; fails at runtime, not compile time. | first defined: Chapter 037 L1
+$inferSelect | inferSelect | Drizzle helper reading a table's row type straight off the schema. | first defined: Chapter 037 L1
+$inferInsert | inferInsert | Drizzle helper reading a table's insert type off the schema, defaulted columns optional. | first defined: Chapter 037 L1
+createInsertSchema | createSelectSchema | Drizzle helper generating a Zod validator from a table's schema. | first defined: Chapter 037 L1
+RLS | Row-Level Security | Postgres policies deciding which rows a given user may see. | first defined: Chapter 037 L1
+projection | derived view shape | A distinct, narrower shape composed from an inferred row type, not retyped. | first defined: Chapter 037 L1
+migration | DB migration | A versioned SQL change moving the database schema from one state to the next. | first defined: Chapter 037 L1
+Drizzle Kit | - | Drizzle's CLI generating SQL migrations by diffing the schema file. | first defined: Chapter 037 L1
+pgTable | - | Drizzle function defining one Postgres table: pgTable(name, columns). | first defined: Chapter 037 L2
+column builder | - | Small function like text()/uuid() declaring a column's type, chained for constraints. | first defined: Chapter 037 L2
+snake_case | - | SQL/Postgres identifier convention: lowercase words joined by underscores (amount_due). | first defined: Chapter 037 L2
+camelCase | - | JS/TS property convention: words joined with internal capitals (amountDue). | first defined: Chapter 037 L2
+casing | casing policy | Drizzle client option (casing: 'snake_case') translating camelCase keys to snake_case columns. | first defined: Chapter 037 L2
+identifier folding | case folding | Postgres lowercasing any unquoted identifier, so createdAt becomes createdat. | first defined: Chapter 037 L2
+logger flag | logger: true | Drizzle client option printing every emitted SQL statement to the terminal. | first defined: Chapter 037 L2
+pgSchema | Postgres schema namespace | Postgres namespace grouping tables in a database; Drizzle's pgSchema('name'). | first defined: Chapter 037 L2
+migration generator | - | Tool turning the schema file into SQL that alters the real database; reads only exports. | first defined: Chapter 037 L2
+nullable | - | Column that may hold NULL; Drizzle's default until .notNull(). | first defined: Chapter 037 L4
+.notNull() | NOT NULL constraint | Drizzle modifier adding a NOT NULL constraint so Postgres rejects rows omitting the column. | first defined: Chapter 037 L4
+soft delete | - | Marking a row deleted with a timestamp instead of removing it; queries filter it out. | first defined: Chapter 037 L4
+column default | default | Value filling a column when an insert omits it; SQL-side (Postgres) or app-side (Drizzle). | first defined: Chapter 037 L4
+DEFAULT clause | SQL-side default | The DEFAULT expression Postgres attaches to a column, evaluated on insert when the column is omitted. | first defined: Chapter 037 L4
+.$defaultFn | app-side default, defaultFn | Drizzle modifier computing a default in JS just before insert; fires only through Drizzle. | first defined: Chapter 037 L4
+.$onUpdate | onUpdate | Drizzle modifier re-stamping a column before each Drizzle update; fires only through Drizzle. | first defined: Chapter 037 L4
+generated column | - | Column Postgres computes from other columns in the same row; read-only, kept in sync. | first defined: Chapter 037 L4
+sql tag | sql template | Drizzle tagged template building a safe SQL fragment; column refs become real SQL names. | first defined: Chapter 037 L4
+stored generated column | STORED | Generated column computed on write, saved to disk, and indexable; Drizzle pg default. | first defined: Chapter 037 L4
+virtual generated column | VIRTUAL | Generated column computed on read, stored nowhere, not indexable. | first defined: Chapter 037 L4
+natural key | - | Primary key that is a real domain value the outside world owns (country code, ISBN). | first defined: Chapter 037 L5
+write amplification | - | One logical insert causing many physical page writes when a key lands mid-index and splits a page. | first defined: Chapter 037 L5
+identity column | GENERATED ALWAYS AS IDENTITY | Column Postgres auto-fills from an internal sequence, per the SQL standard. | first defined: Chapter 037 L5
+bigserial | - | Postgres's legacy auto-incrementing 8-byte integer type; superseded by identity columns. | first defined: Chapter 037 L5
+RFC 9562 | - | 2024 IETF spec standardizing UUID versions 6, 7, and 8. | first defined: Chapter 037 L5
+composite primary key | composite key | Primary key spanning two or more columns; the column combination is the key. | first defined: Chapter 037 L5
+identity bigint | - | 8-byte auto-incrementing integer primary key for high-volume internal tables. | first defined: Chapter 037 L5
+referential integrity | - | DB guarantee that every foreign-key value points at a real existing row. | first defined: Chapter 037 L6
+orphan row | orphan | A child row whose referenced parent row no longer exists. | first defined: Chapter 037 L6
+ON DELETE | onDelete, referential action | Per-relationship rule for what happens to child rows when their parent is deleted. | first defined: Chapter 037 L6
+cascade (ON DELETE) | onDelete cascade | ON DELETE rule that deletes the child rows along with the parent. | first defined: Chapter 037 L6
+set null (ON DELETE) | onDelete set null | ON DELETE rule that keeps the child and nulls its foreign-key column; needs a nullable column. | first defined: Chapter 037 L6
+restrict (ON DELETE) | onDelete restrict | ON DELETE rule that blocks the parent delete while any child exists. | first defined: Chapter 037 L6
+set default (ON DELETE) | onDelete set default | ON DELETE rule that points the child at its column default; rarely used. | first defined: Chapter 037 L6
+NO ACTION | - | Postgres's implicit ON DELETE default; blocks like restrict but its check can defer to transaction end. | first defined: Chapter 037 L6
+hard delete | - | Physically removing a row with a DELETE, as opposed to soft delete. | first defined: Chapter 037 L6
+database constraint | constraint | A rule the database enforces on every write, from any source, that you cannot bypass without dropping it. | first defined: Chapter 037 L7
+UNIQUE constraint | unique() | Constraint saying a value or column combination appears at most once in the table. | first defined: Chapter 037 L7
+composite unique | composite unique constraint | Uniqueness over a combination of columns, e.g. (organizationId, slug). | first defined: Chapter 037 L7
+CHECK constraint | check() | A boolean predicate Postgres evaluates per row; a false result rejects the write. | first defined: Chapter 037 L7
+user experience | UX | The behaviour and feedback a person experiences while using the product. | first defined: Chapter 037 L7
+associative entity | promoted junction, junction-as-entity | A junction promoted to a real table once the link carries its own data or is referenced; gains a surrogate id, composite key demoted to a unique. | first defined: Chapter 037 L8
+$type | $type<T>(), jsonb $type | Drizzle column annotation declaring a jsonb's TS shape; compile-time promise only, not a runtime check. | first defined: Chapter 037 L3
+drizzle-zod | - | Drizzle companion library generating runtime Zod validators from a table schema. | first defined: Chapter 037 L10
+CRUD | create read update delete | The four basic operations on stored data (INSERT/SELECT/UPDATE/DELETE). | first defined: Chapter 038 L1
+query builder | - | Inert object collecting query instructions via chained methods; runs only on await. | first defined: Chapter 038 L1
+thenable | - | Object with a .then() so await works on it; awaiting Drizzle's builder fires the query. | first defined: Chapter 038 L1
+placeholder (SQL) | bound slot, $1 | A bound slot ($1, $2) in a parameterized query, filled with its value at execution. | first defined: Chapter 038 L1
+join | - | Combining rows of two tables into one result by matching them on a predicate. | first defined: Chapter 038 L2
+cross product | cartesian product | Every row of one table paired with every row of the other; what a join returns with a missing or always-true predicate. | first defined: Chapter 038 L2
+self-join | - | A join where both sides are the same table, relating rows to other rows in it via alias. | first defined: Chapter 038 L2
+filter object | object where | RQB's where as a plain object: column keys, bare value means equals, operator objects, AND/OR/NOT/RAW. | first defined: Chapter 038 L3
+RAW | RAW key | RQB filter-object escape hatch: a (t) => sql`…` callback for predicates the object can't express, still parameterized. | first defined: Chapter 038 L3
+correlated subquery | - | Subquery referencing the outer query's current row; how RQB nests relations in one statement, no N+1. | first defined: Chapter 038 L3
+aggregate function | aggregate | A function computing one value across many rows (count, sum, avg). | first defined: Chapter 038 L4
+COUNT(*) | count() | SQL aggregate counting every row; the star means every row, not all columns. | first defined: Chapter 038 L4
+groupBy | GROUP BY | Clause collapsing rows into one output row per distinct group key; non-aggregated selected columns must appear in it. | first defined: Chapter 038 L4
+having | HAVING | Clause filtering whole groups after the collapse, can test aggregates; where filters rows before. | first defined: Chapter 038 L4
+FILTER (WHERE …) | filter clause | Postgres clause attaching a predicate to a single aggregate so it counts only matching rows. | first defined: Chapter 038 L4
+selectDistinct | SELECT DISTINCT | Collapses fully identical rows into one. | first defined: Chapter 038 L4
+distinctOn | DISTINCT ON | Postgres-specific selector keeping the first row per distinct column, ordered by orderBy; not standard SQL. | first defined: Chapter 038 L4
+date_trunc | - | Postgres function flattening a timestamp to the first instant of a unit (month, day) to build group buckets. | first defined: Chapter 038 L4
+coalesce | COALESCE | Returns the first non-null argument; turns an empty-sum null into 0 at the database. | first defined: Chapter 038 L4
+upsert | insert-or-update | A single statement that inserts a row or, on a unique-constraint collision, updates the existing row instead. | first defined: Chapter 038 L5
+ON CONFLICT | INSERT ... ON CONFLICT | Postgres insert clause defining what to do when the row collides on a unique/primary-key constraint; the upsert mechanism. | first defined: Chapter 038 L5
+onConflictDoNothing | - | Drizzle method: skip the insert (no error) when it would collide on the target constraint. | first defined: Chapter 038 L5
+onConflictDoUpdate | - | Drizzle method: update the existing row from the proposed values when the insert collides; the full upsert. | first defined: Chapter 038 L5
+RETURNING | .returning() | SQL clause making a mutation hand back the rows it wrote; Drizzle's .returning(), typed like a select. | first defined: Chapter 038 L5
+excluded | excluded table | Postgres pseudo-table inside ON CONFLICT DO UPDATE: the row the insert proposed but couldn't write; its values feed the update. | first defined: Chapter 038 L5
+atomic (statement) | atomic operation | A statement that runs as one indivisible unit, with no observable half-finished state. | first defined: Chapter 038 L5
+sql (Drizzle) | sql tagged template | Drizzle tagged template for raw SQL fragments; interpolated values become bound parameters, so it stays injection-safe. | first defined: Chapter 038 L5
+targetWhere | - | onConflict option constraining which rows count as a conflict; pairs with a partial unique index. | first defined: Chapter 038 L5
+setWhere | - | onConflictDoUpdate option constraining which conflicts actually update, e.g. only when the incoming row is newer. | first defined: Chapter 038 L5
+cursor pagination | - | Paging by remembering the last row a page returned and asking for the rows after it, instead of counting from the front. | first defined: Chapter 038 L6
+offset pagination | offset | Paging by sorting, skipping the first N rows, and taking the next page; slow when deep and unstable on live data. | first defined: Chapter 038 L6
+keyset pagination | - | Formal name for cursor pagination: paging by the value of the last row's sort key(s) rather than by position. | first defined: Chapter 038 L6
+intermediate result | - | A set of rows or values a query computes first, then uses to answer the real question. | first defined: Chapter 038 L7
+subquery | - | A SELECT statement nested inside another statement. | first defined: Chapter 038 L7
+common table expression (CTE) | CTE, WITH clause | A named subquery introduced with WITH, referenced by the main query like a table. | first defined: Chapter 038 L7
+derived table | - | A subquery used in the FROM clause, queried as if it were a table. | first defined: Chapter 038 L7
+scalar (subquery) | scalar | A subquery selecting one column and one row, returning a single value to compare against. | first defined: Chapter 038 L7
+materialized (CTE) | WITH MATERIALIZED | Postgres computing a CTE's rows once and storing them for the statement, instead of inlining the query. | first defined: Chapter 038 L7
+window function | - | A function computing a value across a set of related rows (the window) without collapsing them into one row. | first defined: Chapter 038 L7
+recursive CTE | WITH RECURSIVE | A CTE that references itself to walk tree data via a base case and a repeating step. | first defined: Chapter 038 L7
+full-text search | FTS | Searching documents by the words they contain, with stemming and ranking, not raw substrings; Postgres ships it in the box. | first defined: Chapter 038 L8
+lexeme | - | A normalized word stem; 'running'/'ran'/'runs' all reduce to 'run'. | first defined: Chapter 038 L8
+tsvector | - | Postgres type holding a document pre-processed into its sorted set of lexemes with positions; built with to_tsvector. | first defined: Chapter 038 L8
+tsquery | - | Postgres type holding a search expression in lexeme space; built with websearch_to_tsquery/to_tsquery/plainto_tsquery. | first defined: Chapter 038 L8
+text search configuration | search config | Named Postgres bundle of a stemmer and stop-word list (e.g. 'english', 'simple') deciding how text becomes lexemes. | first defined: Chapter 038 L8
+stemming | stem | Reducing a word to its root form so variants match; 'running'/'ran'/'runs' stem to 'run'. | first defined: Chapter 038 L8
+stop word | stopword | A common word ('the', 'a', 'are') dropped during normalization because it carries no search signal. | first defined: Chapter 038 L8
+websearch_to_tsquery | - | Postgres function parsing raw human-typed (Google-style) search input into a tsquery without throwing. | first defined: Chapter 038 L8
+customType | - | Drizzle escape hatch for declaring a column type the library doesn't ship; implement dataType(). | first defined: Chapter 038 L8
+ts_rank | - | Postgres function scoring how well a tsvector matches a tsquery; higher is more relevant, order by it descending. | first defined: Chapter 038 L8
+ts_rank_cd | cover density | Cover-density variant of ts_rank rewarding matched terms that appear close together. | first defined: Chapter 038 L8
+ts_headline | - | Postgres function returning a snippet of source text with matched lexemes wrapped (default <b>...</b>). | first defined: Chapter 038 L8
+faceted search | facets | Letting users narrow results by structured attributes shown as counts; the filter-sidebar-with-counts pattern. | first defined: Chapter 038 L8
+pg_trgm | - | Postgres extension for trigram similarity matching; handles typos and partial matches lexeme search can't. | first defined: Chapter 038 L8
+-> | json field accessor | Returns a jsonb value at a key as jsonb; use to descend into nested objects. | first defined: Chapter 038 L9
+->> | json text accessor | Returns a jsonb value at a key as text; always a string, use on the leaf you read or compare. | first defined: Chapter 038 L9
+#>> | json path text accessor | Takes a path array and returns the leaf at that path as text. | first defined: Chapter 038 L9
+@> | jsonb containment operator | Tests whether the left jsonb contains the right; the most-used jsonb filter, GIN-accelerable. | first defined: Chapter 038 L9
+? | jsonb key-existence operator | Tests whether a top-level key is present; siblings ?| (any) and ?& (all). | first defined: Chapter 038 L9
+jsonb || | jsonb concatenation operator | Shallow one-level merge of two jsonb objects; right-side keys add or overwrite. | first defined: Chapter 038 L9
+jsonb_set | - | Postgres function writing one nested path inside a jsonb value, leaving the rest intact. | first defined: Chapter 038 L9
+promotion trigger | - | The moment a queried jsonb field has earned being moved to a real indexed column. | first defined: Chapter 038 L9
+db.execute | - | Runs an arbitrary statement on the pool, returning the raw driver result, not a typed builder array. | first defined: Chapter 038 L10
+sql.raw | - | Interpolates a string into SQL without binding; safe only for fixed identifiers from your own code. | first defined: Chapter 038 L10
+sql.identifier | - | Quotes a runtime-chosen table or column name; still validate against an allow-list. | first defined: Chapter 038 L10
+dynamic identifier | - | A table or column name chosen at runtime, not written literally; a bound parameter can't be one. | first defined: Chapter 038 L10
+sql<T> | sql type parameter | A TypeScript claim on a raw fragment's return type; trusted like as, never runtime-checked. | first defined: Chapter 038 L10
+shallow drop | - | A sql fragment inside a builder query; result type and projection stay intact. | first defined: Chapter 038 L10
+full drop | - | A whole db.execute(sql) statement; no inference, no builder safety. | first defined: Chapter 038 L10
+quoted identifier | - | A table/column name interpolated as a real SQL name like "invoices"."id", not a bound value. | first defined: Chapter 038 L10
+materialized view | - | A query result computed once and stored on disk like a table; refresh recomputes it. | first defined: Chapter 038 L10
+DataLoader | - | GraphQL-world batching utility coalescing per-id loads within one tick into a single query. | first defined: Chapter 039 L2
+declarative (SQL) | - | A query stating the result you want, not the steps; the database picks the how. | first defined: Chapter 039 L3
+cost estimate | cost= | Planner's predicted cost of a node in arbitrary units; for comparing plans, never milliseconds. | first defined: Chapter 039 L3
+BUFFERS | buffers | EXPLAIN option reporting pages each node read from RAM (hit) vs disk (read). | first defined: Chapter 039 L3
+indentation is depth | - | Reading a plan tree by indentation: deeper nodes are children that run first. | first defined: Chapter 039 L3
+planner statistics | statistics | Sampled per-column summaries the planner uses to estimate row counts; refreshed by ANALYZE. | first defined: Chapter 039 L3
+ANALYZE (command) | - | SQL command refreshing a table's planner statistics; distinct from the EXPLAIN ANALYZE option. | first defined: Chapter 039 L3
+covering index | - | An index holding every column a query reads, so it answers from the index alone. | first defined: Chapter 039 L3
+Rows Removed by Filter | - | Plan line counting rows a node read then discarded for failing the WHERE filter. | first defined: Chapter 039 L3
+auto_explain | - | Postgres extension that logs the plan of any query slower than a set threshold. | first defined: Chapter 039 L3
+Index Scan | - | Plan node walking a B-tree to find keys, then fetching those rows from the table. | first defined: Chapter 039 L3
+Index Only Scan | - | Plan node answering from a covering index alone, never touching the table. | first defined: Chapter 039 L3
+Bitmap Index Scan | Bitmap Heap Scan | Plan nodes combining indexes via a bitmap before fetching, for medium-selectivity queries. | first defined: Chapter 039 L3
+Nested Loop | - | Join node probing the inner input once per outer row; watch its loops=. | first defined: Chapter 039 L3
+Hash Join | - | Join node building a hash table from one input and probing it with the other. | first defined: Chapter 039 L3
+Merge Join | - | Join node zipping two inputs already sorted on the join key. | first defined: Chapter 039 L3
+Sort (plan node) | - | Plan node ordering rows; external merge means it spilled to disk. | first defined: Chapter 039 L3
+Aggregate (plan node) | HashAggregate, GroupAggregate | Plan node folding rows behind count, sum, and group by. | first defined: Chapter 039 L3
+transaction | db.transaction | A group of SQL statements that commit together or roll back together; all effects durable or none happened. | first defined: Chapter 039 L4
+ACID | - | Atomicity, Consistency, Isolation, Durability; the four guarantees a transactional database provides. | first defined: Chapter 039 L4
+atomicity | - | All statements in a transaction succeed together or fail together; no partial state. | first defined: Chapter 039 L4
+durability | - | Once a transaction commits, its writes survive a crash, power loss, or restart. | first defined: Chapter 039 L4
+isolation level | - | The transaction knob governing what changes a concurrent transaction can see while yours runs. | first defined: Chapter 039 L4
+database snapshot | snapshot (transaction) | A consistent view of the whole database as of a moment; a transaction reads from it, not the latest state. | first defined: Chapter 039 L4
+non-repeatable read | - | Reading a row twice in one transaction and getting two values, because another committed a change between. | first defined: Chapter 039 L4
+phantom read | - | Re-running a range query in one transaction and finding new matching rows another transaction inserted. | first defined: Chapter 039 L4
+write skew | - | Two transactions each read and decide validly, but their combined writes break an invariant neither broke alone. | first defined: Chapter 039 L4
+read committed | - | Postgres default isolation; each statement sees a fresh snapshot of everything committed as it begins. | first defined: Chapter 039 L4
+repeatable read | - | Isolation where the whole transaction reads one snapshot taken at its first statement; Postgres also blocks phantoms. | first defined: Chapter 039 L4
+serializable (isolation) | - | Strongest isolation; result is as if concurrent transactions ran serially; the only level catching write skew. | first defined: Chapter 039 L4
+serialization failure | 40001 | Error Postgres raises when it can't serialize concurrent transactions safely; the app retries the whole transaction. | first defined: Chapter 039 L4
+SQLSTATE | - | A five-character SQL standard error code classifying what went wrong; switch on it to handle specific cases. | first defined: Chapter 039 L4
+unique violation | 23505 | Error Postgres raises when a write would duplicate a value guarded by a UNIQUE constraint or unique index. | first defined: Chapter 039 L4
+row lock | SELECT ... FOR UPDATE | A lock on specific rows so other transactions wait before modifying them; held until commit or rollback. | first defined: Chapter 039 L4
+pessimistic concurrency | - | Take a lock up front so conflicting transactions wait their turn; best when contention is high and the hot row is known. | first defined: Chapter 039 L4
+pool starvation | - | When all pooled connections are checked out and unavailable, so new queries must wait; often from long-held transactions. | first defined: Chapter 039 L4
+snapshot (Drizzle) | meta/ snapshot, schema snapshot | Saved JSON of the full schema at each migration; what generate diffs against, never the live database. | first defined: Chapter 040 L1
+dialect (Drizzle) | SQL dialect | Which database's SQL Drizzle Kit emits; postgresql pins it to Postgres types. | first defined: Chapter 040 L1
+devDependencies | dev dependency | Packages needed only during development, never shipped to the production bundle. | first defined: Chapter 040 L1
+_journal.json | journal, migration ledger | Ordered ledger of which migrations exist and the order they apply in. | first defined: Chapter 040 L1
+__drizzle_migrations | migrations table | Postgres table recording which migration files have run, so each applies once. | first defined: Chapter 040 L1
+schema-aware (GUI) | - | A DB GUI that reads your relations and column types, so it links foreign keys and validates by type. | first defined: Chapter 040 L1
+Drizzle Studio | drizzle-kit studio | Local schema-aware web GUI for browsing and editing the dev database; not a production tool. | first defined: Chapter 040 L1
+drizzle.config.ts | drizzle config | Repo-root file giving Drizzle Kit the dialect, schema path, migrations folder, and connection. | first defined: Chapter 040 L1
+ephemeral branch | - | A short-lived Neon database branch you throw away once its feature merges. | first defined: Chapter 040 L2
+backfill | - | Writing values into a newly added column for the rows that already existed. | first defined: Chapter 040 L2
+ACCESS EXCLUSIVE | - | The strongest Postgres lock; blocks reads and writes, not just writes. | first defined: Chapter 040 L2
+expand-backfill-contract | expand-contract | Safe schema change: add the new shape, populate it, then drop the old shape once nothing reads it. | first defined: Chapter 040 L2
+dual-write | - | Writing to both old and new columns during a migration so both stay populated. | first defined: Chapter 040 L2
+fix forward | fix-forward | Correcting a failed migration with a new migration rather than rolling back. | first defined: Chapter 040 L2
+statement-breakpoint | --> statement-breakpoint | Drizzle Kit marker splitting a migration file into separate statements. | first defined: Chapter 040 L2
+deploy window | cutover | The interval during a deploy when old and new app versions coexist while traffic shifts. | first defined: Chapter 040 L2
+invalid index | - | An index left unusable when CREATE INDEX CONCURRENTLY fails mid-build; must be dropped and rebuilt. | first defined: Chapter 040 L2
+drizzle-seed | - | Schema-aware, deterministic, foreign-key-aware seeder for Drizzle; a devDependency, dev/test only. | first defined: Chapter 040 L3
+fixtures | test fixtures | The pre-defined data a dev or test environment starts from before you do anything. | first defined: Chapter 040 L3
+deterministic | determinism | Same inputs always produce the same output; no randomness leaks between runs. | first defined: Chapter 040 L3
+topological order | topological sort | Ordering of dependency-graph nodes where each comes after what it depends on; parents before children. | first defined: Chapter 040 L3
+.refine (drizzle-seed) | refine | drizzle-seed call taking a callback (f) to set per-table count, column generators, and with fanout. | first defined: Chapter 040 L3
+reset (drizzle-seed) | - | drizzle-seed call clearing every row in FK-safe order, leaving table structure intact; not a drop. | first defined: Chapter 040 L3
+valuesFromArray | f.valuesFromArray | drizzle-seed generator picking from a fixed set, optionally weighted, for pgEnum and curated columns. | first defined: Chapter 040 L3
+test factory | factory helper | Function inserting one tailored row through Drizzle and returning it; for per-test rows, not datasets. | first defined: Chapter 040 L3
+single round trip | single-round-trip | One request to the database and one response back; loading parent and children in one query, not several. | first defined: Chapter 041 L1
+PRNG | pseudo-random number generator | Algorithm whose output stream is fully determined by a starting seed; same seed replays the same sequence. | first defined: Chapter 041 L1
+@t3-oss/env-nextjs | t3-env, createEnv | Thin Zod wrapper validating env vars at build time and exporting typed values imported instead of process.env. | first defined: Chapter 041 L2
+NEXT_PUBLIC_ prefix | NEXT_PUBLIC | Next.js prefix marking an env var safe for the browser; inlined into the bundle. Server-only secrets omit it. | first defined: Chapter 041 L2
+SKIP_ENV_VALIDATION | - | Escape hatch disabling t3-env schema checks; legitimate only for a CI build without secrets. | first defined: Chapter 041 L2
+browser bundle | client bundle | The JavaScript Next.js compiles and ships to the browser; anything inlined here is readable in devtools. | first defined: Chapter 041 L2
+relationName | - | Drizzle relations() tag matched on both sides of an edge to disambiguate two relations between the same pair of tables. | first defined: Chapter 041 L3
+introspect (database) | introspection | Querying a database's own catalog (information_schema, pg_catalog) to read its actual structure. | first defined: Chapter 041 L3
+drizzle-kit push | push | Drizzle Kit command pushing the schema straight to the DB with no migration file; prototype-only escape hatch. | first defined: Chapter 041 L3
+linear-congruential generator | LCG | A PRNG built from a one-line recurrence (state = state * a + c) that turns a seed into a repeatable number stream. | first defined: Chapter 041 L4
+IDOR | insecure direct object reference | Exposing a row by a guessable/forgeable id with no ownership check; closed by scoping the query to the owner. | first defined: Chapter 041 L5
+tenant guard | - | The organizationId filter placed inside the query where, AND-ed with the id, so a cross-org row never loads; the IDOR defense. | first defined: Chapter 041 L5
