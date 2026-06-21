@@ -8,6 +8,8 @@ effort: high
 
 Blitz mode: If you are instructed to run in Blitz mode, parallelize and speed up as much as possible and instruct subagents to run in Blitz mode.
 
+Before starting discard any leftover work by other agents in git, except in Blitz mode, where you should only touch files related to your chapter.
+
 ## Step 1 - Understand what the course is about
 
 Read AGENTS.md.
