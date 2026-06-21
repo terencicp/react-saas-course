@@ -454,7 +454,7 @@
 - 1 Wiring the auth instance (Installs `better-auth`, defines the server `auth` instance with `nextCookies`, mounts the `[...all]` catch-all route handler, sets up the browser `authClient`, and adds the two required env entries.)
 - 2 Schema and the four core tables (Wires the Drizzle adapter, generates the canonical `user`, `session`, `account`, and `verification` tables via the Better Auth CLI, walks their load-bearing columns and cascades, and ships the first migration through Drizzle Kit.)
 - 3 Session lifetimes and cookie hardening (Configures `expiresIn`, `updateAge`, and `freshAge`, sets the `__Host-` cookie prefix and SameSite defaults, weighs the cookie-cache staleness trade, and names `secondaryStorage` and `trustedOrigins` as deferred reaches.)
-- 4 getCurrentUser across the five surfaces (Establishes the one `auth.api.getSession({ headers: await headers() })` call shape used in proxy, layouts, Server Components, Server Actions, and route handlers, wraps it in `React.cache`-backed `getCurrentUser`/`requireUser` helpers, and stands up the minimum `proxy.ts` gate.)
+- 4 Reading the session everywhere (Establishes the one `auth.api.getSession({ headers: await headers() })` call shape used in proxy, layouts, Server Components, Server Actions, and route handlers, wraps it in `React.cache`-backed `getCurrentUser`/`requireUser` helpers, and stands up the minimum `proxy.ts` gate.)
 - 5 Quiz
 
 ### Chapter 053 — Authentication flows

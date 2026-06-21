@@ -1787,3 +1787,29 @@ implicit grant | - | Removed OAuth grant that returned the token directly in the
 client credentials | - | Service-to-service OAuth grant with no human involved; not a login flow. | first defined: Chapter 051 L3
 device code | - | OAuth grant for input-constrained devices like a TV. | first defined: Chapter 051 L3
 Resource Owner Password Credentials | ROPC | Removed OAuth grant where the user typed their password into the third-party app. | first defined: Chapter 051 L3
+catch-all route | [...all] route, catch-all segment | Next.js dynamic segment matching every path beneath it; one file handles every URL under the prefix. | first defined: Chapter 052 L1
+Better Auth server instance | auth instance, server instance | The betterAuth() object holding all server-side auth config (database, secret, plugins); called directly in server code. | first defined: Chapter 052 L1
+Better Auth client | authClient, browser client | createAuthClient() typed wrapper React components call; each method is an HTTP call to the catch-all route. | first defined: Chapter 052 L1
+database adapter | adapter | Layer mapping a library's storage calls onto a specific database/ORM; Better Auth's Drizzle adapter emits Drizzle queries. | first defined: Chapter 052 L1
+Better Auth plugin | plugin | Module extending the auth instance's behavior; nextCookies() attaches Set-Cookie headers to Server Action responses. | first defined: Chapter 052 L1
+nextCookies | nextCookies() | Better Auth Next.js plugin attaching Set-Cookie headers to Server Action responses; must be last in the plugins array. | first defined: Chapter 052 L1
+cookie cache | - | Optional Better Auth feature storing a signed session copy in the cookie so common reads skip the DB lookup. | first defined: Chapter 052 L1
+secret rotation | BETTER_AUTH_SECRETS | Rolling in a new signing secret (comma-separated list) without invalidating every existing session at once. | first defined: Chapter 052 L1
+trustedOrigins | - | Better Auth's CSRF allowlist; defaults to the baseURL origin, widened only for a cross-origin client. | first defined: Chapter 052 L1
+toNextJsHandler | - | Better Auth helper turning the instance into Next.js route handlers; export const { GET, POST } = toNextJsHandler(auth). | first defined: Chapter 052 L1
+namespace import | import * as | Import pulling every export of a module under one object (schema.user, schema.session). | first defined: Chapter 052 L2
+CLI | command-line tool | A program run in the terminal with flags and arguments rather than in the browser. | first defined: Chapter 052 L2
+scrypt | - | Deliberately slow password-hashing function; slowness makes brute-forcing stolen hashes expensive. | first defined: Chapter 052 L2
+magic link | magic-link sign-in | Sign-in by clicking a one-time emailed link, no password typed. | first defined: Chapter 052 L2
+discriminator (DB column) | provider discriminator | A column whose value says which kind a row is (account.providerId: credential vs google). | first defined: Chapter 052 L2
+expiresIn | absolute lifetime | Better Auth session knob: the hard wall after which a session is dead regardless of activity (course sets 30 days). | first defined: Chapter 052 L3
+updateAge | sliding renewal | Better Auth session knob: how stale before a request pushes expiresAt out by another full window (course keeps 1 day). | first defined: Chapter 052 L3
+freshAge | freshness window | Better Auth session knob: how long after createdAt a session counts as fresh for high-stakes actions (course sets 10 min). | first defined: Chapter 052 L3
+bearer credential | - | Any credential granting access just by being presented, with no further identity proof; a session token is one. | first defined: Chapter 052 L3
+session data cookie | cookie cache cookie | Sibling …session_data cookie holding a signed snapshot of {user, session} so reads skip the DB; the cookie cache's storage. | first defined: Chapter 052 L3
+opaque session token | session token | Random meaningless id in the session cookie; the server looks it up to find the session row. | first defined: Chapter 052 L4
+auth.api.getSession | getSession | Server-side Better Auth call reading {user, session} | null from request headers, in-process. | first defined: Chapter 052 L4
+getSessionCookie | - | better-auth/cookies helper checking only whether a session cookie is present, no decode or DB. | first defined: Chapter 052 L4
+authClient.useSession | useSession | Reactive Better Auth browser hook returning {data, isPending, error}; display only, never for gating. | first defined: Chapter 052 L4
+getCurrentUser | - | Helper returning the session user or null; the safe server read. | first defined: Chapter 052 L4
+requireUser | - | Helper returning the user or redirecting to /sign-in; the assertive server read. | first defined: Chapter 052 L4

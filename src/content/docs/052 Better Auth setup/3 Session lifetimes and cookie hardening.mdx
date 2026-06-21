@@ -1,11 +1,12 @@
 ---
 title: Session lifetimes and cookie hardening
-tagline: Configure how long Better Auth sessions live and lock down the cookie that carries them, the security and performance knobs on the auth instance.
+tagline: Configure how long Better Auth sessions live and lock down the cookie that carries them.
 chapter-id: 52
 course-progress: 0.5012
 sidebar:
   order: 3
   label: Session and cookie config
+rewrites: 2
 ---
 
 import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
@@ -28,27 +29,25 @@ import ThreeClocksTimeline from '../../../components/lessons/052/3/ThreeClocksTi
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-The rows are in Postgres and the route is mounted, so a user could sign in and a session would be written. But nothing you've configured so far answers the questions an experienced engineer asks next. How long does a login survive before it forces a re-auth? When does its token rotate? Does "delete my account" trust a session that was created three weeks ago? And does every page load pay a database query just to learn who's asking?
+A user can already sign in: the rows are in Postgres and the route is mounted. What you haven't set is how that session behaves. How long does a login last before it forces a re-auth? When does its token rotate? Should "delete my account" trust a session created three weeks ago? Does every page load hit the database just to learn who's asking?
 
-These are decisions, not more plumbing, and Better Auth exposes them as two option blocks on the `auth` instance from the first lesson of this chapter: `session` and `advanced`. The `session` block decides the *clocks* a session runs on; the `advanced` block decides how the *cookie* that carries it is locked down. Back in the chapter on the auth mental model, you decided the shape of all this conceptually: an opaque token in a `__Host-`-prefixed cookie, `SameSite` to blunt CSRF, and revocation that lives on the server. This lesson is where those decisions stop being a diagram and become real values in a config object. It also adds one small export, `SESSION_COOKIE_PREFIX`, that the next lesson's proxy will reach for.
+These are decisions, and Better Auth exposes them as two option blocks on the `auth` instance: `session` and `advanced`. The `session` block sets the *clocks* a session runs on; the `advanced` block locks down the *cookie* that carries it. It also adds one export, `SESSION_COOKIE_PREFIX`, that the next lesson's proxy reaches for.
 
-## Three clocks, not one: how long a session lives
+## Session lifetime: three clocks, not one
 
-Most beginners get sessions wrong in the same way, and it's worth naming before you touch any config. They picture *one* timeout: a session "lasts" some amount of time, and when it runs out you're logged out. That mental model can't explain real behavior. It can't tell you why an active user who's been clicking around for a month is still logged in, or why the same user who just clicked "change password" got asked for their password again even though they signed in twenty minutes ago.
+It's tempting to picture a session as *one* timeout that runs out and logs you out. That model can't explain why a user clicking around for a month stays logged in, or why someone who just hit "change password" is re-prompted even though they signed in twenty minutes ago.
 
-It can't explain those things because there isn't one clock. There are three, and they run independently on the same `session` row. Keep them separate in your head and every confusing session behavior becomes clear; collapse them into one and you'll be guessing forever.
+There isn't one clock. There are three, running independently on the same `session` row.
 
-The first clock is **`expiresIn`, the absolute lifetime.** It's a hard wall: past it, the session is dead no matter how active the user was, and they have to re-authenticate. Better Auth stores the wall as `session.expiresAt` and ships a default of 7 days. This course sets it to **30 days**, long enough that a returning SaaS user rarely hits the wall, short enough that a session can't live forever. That's an override; you are not getting 30 days out of the box.
+The first is **`expiresIn`, the absolute lifetime.** Past this hard wall the session is dead no matter how active the user was, and they must re-authenticate. Better Auth stores the wall as `session.expiresAt` and defaults to 7 days; the course sets **30 days**, long enough that a returning user rarely hits it, short enough that no session lives forever.
 
-The second clock is **`updateAge`, the sliding renewal.** On its own, a 30-day absolute wall would log out even a daily user after a month, and `updateAge` fixes that. While the session is still inside its `expiresIn` window, whenever a request arrives and finds the session older than `updateAge`, Better Auth pushes `expiresAt` out by another full `expiresIn` window. So an active user's wall keeps sliding into the future and they stay logged in indefinitely, without you ever issuing a cookie that lives forever. The default is 1 day, and the course keeps it. The knob carries a real trade-off. Set it shorter and every active session triggers more `UPDATE`s on a hot table, which is <Term definition="Redundant repeated writes to the same row. Here, re-writing a session's expiry far more often than the security model needs, which loads a table that's already touched on every authenticated request.">write amplification</Term>. Set it longer and a user who's active in bursts, heavy one day and gone for several, can drift toward the absolute wall and fall off it mid-task.
+The second is **`updateAge`, the sliding renewal.** A 30-day wall alone would log out even a daily user after a month. While the session is inside its `expiresIn` window, any request that finds it older than `updateAge` pushes `expiresAt` out by another full window, so the wall slides into the future and an active user stays logged in indefinitely without any cookie that lives forever. The trade-off: shorter, and every active session triggers more `UPDATE`s on a hot table, which is <Term definition="Redundant repeated writes to the same row. Here, re-writing a session's expiry far more often than the security model needs, which loads a table that's already touched on every authenticated request.">write amplification</Term>; longer, and a user active in bursts can drift toward the absolute wall and fall off it mid-task.
 
-The third clock is the one beginners never see coming: **`freshAge`, the freshness window for elevation.** A session is "fresh" if its `createdAt` is within `freshAge`. Note carefully that freshness is measured from **when the session was created**, not from the last time the user did something. A user who's been active all afternoon still has a session that is *not* fresh if they signed in this morning. Inside the fresh window, high-stakes actions like changing a password, changing an email, disabling two-factor, deleting the account, or transferring ownership are allowed to proceed. Outside it, the action layer demands the user re-authenticate before it runs. Better Auth defaults this to 1 day. The course tightens it hard, to **10 minutes**, so that destructive actions re-prompt for a password unless you *just* signed in. This lesson only sets the number. The check that reads it, the part that actually blocks the action and re-prompts, is built later, in the chapter on account security. For now, know that the value lives here and the enforcement lives there.
+The third is **`freshAge`, the freshness window for elevation.** A session is "fresh" if its `createdAt` is within `freshAge`, measured from **when the session was created**, not from last activity, so a user active all afternoon still has a session that is *not* fresh if they signed in this morning. Inside the window, high-stakes actions such as changing a password or email, disabling two-factor, or deleting the account proceed; outside it, the action layer demands re-authentication first. Better Auth defaults to 1 day; the course tightens it to **10 minutes**, so destructive actions re-prompt unless the user *just* signed in. This lesson only sets the number; the check that enforces it comes later, in the chapter on account security.
 
 <ThreeClocksTimeline />
 
-Notice what the picture shows that prose alone doesn't: the freshness window is a sliver near sign-in, while the session as a whole lives for weeks. These are not the same timer at different settings; they answer different questions. `expiresIn` answers "is this session still valid at all?" `updateAge` answers "should I extend it because the user is here?" And `freshAge` answers "do I trust this session enough to let it do something destructive?"
-
-Come back to the table below when you're setting these for a real surface. Each row gives a knob, what it controls, the library default, the course default, and the two pressures that push it shorter or longer.
+Each answers a different question, which is why the bands are different sizes. `expiresIn` asks "is this session still valid at all?", `updateAge` asks "should I extend it because the user is here?", and `freshAge` asks "do I trust it enough to allow something destructive?"
 
 | Knob | What it controls | Library default | Course default | Shorten when… | Lengthen when… |
 | --- | --- | --- | --- | --- | --- |
@@ -56,39 +55,37 @@ Come back to the table below when you're setting these for a real surface. Each 
 | `updateAge` | Sliding-renewal cadence: how stale before a request pushes the wall out | 1 day | **1 day** | You want the wall to track activity tightly (rarely needed) | Renewal `UPDATE`s are measurably loading the session table |
 | `freshAge` | Freshness window for elevation, measured from `createdAt`, not activity | 1 day | **10 minutes** | Destructive actions must re-prompt unless the user *just* authenticated | Re-prompts annoy users on a low-stakes surface |
 
-There's one more `session` flag worth recognizing but not reaching for: `disableSessionRefresh` (default `false`). Turning it on switches off the sliding renewal entirely, so `expiresIn` becomes a strict absolute expiry: re-login every 24 hours regardless of activity. You'd only want that under a compliance regime that mandates it. For a normal SaaS, leave it off, since the sliding wall is what keeps active users logged in.
+One more `session` flag is worth recognizing: `disableSessionRefresh` (default `false`) switches off the sliding renewal, making `expiresIn` a strict absolute expiry, which you'd only want under a compliance regime that mandates it.
 
-## Rotating the token so a leaked cookie expires fast
+## Token rotation and session fixation
 
-The opaque token in the cookie is a <Term definition="Any credential that grants access simply by being presented, with no further proof of identity. A session token is one: whoever holds it is treated as the user. That's why limiting how long any single token stays valid matters.">bearer credential</Term>: whoever holds it is treated as the user, no questions asked. So the practical security question is, if one leaks, how long does the stolen copy stay useful? Rotation is the answer. Better Auth mints a **fresh token at sign-in** every time and never reuses some id that existed before the user authenticated. That's the structural defense against <Term definition="An attack where the adversary plants a session id the victim's browser will use, then waits for the victim to log in under it, and rides the now-authenticated session. Issuing a brand-new token at sign-in defeats it: the id the attacker knew is never the one that gets authenticated.">session fixation</Term>, the threat you met conceptually in the auth mental model chapter. The sliding-renewal path can also issue a new token as it extends the session, retiring the old one.
+The opaque token in the cookie is a <Term definition="Any credential that grants access just by being presented, with no further proof of identity. Whoever holds a session token is treated as the user, so limiting how long any one token stays valid matters.">bearer credential</Term>: if it leaks, the stolen copy works until it expires, and rotation shortens that window. Better Auth mints a **fresh token at every sign-in**, never reusing an id from before the user authenticated, which is the structural defense against <Term definition="An attack where the adversary plants a session id the victim's browser will use, then rides the session once the victim logs in under it. A brand-new token at sign-in defeats it: the id the attacker knew is never the one that gets authenticated.">session fixation</Term>. Sliding renewal can issue a new token too, retiring the old one.
 
-This is the deeper reason a finite `expiresIn` paired with an active `updateAge` beats one long-lived token: every renewal is a chance to rotate. A token that never expires is a token that never rotates, which means a single leak is good forever. A finite, rotating token turns "forever" into "until the next renewal." You don't configure the rotation cadence directly here; it falls out of the clocks you already set. The point is to understand *why* those clocks are a security feature and not just a UX setting.
+This is why a finite `expiresIn` with an active `updateAge` beats one long-lived token: every renewal is a chance to rotate, where a token that never expires never does. You don't set the rotation cadence directly; it falls out of the clocks you already chose.
 
 ## Hardening the session cookie
 
-The cookie itself carries an opaque id and nothing secret, but its *attributes* are a structural defense. Get them right once and an entire class of attacks is closed off, not just mitigated. The `advanced` block is where you set them.
+The cookie carries an opaque id, nothing secret, but its *attributes* are a structural defense: set them right once and a whole class of attacks is closed off, not just mitigated. They live in the `advanced` block.
 
-Walk through the keys that matter, asking the same question of each: what's the default, and does it hold for a SaaS?
+**`useSecureCookies`.** Auto-resolves to `true` in production and on an HTTPS `baseURL`, and relaxes on `http://localhost`, since a `Secure` cookie can't be set over plain HTTP. Confirm production resolves to `true`.
 
-**`useSecureCookies`.** This auto-resolves to `true` in production and on an HTTPS `baseURL`, and relaxes on `http://localhost`. The senior review is just a confirmation that production resolves to `true`. Dev relaxing the `Secure` flag is expected and fine, because you can't set a `Secure` cookie over plain HTTP, and localhost is plain HTTP.
+**`cookiePrefix`.** Defaults to `'better-auth'`, producing `better-auth.session_token`; the course overrides it to `'__Host-better-auth'`. The `__Host-` prefix isn't a Better Auth feature, it's a contract the *browser* enforces: a browser stores a `__Host-`-named cookie only if it's `Secure`, has `Path=/`, and carries **no `Domain` attribute**. So nobody can downgrade the cookie to non-`Secure` or widen its scope to a sibling domain, a whole class of attacks closed off by construction. Better Auth's helpers, `getSessionCookie` among them next lesson, read the prefixed name once you pass them the prefix.
 
-**`cookiePrefix`.** The library default is `'better-auth'`, producing a cookie named `better-auth.session_token`. The course overrides it to `'__Host-better-auth'`. The `__Host-` prefix is the realization of the call you made in the auth mental model chapter, and it's worth understanding precisely because it isn't a Better Auth feature at all: it's a contract the *browser* enforces. A browser will only accept a cookie whose name starts with `__Host-` if that cookie is `Secure`, has `Path=/`, and carries **no `Domain` attribute**. Because the browser refuses to store it otherwise, the prefix makes a whole category of attacks impossible by construction: nobody can downgrade it to non-`Secure`, and nobody can widen its scope to a sibling domain. It costs nothing in a single-origin Next.js app. Better Auth's own helpers, including `getSessionCookie` in the next lesson, read the prefixed name correctly as long as you hand them the prefix.
-
-**`defaultCookieAttributes`.** These are the secure defaults the course locks in for the session cookie: `sameSite: 'lax'`, `httpOnly: true`, and `path: '/'`. `SameSite=Lax` is the CSRF call from the auth mental model chapter: it blocks the cookie from riding cross-site POSTs while still letting it ride a top-level navigation, so a user clicking a link to your app from an email stays logged in. `httpOnly` means JavaScript can never read the token, so `document.cookie` returns nothing for it and an XSS payload can't exfiltrate the session. `path: '/'` scopes it to the whole app.
+**`defaultCookieAttributes`.** Three secure defaults: `sameSite: 'lax'`, `httpOnly: true`, `path: '/'`. `SameSite=Lax` defends against <Term definition="Cross-Site Request Forgery. An attack where a site you're visiting silently fires an authenticated request to a different site you're logged into, relying on the browser to attach your session cookie automatically. SameSite=Lax stops the cookie from riding those cross-site requests.">CSRF</Term>: the browser won't attach the cookie to a cross-site POST, so a forged request fails for lack of credentials, while a top-level navigation still carries it, so following a link from an email keeps you logged in. `httpOnly` hides the token from JavaScript, so `document.cookie` returns nothing and an XSS payload can't exfiltrate the session. `path: '/'` scopes it to the whole app.
 
 <VideoCallout videoId="CZ8geW9Zh4U" videoTitle="The essentials of HTTP cookie attributes">
   Chrome for Developers walks through every attribute behind these defaults, `Domain`, `Path`, `Secure`, `HttpOnly`, and the three `SameSite` modes, in 12 minutes.
 </VideoCallout>
 
-**`crossSubDomainCookies`** (`{ enabled, domain }`). This is off by default. You'd flip it on only when a single session genuinely has to span sibling subdomains, so that one login works across `app.example.com` and `admin.example.com`. The fork that matters here is that **`crossSubDomainCookies` is incompatible with `__Host-`.** That's a cookie-spec fact, not a Better Auth quirk: sharing across subdomains requires a `Domain` attribute, and `__Host-` forbids one. So you have to choose between the structural `__Host-` lock and subdomain sharing; you can't have both. For a single-origin SaaS, you take the lock every time. Reach for subdomain sharing only when the product actually spans subdomains, and know that you're trading away `__Host-` to get there.
+**`crossSubDomainCookies`** (`{ enabled, domain }`). Off by default. Flip it on only when one session must span sibling subdomains like `app.example.com` and `admin.example.com`. The catch: **it's incompatible with `__Host-`.** Sharing across subdomains needs a `Domain` attribute, which `__Host-` forbids, a cookie-spec fact rather than a Better Auth quirk. A single-origin app takes the `__Host-` lock and skips subdomain sharing.
 
 ### The `SESSION_COOKIE_PREFIX` export
 
-One artifact from this file gets consumed by the next lesson: whatever prefix you configure has to be readable by the proxy. The move is to declare the prefix *once* as a `SESSION_COOKIE_PREFIX` constant, feed it to `advanced.cookiePrefix`, and export it. Next lesson, the proxy calls `getSessionCookie(req, { cookiePrefix: SESSION_COOKIE_PREFIX })` so it reads the *same* cookie name the instance writes. That gives you one source of truth, with no literal restated in two places.
+The next lesson's proxy must read the same prefix this file writes. Declare it *once* as a `SESSION_COOKIE_PREFIX` constant, feed it to `advanced.cookiePrefix`, and export it. The proxy then calls `getSessionCookie(req, { cookiePrefix: SESSION_COOKIE_PREFIX })`, reading from that one source of truth.
 
-Skipping this export, or restating the prefix as a string literal in the proxy, sets up a quiet failure. `getSessionCookie` defaults to looking for `'better-auth.'`. Point it at the wrong prefix and it finds nothing under your custom name, so a fully signed-in user looks signed-*out* to the proxy and gets bounced to the login page on every protected route. The bug doesn't throw; it just silently logs everyone out. Exporting one constant and importing it is the whole fix. This lesson ships the export, and the next lesson wires the read.
+Skip the export, or restate the prefix as a literal, and you get a quiet failure. `getSessionCookie` defaults to `'better-auth.'`; point it at the wrong name and it finds nothing, so a signed-in user looks signed-*out* to the proxy and gets bounced to login on every protected route. Nothing throws; everyone just silently logs out. Exporting the one constant is the whole fix.
 
-One wrinkle decides what that constant's value actually is. A `__Host-` cookie cannot be set over `http://localhost`, because the prefix *requires* `Secure` and `Secure` cookies don't set over plain HTTP. So if the prefix is a hardcoded `'__Host-better-auth'`, sign-in silently fails the moment you run locally: the server tries to set a cookie the browser rejects, and you appear logged out right after logging in. The fix is to make the prefix environment-aware, relaxed in dev and hardened in prod. The two tabs below contrast the broken hardcoded version with the environment-conditional one that resolves it.
+The *value* also needs care. Because `__Host-` requires `Secure`, the cookie can't be set over `http://localhost`, so a hardcoded `'__Host-better-auth'` silently breaks sign-in the moment you run locally. Make the prefix environment-aware: relaxed in dev, hardened in prod.
 
 <CodeVariants>
   <CodeVariant label="Hardcoded — breaks on localhost">
@@ -99,7 +96,7 @@ One wrinkle decides what that constant's value actually is. A `__Host-` cookie c
     ```
 
     </div>
-    **Sign-in silently fails in dev.** `__Host-` requires `Secure`, and `Secure` cookies won't set over `http://localhost`, so the browser drops the cookie the moment the server sets it and the user looks logged out right after logging in.
+    **Sign-in silently fails in dev.** Over `http://localhost` the browser drops the `Secure`-requiring cookie the moment the server sets it, so the user looks logged out right after logging in.
   </CodeVariant>
 
   <CodeVariant label="Environment-aware — works everywhere">
@@ -111,15 +108,15 @@ One wrinkle decides what that constant's value actually is. A `__Host-` cookie c
     ```
 
     </div>
-    **Hardened in prod, relaxed in dev.** Production gets the full `__Host-` lock, while local dev falls back to the plain prefix that sets fine over HTTP. Because the export feeds both `advanced.cookiePrefix` and the proxy's `getSessionCookie`, the right name flows everywhere from this one line.
+    **Hardened in prod, relaxed in dev.** Production gets the full `__Host-` lock; dev falls back to the plain prefix that sets fine over HTTP. The export feeds both `advanced.cookiePrefix` and the proxy's `getSessionCookie`, so the right name flows from this one line.
   </CodeVariant>
 </CodeVariants>
 
 :::note
-Relaxing the prefix in dev is a deliberate, scoped concession to the fact that localhost runs over HTTP, not a weakening of production. Production resolves to the full `__Host-` lock; only your machine runs with the relaxed prefix.
+The relaxed dev prefix is a concession to localhost over HTTP, not a weakening of production: only your machine runs it, while production keeps the full `__Host-` lock.
 :::
 
-That environment-aware constant is what the full block below uses. Step through it: the `session` clocks, then the cookie keys, then the exported constant. The tinted lines are the ones that diverge from Better Auth's defaults.
+The full block below uses that constant. Tinted lines diverge from Better Auth's defaults.
 
 <AnnotatedCode lang="ts" code={`
 import 'server-only';
@@ -149,23 +146,23 @@ export const auth = betterAuth({
 });
 `}>
   <AnnotatedStep meta="{13-15}" color="violet">
-    The three clocks, in seconds. `expiresIn` is 30 days, `updateAge` is 1 day, and `freshAge` is 10 minutes; all three diverge from Better Auth's defaults. Writing them as `60 * 60 * 24 * 30` keeps the unit math legible instead of a magic `2592000`.
+    The three clocks, in seconds: `expiresIn` 30 days, `updateAge` 1 day, `freshAge` 10 minutes, all overriding the defaults. Writing `60 * 60 * 24 * 30` keeps the unit math legible instead of a magic `2592000`.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{18}" color="violet">
-    The `__Host-` prefix, fed from the constant so the value lives in exactly one place. The instance writes the cookie under whatever name this resolves to.
+    The `__Host-` prefix, fed from the constant. The instance writes the cookie under whatever name it resolves to.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{19-23}" color="blue">
-    The secure defaults the course locks in: `SameSite=Lax`, `httpOnly`, and `path: '/'`. `useSecureCookies` isn't set explicitly because it auto-resolves correctly per environment.
+    The secure defaults: `SameSite=Lax`, `httpOnly`, `path: '/'`. `useSecureCookies` is left unset because it auto-resolves correctly per environment.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{4-5}" color="violet">
-    The forward contract: the one symbol the next lesson's proxy imports so the read and the write can't drift. It resolves the dev-vs-prod prefix split in a single place that both `cookiePrefix` and the proxy read from.
+    The forward contract: the one symbol the next lesson's proxy imports so read and write can't drift, resolving the dev-vs-prod split in the single place both sides read.
   </AnnotatedStep>
 </AnnotatedCode>
 
-Hover the three cookie keys for a one-line definition of each.
+Hover each cookie key for a one-line definition.
 
 <CodeTooltips tooltips={{
   SESSION_COOKIE_PREFIX: 'The exported prefix constant — resolves to the browser-enforced __Host- prefix in production. The browser only stores a __Host--named cookie if it is Secure, has Path=/, and has no Domain attribute.',
@@ -184,17 +181,13 @@ advanced: {
 ```
 </CodeTooltips>
 
-It's worth being precise about what `SameSite=Lax` actually defends against, since it's easy to wave past. <Term definition="Cross-Site Request Forgery. An attack where a site you're visiting silently fires an authenticated request to a different site you're logged into, relying on the browser to attach your session cookie automatically. SameSite=Lax stops the cookie from riding those cross-site requests.">CSRF</Term> is the attack where some other origin tricks your already-logged-in browser into firing an authenticated request at your app: the browser helpfully attaches your session cookie, and the request looks legitimate. `SameSite=Lax` is the structural counter, because the browser won't attach the cookie to a cross-site POST, so the forged request arrives without credentials and fails.
+## The cookie cache: trading a DB read for staleness
 
-## One DB hit per request, or none: the cookie cache
+This is the chapter's one performance reach; every other decision serves correctness and security. Identity-aware pages read the session on *every* load to learn who's asking, and each read defaults to a database round-trip: many identical queries on one hot table.
 
-Every other decision in this chapter is about correctness and security. This one is about performance, and it's the only performance reach the chapter takes, so don't go looking for a dozen more. The problem it solves: identity-aware pages read the session on *every* load to know who's asking, and each read is, by default, a database round-trip. On a busy app that's a lot of identical queries hitting one hot table.
+Two cookies are now in play, and keeping them distinct matters. The session **token** cookie (the `…session_token` you've been hardening) holds the opaque id; it's the credential, so it's non-negotiable. The optional session **data** cookie, the *cookie cache* (a sibling `…session_data`), holds a signed copy of the `{ user, session }` object. The token names you *by reference*; the data cookie carries *the answer itself* so the server can skip the lookup. The token is always there; the cache is opt-in.
 
-Build the model in two steps, because conflating them is exactly how this goes sideways.
-
-**Step one: there are two different cookies in play.** The session **token** cookie (the `…session_token` you've been hardening) holds the opaque id and is non-negotiable, since it's the credential. The optional session **data** cookie, the *cookie cache* (a sibling `…session_data` cookie under the same prefix), holds a signed, serialized copy of the `{ user, session }` object. The token cookie says *who you are by reference*; the data cookie carries *a snapshot of the answer* so the server can skip the lookup. They are not the same cookie at different settings. The token is always there, and the cache is opt-in.
-
-**Step two: what turning the cache on changes.** You enable it with one more key on the same `session` block from the hardened config above:
+Turn it on with one more `session` key:
 
 ```ts title="lib/auth.ts" ins={5}
 session: {
@@ -205,16 +198,16 @@ session: {
 },
 ```
 
-Now, when the session is read, Better Auth checks the data cookie first. Inside the `maxAge` window it verifies the cookie's signature, deserializes the snapshot, and returns it, with **zero database round-trips**. Past `maxAge` it falls back to the database, reads fresh, and refreshes the cache. The crucial property is that the read *call shape is identical either way*. The caller can't tell whether the answer came from the cookie or the database, which is exactly why the next lesson can teach a single `getSession` shape and never mention the cache again. The snapshot is signed, so it's tamper-evident: a user editing their own cookie to claim a different role gets rejected at the signature check. The encoding defaults to a `compact` strategy (a `jwt` and a `jwe` strategy exist for interop scenarios), so recognize the name without reading into the alternatives.
+A session read now checks the data cookie first. Inside the `maxAge` window, Better Auth verifies the signature, deserializes the snapshot, and returns it with **zero database round-trips**; past `maxAge` it reads fresh from the database and refreshes the cache. The *call shape is identical either way*, so the caller can't tell which path served the answer, and the next lesson teaches a single `getSession` shape. The signature makes the snapshot tamper-evident: a user editing their cookie to claim a different role fails the check. Encoding defaults to `compact` (`jwt` and `jwe` exist for interop).
 
-The catch, since a free database query would be too good, is **delayed propagation of server-side changes.** The cache serves a *snapshot*. After an admin revokes a session, or a user's email or role changes in the database, the cached cookie keeps handing out the *old* snapshot for up to `maxAge`. For those five minutes, a revoked user can still look valid to anything reading the cache. That single fact drives two non-negotiable senior rules, and they're worth stating exactly.
+The catch is delayed propagation of server-side changes. Because the cache serves a *snapshot*, once an admin revokes a session or a user's email or role changes in the database, the cookie hands out the *old* snapshot for up to `maxAge`: for those five minutes a revoked user still looks valid to anything reading the cache. That one fact drives two non-negotiable rules:
 
-- **Authorization decisions live at the action boundary, re-checked against the database, never in the proxy.** The proxy does cookie-*presence* gating only: it asks whether there's a session cookie, yes or no, and bounces the request if not. The actual "is this user allowed to do this" question is answered freshly, against the database, at the moment the action runs. The cache can be stale; the action's check never is.
-- **Credential-mutating actions pass `revokeOtherSessions: true`.** When a user changes their password or email, you don't wait for the cache to expire. You force every *other* session for that user to re-authenticate immediately. That turns "stale for up to five minutes" into "revoked now" for the cases where it matters most.
+- **Authorization decisions live at the action boundary, re-checked against the database, never in the proxy.** The proxy gates on cookie *presence* only and bounces the request if no session cookie exists. Whether this user is *allowed* to act is answered freshly against the database when the action runs, so the action's check is never stale even when the cache is.
+- **Credential-mutating actions pass `revokeOtherSessions: true`.** When a user changes their password or email, force every *other* session to re-authenticate at once rather than waiting out the cache, turning "stale for up to five minutes" into "revoked now."
 
-One more staleness trap to recognize: custom fields you added to the `user` table (via the `additionalFields` hook from the previous lesson) only appear in the cached snapshot if you've declared them there. Forget to declare one, change it in the database, and the cache will happily keep serving the old value, a confusing "I updated it but it didn't change" bug. Recognize the shape; you don't need to wire it now.
+One more trap: a custom `user`-table field appears in the snapshot only if you declared it under `additionalFields`; an undeclared field keeps serving its old value after a change.
 
-Use this second table to map a route against the trade-off. Turn the cache **on** for read-heavy, identity-aware pages where a few minutes of staleness is harmless. Turn it **off**, or set `maxAge` very short, where revocation has to bite immediately.
+Map a route against the trade-off: cache **on** where a few minutes of staleness is harmless, **off** or with a short `maxAge` where revocation has to bite immediately.
 
 | | Cache **on** | Cache **off** |
 | --- | --- | --- |
@@ -225,7 +218,7 @@ Use this second table to map a route against the trade-off. Turn the cache **on*
 | Shorten `maxAge` when… | Revocation latency starts to matter but you still want most reads cached | — |
 | Disable when… | Instant revocation is non-negotiable *and* you can't rely on the action-boundary re-check | — |
 
-Now sort some real surfaces. For each chip below, decide whether you'd leave the cookie cache on (a read-heavy page where a few minutes of stale identity is fine) or turn it off or shorten `maxAge` (a surface where a revoked or demoted user must not slip through). The trade table above has everything you need.
+Now sort some real surfaces by that same test.
 
 <Buckets twoCol instructions="Sort each surface by whether the cookie cache's up-to-5-minute staleness window is acceptable there.">
   <Bucket name="cache-on" label="Leave cache on" description="Read-heavy, staleness tolerable" />
@@ -239,46 +232,44 @@ Now sort some real surfaces. For each chip below, decide whether you'd leave the
   <Item bucket="cache-off">A page loaded right after a role demotion</Item>
 </Buckets>
 
-## Tools this chapter names but doesn't reach for
+## Session tools you don't need yet
 
-Better Auth has four heavier session tools you'll hear about. None of them belong in an early-stage SaaS, and the reason is the same for each: every one is a *conditional* power-tool whose triggering threshold you haven't crossed yet. So they go together: recognize the name, know the trigger, and don't reach for them yet. The four cards below give you the name, what it does, and the specific condition that would make it worth adopting.
+Four heavier session tools are worth recognizing by name and trigger; an early web app hasn't hit the threshold for any of them.
 
 <CardGrid>
   <Card title="secondaryStorage (Redis)">
-    Moves session reads off Postgres into a key-value store like Upstash Redis. **Trigger:** thousands of session reads per second where the DB lookup is a *measured* bottleneck. It lands later, alongside rate limiting on the same Redis. For an early SaaS the cookie cache already closes most of the gap.
+    Moves session reads off Postgres into a key-value store like Upstash Redis. **Trigger:** thousands of reads per second where the DB lookup is a *measured* bottleneck. The cookie cache already closes most of that gap early on.
   </Card>
   <Card title="The jwt() plugin">
-    Issues <Term definition="JSON Web Token — a signed, self-contained token a service can verify locally without a database lookup. The flip side of that convenience: because nothing checks a central store, a JWT generally can't be revoked server-side before it expires.">JWTs</Term> so a *second service* can verify identity without hitting the auth database. **Trigger:** that second service actually exists. Hard rule: never replace the browser session cookie with a JWT. Server-side revocation is non-negotiable for browser sessions, and a JWT throws it away.
+    Issues <Term definition="JSON Web Token — a signed, self-contained token a service verifies locally with no database lookup. The flip side: because nothing checks a central store, a JWT generally can't be revoked server-side before it expires.">JWTs</Term> so a *second service* can verify identity without the auth database. **Trigger:** that second service exists. Hard rule: never swap the browser session cookie for a JWT, which loses server-side revocation.
   </Card>
   <Card title="multiSession()">
-    Multiple *accounts* signed in to one browser, Gmail-style switching between `personal@` and `work@`. This is distinct from multiple *devices*, where the active-sessions list is built in and needs no plugin. **Trigger:** the product genuinely needs account-switching UX. Full coverage comes in the chapter on account security.
+    Lets multiple *accounts* sign in to one browser, Gmail-style switching between `personal@` and `work@`. Multiple *devices* is already built in (the active-sessions list, no plugin). **Trigger:** the product needs account-switching UX.
   </Card>
   <Card title="trustedOrigins">
-    The CSRF allowlist: Better Auth refuses to set auth cookies for origins not on it. It defaults to `[baseURL]`, which is correct for a same-origin Next.js app. **Trigger:** a separate-domain client (a mobile webview, a browser extension) needs to authenticate. Hard rule: never use `['*']`, since that reopens every CSRF hole `SameSite` is closing.
+    The CSRF allowlist; Better Auth won't set auth cookies for origins not on it. Defaults to `[baseURL]`, correct for a same-origin Next.js app. **Trigger:** a separate-domain client needs to authenticate. Hard rule: never use `['*']`.
   </Card>
 </CardGrid>
 
 ## Sign-out is a row deletion
 
-To close the loop: everything above is about when a session ends *on its own*, governed by the clocks. Sign-out is about ending one *on demand*, and the mechanism is the payoff of the whole "server-stored opaque token" design.
+Lifetime config decides *when* a session ends on its own; sign-out ends one on demand, and it's the payoff of the server-stored token.
 
-When you call `auth.api.signOut`, it **deletes the `session` row** server-side and clears the cookie through the `nextCookies` plugin you added in the first lesson of this chapter. The row deletion is the part that matters: the moment the row is gone, any lingering copy of that cookie is *harmless*, because the token points at a row that no longer exists. That's the property a self-contained JWT can't give you: because the server is never consulted, a JWT stays valid until it expires no matter what your server thinks. With server-stored sessions, the server is always the source of truth, and deleting the row is the truth changing.
+`auth.api.signOut` **deletes the `session` row** and clears the cookie through the `nextCookies` plugin. Once the row is gone, any lingering cookie is harmless: it points at a row that no longer exists. A self-contained JWT can't do this, since the server is never consulted, so it stays valid until it expires. The row is the source of truth, and deleting it is the truth changing.
 
-"Sign out everywhere" is the same move, fanned out: delete *every* session row for the user, and every device they're signed in on goes cold on its next read. The UI for that gets built in the chapter on account security, and the mechanism is exactly what you'd guess. Hold the through-line: lifetime config decides *when* sessions end by themselves, while sign-out and revocation decide *that* they can be ended deliberately. Both rest on the same foundation, that the row is the source of truth and whoever controls the row controls the session.
+"Sign out everywhere" fans the same move out: delete *every* session row for the user, so each device goes cold on its next read. Its UI comes in the account-security chapter. The clocks decide *when* sessions end on their own; sign-out and revocation decide *that* they can be ended deliberately. Both rest on the row as source of truth.
 
-## Common ways this configuration goes wrong
+## Configuration mistakes to check before shipping
 
-These cut across the whole config, so here they are in one place as a quick pre-ship pass. Every one traces back to a knob you've now met.
+- **`expiresIn` set to a year or "forever" for a frictionless login.** It never rotates, so one leaked cookie stays valid indefinitely. Set a finite expiry and lean on `updateAge` to keep active users in.
+- **The cookie cache left on for a destructive-action surface.** Its up-to-`maxAge` staleness collides with the `freshAge` check and with revocation. Force a fresh read at the action boundary and pass `revokeOtherSessions: true` on credential mutations.
+- **`crossSubDomainCookies` enabled while `__Host-` is configured.** The browser silently rejects the cookie, a cookie-spec conflict no log will show. Pick one.
+- **`trustedOrigins: ['*']` to clear a CORS error.** List the specific origin, never the wildcard.
+- **Shipping with `cookiePrefix: 'better-auth'`.** You lose the `__Host-` defense, free protection left on the table.
+- **Expecting the cookie cache to update the instant a user's data changes.** Email, profile, role, and org changes appear only after a session refresh or a `maxAge`-bounded wait.
+- **Forgetting to export `SESSION_COOKIE_PREFIX`, or hardcoding the literal in the proxy.** The two drift, `getSessionCookie` reads the wrong name, and signed-in users get bounced as signed out.
 
-- **`expiresIn` set to a year (or "forever") for a frictionless UX.** A session that never expires never rotates, so a single leaked cookie is valid indefinitely. Pick a finite wall and lean on `updateAge` to keep active users logged in.
-- **The cookie cache left on for a destructive-action surface.** The up-to-`maxAge` staleness collides with the `freshAge` elevation check and with revocation. Force a fresh read at the action boundary and pass `revokeOtherSessions: true` on credential mutations.
-- **`crossSubDomainCookies` flipped on while `__Host-` is configured.** The browser silently rejects the cookie. It's a cookie-spec conflict, not a bug you'll see in a log. Pick one.
-- **`trustedOrigins: ['*']` to make a CORS error go away.** The fix is the *specific* origin that needs access, never the wildcard.
-- **Shipping production with `cookiePrefix: 'better-auth'`.** The `__Host-` structural defense is simply missing, free protection left on the table.
-- **Assuming the cookie cache updates the instant a user's data changes.** Email, profile, role, and org changes need a session refresh or a `maxAge`-bounded wait before the cache reflects them.
-- **Forgetting to export `SESSION_COOKIE_PREFIX`, or restating the literal in the proxy.** The two drift, `getSessionCookie` reads the wrong name, and signed-in users get bounced as if signed out.
-
-A quick self-check on the facts most likely to trip you. Mark each true or false.
+Now check the facts most likely to trip you up.
 
 <TrueFalse instructions="Each claim is about the session and cookie config you just walked through.">
   <Statement answer="false">
