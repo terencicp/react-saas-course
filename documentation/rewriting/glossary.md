@@ -1661,3 +1661,9 @@ trigger (RHF) | form.trigger | RHF call running the resolver against named field
 shouldUnregister | - | RHF useForm option; whether a field's value is dropped when its input unmounts. Defaults to false (values kept), the safe wizard default. | first defined: Chapter 045 L5
 isValid (RHF) | formState.isValid | Whole-form boolean, true only once every field passes; wrong tool for gating a single wizard step. | first defined: Chapter 045 L5
 progressive disclosure | - | Revealing sections of one form inline as the user goes, behind a single native submit; keeps progressive enhancement. | first defined: Chapter 045 L5
+BFF | Backend-for-Frontend | Thin server-side endpoint that proxies/aggregates third-party services for your own frontend, wearing your app's auth. | first defined: Chapter 046 L1
+mutator | pure mutator, shared mutator | Pure /lib function taking parsed typed input, doing the db work, returning the entity; no Request/Response/FormData; shared by an action and a handler. | first defined: Chapter 046 L2
+422 Unprocessable Entity | 422 | Status for a request that parsed as valid JSON but failed the schema. | first defined: Chapter 046 L2
+extension member | Problem extension member | A custom field on a Problem Details body beyond the five core members; here errors carries per-field validation messages. | first defined: Chapter 046 L2
+RouteContext | - | Next.js-generated helper type, keyed by route path, typing a handler's context argument (params etc.) from the URL segments. | first defined: Chapter 046 L2
+trigram index | - | Index breaking each value into overlapping three-char n-grams so Postgres serves leading-wildcard ILIKE fast. | first defined: Chapter 046 L4
