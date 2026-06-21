@@ -381,7 +381,7 @@
 - 2 Parse on entry, every time (Installs the five-seam action shape and the `safeParse`-on-`Object.fromEntries(formData)` discipline that runs before any cookie read, database call, or log statement.)
 - 3 Result, or throw (Locks the canonical `Result<T>` discriminated-union return shape, the `ok` / `err` helpers, the throw-at-the-framework-edge rule, and the standardized error codes every action shares.)
 - 4 Thin actions, pure /lib (Introduces Principle #3 (pure helpers in `/lib`, side effects at named boundaries) and Principle #5 (don't invent a parallel call wrapper), and names the auth and billing carve-outs that earn their weight later.)
-- 5 After the write (Teaches `revalidatePath` as the basic post-mutation move, the `db.transaction` wrapping pattern with its no-external-calls rule, and foreshadows the idempotency-key slot for Chapter 063.)
+- 5 Finishing the write (Completes the mutate and revalidate seams: `revalidatePath` after the write, `redirect` on success and the try/catch trap, the `db.transaction` wrapper with its no-external-calls rule, and the idempotency-key hidden input the action writes today.)
 - 6 Quiz
 
 ### Chapter 044 — Forms the platform way

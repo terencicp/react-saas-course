@@ -1587,3 +1587,22 @@ z.coerce | coerce (Zod) | A transform fixed to a JS constructor (Number, Date, �
 z.preprocess | preprocess (Zod) | Maps the raw input before the inner schema validates; used to shape wire values (e.g. checkbox 'on') into real types. | first defined: Chapter 042 L6
 z.stringbool | stringbool | Zod 4 validator for a present string that spells a boolean ('true'/'false', 'yes'/'no', 'on'/'off', '1'/'0'). | first defined: Chapter 042 L6
 multipart/form-data | multipart form | Form encoding that splits the body into one part per field so binary file data can ride alongside text fields. | first defined: Chapter 042 L6
+opaque ID | action ID | Hashed string the compiler ships in place of a Server Action's body; the client holds the ID, the server resolves it. | first defined: Chapter 043 L1
+contract drift | - | Client and server sharing a schema fall out of sync; an unknown key signals a stale client, tampering, or a bug. | first defined: Chapter 043 L2
+IO | input/output | A database read, an external call, or request state; checks needing it run in the action body, not the schema. | first defined: Chapter 043 L2
+PII | personally identifiable information | Any data identifying a person (email, name, password); logging raw input can leak it. | first defined: Chapter 043 L2
+return the expected, throw the unexpected | return vs throw | Action-error rule: return a typed Result for failures the user can fix, throw at the framework edge for bugs/infra and framework conventions. | first defined: Chapter 043 L3
+catch, map, re-throw | catch-map-rethrow | In a catch block, map errors you recognize to a typed Result code and re-throw the rest toward error.tsx. | first defined: Chapter 043 L3
+ErrorCode | error code (Result) | Small fixed string-literal union (validation, conflict, not_found, …) the form and analytics branch on; the cross-layer contract. | first defined: Chapter 043 L3
+userMessage | - | Human sentence on a Result failure the form renders verbatim; the action owns it, the UI never invents copy. | first defined: Chapter 043 L3
+fieldErrors (Result) | - | Optional Record<string, string[]> on a Result failure mapping a field name to its messages, dropped under each input. | first defined: Chapter 043 L3
+401 | Unauthorized | HTTP status: no identity — the caller isn't signed in. Maps to the unauthorized error code. | first defined: Chapter 043 L3
+403 | Forbidden | HTTP status: identity but no permission — signed in, wrong role or org. Maps to the forbidden error code. | first defined: Chapter 043 L3
+suppression list | - | Email addresses the provider refuses to send to (bounced, complained, unsubscribed); sending to one is a business-rule failure. | first defined: Chapter 043 L3
+useActionState | - | React hook running a Server Action and exposing its returned value as form state for the UI to render. | first defined: Chapter 043 L3
+repository | data-access layer | The one file owning an entity's db reads and writes; this course names it db/queries/<entity>.ts. | first defined: Chapter 043 L4
+data-access layer | repository, db/queries | The single file per feature allowed to import db; holds verb-led reads and writes. | first defined: Chapter 043 L4
+DSL | domain-specific language | A small custom API or mini-language built for one project; one more thing every contributor must learn. | first defined: Chapter 043 L4
+business logic | - | Logic that is a pure function of inputs to outputs, touching no cookies/db/network; lives in /lib. | first defined: Chapter 043 L4
+orchestration | thin action | The action-body spine that sequences pure logic and side effects and shapes the outcome into a Result; owns no logic itself. | first defined: Chapter 043 L4
+policy layer | - | Pure authorization predicates (canCreateInvoice(user, org)) at lib/<feature>/policy.ts; decides, never reads the session. | first defined: Chapter 043 L4
