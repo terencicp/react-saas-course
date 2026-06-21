@@ -1606,3 +1606,24 @@ DSL | domain-specific language | A small custom API or mini-language built for o
 business logic | - | Logic that is a pure function of inputs to outputs, touching no cookies/db/network; lives in /lib. | first defined: Chapter 043 L4
 orchestration | thin action | The action-body spine that sequences pure logic and side effects and shapes the outcome into a Result; owns no logic itself. | first defined: Chapter 043 L4
 policy layer | - | Pure authorization predicates (canCreateInvoice(user, org)) at lib/<feature>/policy.ts; decides, never reads the session. | first defined: Chapter 043 L4
+defaultValue | defaultChecked | React prop seeding an uncontrolled input's initial value on the first render only; the DOM owns it after. | first defined: Chapter 044 L1
+action prop | form action | React 19 prop on a native form; on submit React serializes named fields into FormData and calls the prop's function with it, no onSubmit/fetch. | first defined: Chapter 044 L2
+formAction | formaction | Native button attribute, camelCased; overrides the form's action for that button so one form's FormData can drive multiple actions. | first defined: Chapter 044 L2
+action.bind | bind(null, id) | Pre-applies an extra leading argument to an action, returning a new function reference React still treats as a form action, keeping the appended FormData and no-JS fallback. | first defined: Chapter 044 L2
+requestFormReset | - | react-dom call clearing uncontrolled inputs on demand, instead of React's automatic on-success reset; the edit-form escape hatch. | first defined: Chapter 044 L2
+next/form Form | <Form> | Next.js form wrapping native <form> with route prefetch and client nav; prefetch needs a string-URL action, so equivalent to <form> for Server Action mutations. | first defined: Chapter 044 L2
+loading UI | - | A route's shared loading and layout files Next can warm before navigation so the transition feels instant. | first defined: Chapter 044 L2
+presentational component | - | A component with no hook or client directive that only renders the props it receives. | first defined: Chapter 044 L3
+useFormStatus | - | react-dom client hook read inside a form; returns the enclosing form's submit state (pending, data, method, action) with no prop. | first defined: Chapter 044 L4
+prop-drilling | prop drilling | Passing a value through intermediate components that don't use it, just to reach a deeper child. | first defined: Chapter 044 L4
+descendant | - | A component rendered inside another in the tree, at any depth below it. | first defined: Chapter 044 L4
+useOptimistic | - | React 19 hook overlaying an optimistic value on server truth inside a transition; React discards the overlay on settle and re-renders against actual state. | first defined: Chapter 044 L5
+ValidityState | validity | Read-only object on every form control reporting which constraints fail (valueMissing, typeMismatch, patternMismatch, customError, …). | first defined: Chapter 044 L6
+:user-invalid | user-invalid | Pseudo-class matching an invalid field only after the user engages it; the safe error-styling selector. | first defined: Chapter 044 L6
+:invalid | invalid | Pseudo-class matching an invalid field from first paint, before the user types; scolds too early, avoid for required fields. | first defined: Chapter 044 L6
+setCustomValidity | - | Form-control method flagging a field invalid with a custom message (empty string clears it); for cross-field rules attributes can't express. | first defined: Chapter 044 L6
+inputMode | inputmode | Attribute telling a phone which soft keyboard to raise (decimal, numeric); not validation, set alongside type. | first defined: Chapter 044 L6
+React Hook Form | RHF | Client-side library managing a form's field state, validation, and submit; subject of Chapter 045. | first defined: Chapter 044 L6
+pre-hydration window | - | Gap between server HTML arriving and hydration finishing; submits in it take the native door even with JS on. | first defined: Chapter 044 L7
+permalink | - | useActionState's optional third arg; URL the browser navigates to for a pre-hydration submit, must render the same form. | first defined: Chapter 044 L7
+graceful degradation | - | Start from the rich JS version and strip features away; opposite of progressive enhancement. | first defined: Chapter 044 L7

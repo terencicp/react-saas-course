@@ -384,14 +384,14 @@
 - 5 Finishing the write (Completes the mutate and revalidate seams: `revalidatePath` after the write, `redirect` on success and the try/catch trap, the `db.transaction` wrapper with its no-external-calls rule, and the idempotency-key hidden input the action writes today.)
 - 6 Quiz
 
-### Chapter 044 — Forms the platform way
+### Chapter 044 — Forms with platform primitives
 - 1 Uncontrolled inputs, FormData contract (Teaches uncontrolled inputs with `defaultValue`, the `name` attribute as the schema contract, and how `FormData` round-trips between the form and the Server Action without per-field state.)
 - 2 Wiring the action prop (Teaches the `<form action={serverAction}>` primitive, the submit lifecycle, the automatic reset on success, `formAction` per-button overrides, and when Next.js's `<Form>` earns its weight.)
 - 3 useActionState, pending and result (Teaches the `useActionState` hook's three returns, the `(prevState, formData)` action signature, the canonical form-component shape, and field-error rendering from the `Result` tree.)
 - 4 useFormStatus and the SubmitButton (Teaches the `useFormStatus` hook for descendant pending state, the difference from `useActionState.isPending`, and the reusable `<SubmitButton>` component pattern.)
 - 5 useOptimistic with implicit rollback (Teaches the threshold for optimism, the `useOptimistic` hook's reducer shape, React's implicit rollback on failure, the pairing with `useActionState`, and the client-generated UUID pattern.)
 - 6 Constraint Validation, the cheap layer (Teaches the platform's Constraint Validation API (`required`, `pattern`, `type`, `inputmode`, `autocomplete`, `ValidityState`, `setCustomValidity`, `:user-invalid`), the line that separates it from the Zod schema, and the shadcn form layout primitives.)
-- 7 Progressive enhancement for free (Teaches what works without JS (action prop, constraint API, redirect, revalidate) and what doesn't, the five disciplines that preserve PE, and the manual JS-disabled test at feature-launch.)
+- 7 Progressive enhancement (Teaches what works without JS (action prop, constraint API, redirect, revalidate) and what doesn't, the five disciplines that preserve PE, and the manual JS-disabled test at feature-launch.)
 - 8 Quiz
 
 ### Chapter 045 — React Hook Form
