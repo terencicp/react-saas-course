@@ -1,0 +1,525 @@
+---
+title: Coercing FormData strings with Zod
+tagline: How Zod's coercion and preprocessing turn a browser form's string-only values into typed, validated data.
+chapter-id: 42
+course-progress: 0.4165
+rewrites: 1
+sidebar:
+  order: 6
+  label: Coercing FormData strings
+---
+
+import ZodCoding from '../../../components/live-coding/ZodCoding/ZodCoding.astro';
+import ZodPlaygroundCallout from '../../../components/embeds/ZodPlaygroundCallout.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Term from '../../../components/ui/Term.astro';
+import FormDataBoundary from '../../../components/lessons/042/6/FormDataBoundary.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A user fills in a form and hits submit. On the server, `formData.get('quantity')` returns the string `"3"`, not the number `3`. `formData.get('archived')` returns `"on"`, or nothing at all, never a `boolean`. `formData.get('issuedAt')` returns an ISO string like `"2026-01-15T10:30:00Z"`, not a `Date`. But your server code wants a `number`, a `boolean`, a `Date`: the typed domain you spent the last five lessons describing with Zod. The wire between browser and server carries none of those types. It carries strings.
+
+This lesson builds the bridge across that gap. You'll write `invoiceFormSchema`, the form-input schema every action in this unit reuses, plus the one line that turns a bag of strings into a validated, typed object: `safeParse(Object.fromEntries(formData))`. Along the way you'll meet the four places where the obvious bridge silently corrupts your data, and learn to spot each one before you reach for the wrong tool.
+
+## Every FormData value is a string
+
+When a browser submits a `<form>`, it serializes every control to text. The server reconstructs a <Term term="A browser API that models a submitted form as a key/value collection. Every value is a string, except file uploads, which are File objects.">FormData</Term> object that mirrors the form, and every value you read from it has the same shape:
+
+<CodeTooltips tooltips={{
+  quantity: 'formData.get(name) returns FormDataEntryValue = string | File.\nA number input is still a string here.',
+  archived: 'Returns the string "on" when checked, or null when the key is absent.\nNever a boolean.',
+  issuedAt: 'An ISO datetime string. Not a Date — a Date cannot travel over HTTP.',
+}}>
+```ts
+// <form>
+//   <input name="quantity" type="number" />
+//   <input name="archived" type="checkbox" />
+//   <input name="issuedAt" type="datetime-local" />
+// </form>
+
+const quantity = formData.get('quantity'); // FormDataEntryValue → "3"
+const archived = formData.get('archived'); // FormDataEntryValue → "on" | null
+const issuedAt = formData.get('issuedAt'); // FormDataEntryValue → "2026-01-15T10:30:00Z"
+```
+</CodeTooltips>
+
+The platform types every value as `FormDataEntryValue`, which is `string | File`. No `number`, no `boolean`, no `Date`, no array crosses the wire. This isn't a Zod limitation, it's the HTML form specification: a `<form>` can carry only text, plus one other thing, files.
+
+<FormDataBoundary />
+
+Two shapes get their own sections later. A field can appear more than once, from a multi-select or several checkboxes that share a `name`; `formData.getAll(name)` returns every value as a `string[]`. And a file input on a <Term term="The form encoding used when a submission carries a file. It splits the body into parts, one per field, so binary file data can ride alongside the text fields.">multipart/form-data</Term> form gives you a `File`, the one value off a form that isn't a string. Until then, assume everything is text.
+
+## The first move: `Object.fromEntries(formData)`
+
+You could call `formData.get` field by field, but that unpacks the form by hand before Zod ever sees it. The schema already knows the field names, so let it do the unpacking. `FormData` is iterable as `[key, value]` pairs, so `Object.fromEntries` turns the whole thing into a plain object in one line:
+
+```ts
+const raw = Object.fromEntries(formData);
+// { quantity: '3', archived: 'on', notes: 'net 30 terms' }
+```
+
+Every value in `raw` is still a string, which is exactly what you hand to `safeParse`: one call collects the form, and the schema validates and coerces it in a single pass.
+
+`Object.fromEntries` has one sharp edge, the first of this lesson's four traps. When a key appears more than once, it keeps **only the last value** and silently drops the rest. The trap comes from `fromEntries`, not from Zod, which is why it bites before the schema runs:
+
+<CodeVariants>
+  <CodeVariant label="Naive — last value wins">
+    <div data-mark-color="red">
+
+    ```ts {1}
+    const raw = Object.fromEntries(formData);
+    // tags: 'paid'  ← only the LAST checked value survived
+    ```
+
+    </div>
+    `tags` was checked twice, and `fromEntries` collapsed both values to the last one. The schema's `z.array(z.string())` receives the string `'paid'` instead of an array and fails with a confusing "expected array, received string." The error points at the schema, but the bug is two lines up.
+  </CodeVariant>
+
+  <CodeVariant label="Correct — getAll for arrays">
+    <div data-mark-color="green">
+
+    ```ts {3}
+    const raw = {
+      ...Object.fromEntries(formData),
+      tags: formData.getAll('tags'),
+    };
+    // tags: ['urgent', 'paid']  ← both values, as an array
+    ```
+
+    </div>
+    Spread `fromEntries` for the scalar fields, then override each multi-valued key with `getAll`, which returns the full `string[]`. Now the schema receives the array it expects.
+  </CodeVariant>
+</CodeVariants>
+
+Nothing detects multi-valued fields for you, so you have to know which they are. Name those inputs with a plural like `tags`, and treat any field whose schema is a `z.array(...)` as one that needs a `getAll`.
+
+## `z.coerce`: a transform that runs a constructor
+
+You have a `raw` object full of strings, and the schema wants numbers and dates. The tool is `z.coerce`, which you already met in [Checks and transforms](/042-zod-4-schema-validation/3-checks-and-transforms/).
+
+A transform runs a function on the input before the inner schema validates, and it changes the inferred output type. `z.coerce` is that, with the function fixed to a JavaScript constructor. `z.coerce.number()` is `z.number()` with a built-in transform that calls `Number(input)` first. The pattern repeats:
+
+- `z.coerce.number()` runs `Number(input)`, then validates a number.
+- `z.coerce.date()` runs `new Date(input)`, then validates a date.
+- `z.coerce.bigint()` runs `BigInt(input)`, then validates a bigint.
+- `z.coerce.string()` runs `String(input)`, then validates a string.
+
+The input is accepted as `unknown`, the constructor runs, and the inner schema checks the *result*. So any `.positive()` or `.min()` you chain validates the coerced value, not the original string.
+
+This is the input/output type split from [Derive schema variants](/042-zod-4-schema-validation/4-derive-schema-variants/). A `z.coerce.number()` schema has **input** `unknown` and **output** `number`: the form sends a string, the parsed value is a number, and the two types genuinely differ. The form contract, what the `<form>` is allowed to send, is `z.input<typeof schema>`. The validated value your code works with afterward is `z.output<typeof schema>`, the same type `z.infer` gives you.
+
+Here is the schema this unit is built on, one field at a time.
+
+<AnnotatedCode lang="ts" maxLines={10} code={`
+const invoiceFormSchema = z.object({
+  customerId: z.uuid(),
+  total: z.coerce.number().positive().multipleOf(0.01),
+  issuedAt: z.coerce.date(),
+  notes: z.string().optional(),
+});
+
+type InvoiceFormInput = z.input<typeof invoiceFormSchema>;
+`}>
+  <AnnotatedStep meta="{1-6}">
+    The object is the contract between the form's `name` attributes and the typed input your code receives. Each key is a field name; each value is the rule for that field. The form's `<input name="...">` attributes must match these keys exactly.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{2}" color="blue">
+    `customerId` is a string that stays a string. IDs already arrive as text, so there is nothing to coerce: `z.uuid()` only validates the format. Coerce only the fields whose target type isn't a string.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3}" color="blue">
+    `total` is the central coercion. `z.coerce.number()` runs `Number` on the incoming `"49.99"` to get `49.99`, and *then* `.positive()` and `.multipleOf(0.01)` validate that number: a positive amount with at most two decimal places. The checks run on the coerced value, never the string.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4}" color="blue">
+    `issuedAt` runs `new Date` on the ISO string, so the output type is `Date`. This line hides a trap you'll fix later, where it proves too loose about format.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="violet">
+    `InvoiceFormInput` is the form-side type from `z.input`: the shape the form may send, where `total` and `issuedAt` are still strings. It differs from `z.infer`, the output, where they are a `number` and a `Date`. When you wire this to a `<form>`, the input type is the contract.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Every form-consuming function in this unit opens with one line that combines both moves:
+
+```ts
+const parsed = invoiceFormSchema.safeParse(Object.fromEntries(formData));
+```
+
+`Object.fromEntries` collects the form into a string-valued object, and `safeParse` coerces and validates it against the schema. Afterward, `parsed` is either a success holding a fully typed invoice or a failure holding the issues. Handling that result, rendering errors, and writing to the database come next chapter, where you wire this into a Server Action. For now, every snippet stops at the `safeParse`: the seam where untrusted strings become trusted, typed data.
+
+Try it live. The schema is prefilled, so you can watch coercion succeed on a valid string-shaped invoice, succeed with conversion on `total: "12.5"`, and fail cleanly on `total: "abc"`.
+
+<ZodPlaygroundCallout
+  title="invoiceFormSchema: coercion across the wire"
+  version="4.4.3"
+  schema={`const schema = z.object({
+  customerId: z.uuid(),
+  total: z.coerce.number().positive().multipleOf(0.01),
+  issuedAt: z.coerce.date(),
+  notes: z.string().optional(),
+})
+return schema`}
+  values={[
+    `{ "customerId": "550e8400-e29b-41d4-a716-446655440000", "total": "49.99", "issuedAt": "2026-01-15T10:30:00Z", "notes": "net 30" }`,
+    `{ "customerId": "550e8400-e29b-41d4-a716-446655440000", "total": "12.5", "issuedAt": "2026-01-15T10:30:00Z", "notes": "net 30" }`,
+    `{ "customerId": "550e8400-e29b-41d4-a716-446655440000", "total": "abc", "issuedAt": "2026-01-15T10:30:00Z", "notes": "net 30" }`,
+  ]}
+>
+  Open the playground with `invoiceFormSchema` and three string-shaped inputs.
+  Every value is quoted, which is what a form actually sends. Watch `"49.99"`
+  and `"12.5"` become numbers, and `"abc"` fail the number check.
+</ZodPlaygroundCallout>
+
+That is the happy path, in three lines. If JavaScript's coercion rules matched HTML's wire format, the lesson would end here. They don't, and there are four places where the obvious code does something quietly wrong. The rest of the lesson works through each one.
+
+## The boolean trap: `z.coerce.boolean()` is wrong for checkboxes
+
+A checkbox is the most common boolean on a form, and the obvious schema for it, `z.coerce.boolean()`, is wrong in a way worse than throwing: it never fails.
+
+The wire shape is where the danger starts. A checked checkbox sends `name=on`; an **unchecked checkbox sends nothing at all**, so after `Object.fromEntries` the field is `undefined`, not `"off"`, `"false"`, or `""`. A checkbox is present or absent, never present with a false value.
+
+`z.coerce.boolean()` transforms with `Boolean(input)`, and `Boolean` treats every non-empty string as true. Two silent consequences follow:
+
+- **It inverts any literal boolean string.** `Boolean('false')` and `Boolean('off')` are both `true`. Checkboxes never send those words, so this misses the checkbox directly, but a `<select>` or hidden field carrying `"false"` or `"off"` flips to `true`.
+- **It can never reject a bad value.** `Boolean(anything)` returns a real boolean, so the inner `z.boolean()` always passes. `'on'`, `'false'`, `'off'`, `''`, and the absent `undefined` all sail through, and `undefined` becomes the same `false` as a deliberate one.
+
+:::caution
+`z.coerce.boolean()` is `Boolean()` in a wrapper: it accepts *everything* and rejects *nothing*. It doesn't validate a form boolean, it tests truthiness, and truthiness is the wrong question for form strings.
+:::
+
+The correct shape is a `z.preprocess` that maps the wire value to a real boolean *before* `z.boolean()` validates it:
+
+```ts
+archived: z.preprocess((value) => value === 'on' || value === true, z.boolean()),
+```
+
+`value === 'on'` catches the checked checkbox; `|| value === true` catches a JSON caller that already sent a real boolean; everything else, including the absent `undefined`, falls through to `false`. The unchecked checkbox becomes `false`, and the schema means *exactly* `'on'` rather than "anything truthy."
+
+Zod 4 also ships `z.stringbool()` for strings that *spell* a boolean: it accepts `"true"`/`"false"`, `"yes"`/`"no"`, `"on"`/`"off"`, `"1"`/`"0"` case-insensitively, with custom word lists via `{ truthy, falsy }`. It expects a *present string*, so it fits a `<select>` or text field but not the absent-when-unchecked checkbox. The line is clean: **`z.stringbool()` for a string that spells a boolean, `z.preprocess` for a checkbox that's present or absent, `z.coerce.boolean()` for neither.**
+
+Let the question pick the tool:
+
+<StateMachineWalker kind="decision" title="Which boolean shape is this form field?">
+  <Question
+    id="control"
+    prompt="What does this control actually send on the wire?"
+    description="The shape that arrives, present-or-absent versus a string that spells a word, picks the validator. z.coerce.boolean() is the reflex that's wrong for the most common case.">
+    <Branch
+      label='A checkbox: present ("on") when checked, absent otherwise'
+      to="leaf-preprocess"
+      rationale="The unchecked case is a missing key, not a value." />
+    <Branch
+      label='A select or field whose value is the word "true", "yes", "on"…'
+      to="leaf-stringbool"
+      rationale="A present string that names a boolean." />
+    <Branch
+      label="A real boolean from a JSON or programmatic caller"
+      to="leaf-boolean"
+      rationale="The value already arrives as true or false." />
+  </Question>
+
+  <Leaf id="leaf-preprocess" verdict="z.preprocess(v => v === 'on' || v === true, z.boolean())">
+    The checkbox sends `"on"` or nothing. `z.coerce.boolean()` tests truthiness here, so it accepts everything and can't tell the absent case from a deliberate `false`. The preprocess maps `"on"` to `true` and *everything else, including the absent `undefined`,* to `false`, then `z.boolean()` validates a real boolean.
+  </Leaf>
+
+  <Leaf id="leaf-stringbool" verdict="z.stringbool()">
+    The value is a *present string that spells a boolean*. `z.stringbool()` accepts `"true"`/`"false"`, `"yes"`/`"no"`, `"on"`/`"off"`, `"1"`/`"0"`. `z.coerce.boolean()` would invert every `"false"`, since `Boolean("false")` is `true`.
+  </Leaf>
+
+  <Leaf id="leaf-boolean" verdict="z.boolean()">
+    The caller already sends a real `true`/`false`, such as a JSON body. No coercion is needed; validate the boolean directly.
+  </Leaf>
+</StateMachineWalker>
+
+This trap is best *watched* rather than graded: because `z.coerce.boolean()` accepts every value, no fixture can go red, and the damage is in the produced value. Open the playground with the naive schema and feed it `'on'`, `'false'`, `'off'`, and `''`; `'false'` and `'off'` both come out `true`, the opposite of what the words say. Then rewrite `archived` to the `z.preprocess` form and watch the output match the wire value's meaning.
+
+<ZodPlaygroundCallout
+  title="z.coerce.boolean(): truthiness, not validation"
+  version="4.4.3"
+  schema={`const schema = z.object({
+  archived: z.coerce.boolean(),
+})
+// To fix, model the checkbox shape instead of truthiness-testing:
+//   archived: z.preprocess(
+//     (value) => value === 'on' || value === true,
+//     z.boolean(),
+//   ),
+return schema`}
+  values={[
+    `{ "archived": "on" }`,
+    `{ "archived": "false" }`,
+    `{ "archived": "off" }`,
+    `{ "archived": "" }`,
+  ]}
+>
+  Every input parses, which is the trap: it can't reject anything. Watch the
+  produced value: `"false"` and `"off"` both become `true` because `Boolean()`
+  only asks "non-empty string?". Apply the commented `z.preprocess` fix and the
+  output finally means what the word says.
+</ZodPlaygroundCallout>
+
+## The empty-string trap: optional numbers that become zero
+
+The second trap has the shape of the first, a successful parse that produces the wrong value, but on a field you might not think to check. `Number('')` is `0`: not `NaN`, not an error, but a clean, plausible zero. An empty input submits the string `''`, so `z.coerce.number()` on a blank field runs `Number('')`, gets `0`, and that `0` sails through any `.nonnegative()` or `.min(0)` after it. A user who leaves an optional "discount" field empty meant "no discount," but the schema records a real, applied, zero-percent discount. The parse succeeds, and nothing signals that a blank just became a number.
+
+`z.coerce.number()` isn't wrong everywhere. On a **required** field with a sensible floor, a price that must be `.positive()` or a quantity that's `.min(1)`, a blank submission *should* fail, and it does: `0` fails `.positive()`, so the user gets the validation error they should. The trap bites only **optional** numerics, where "blank" legitimately means "absent" and the schema quietly translates it to "zero."
+
+The fix is to decide, in the schema, that a blank means absent, by mapping the empty string to `undefined` *before* coercion runs.
+
+<CodeVariants>
+  <CodeVariant label="Naive — silent zero">
+    <div data-mark-color="red">
+
+    ```ts {2}
+    const schema = z.object({
+      discount: z.coerce.number().nonnegative().optional(),
+    });
+    // { discount: '' }  →  { discount: 0 }   ← blank became a real zero
+    ```
+
+    </div>
+    `.optional()` looks like it handles the blank, but the blank isn't `undefined`, it's the string `''`. `z.coerce.number()` turns it into `0`, which passes `.nonnegative()`, so `.optional()` never fires. A user who entered nothing now has a zero discount, and the parse succeeded, so nothing warned you.
+  </CodeVariant>
+
+  <CodeVariant label="Correct — empty maps to undefined">
+    <div data-mark-color="green">
+
+    ```ts {2-5}
+    const schema = z.object({
+      discount: z.preprocess(
+        (value) => (value === '' ? undefined : value),
+        z.coerce.number().nonnegative().optional(),
+      ),
+    });
+    // { discount: '' }  →  { discount: undefined }   ← absent, as intended
+    ```
+
+    </div>
+    The preprocess strips the empty string to `undefined` first, so the optional-number schema sees genuine absence and leaves it `undefined`. Now blank means absent, every consumer reads `number | undefined`, and a blank can't be mistaken for a zero.
+  </CodeVariant>
+</CodeVariants>
+
+A union that names the empty string and transforms it away expresses the same intent more explicitly:
+
+```ts
+discount: z.union([
+  z.literal('').transform(() => undefined),
+  z.coerce.number().nonnegative(),
+]).optional(),
+```
+
+Reach for the union when you want "the empty string means nothing" to read as a deliberate rule rather than a preprocessing step, and for `z.preprocess` in the common case. Either way the schema decides "blank means absent" once, every consumer sees `number | undefined`, and the wrong interpretation never escapes the boundary.
+
+This trap is best *read* rather than graded, because the naive and fixed schemas both parse a blank successfully and only the produced value differs. Open the playground with the naive schema and a blank `discount`: the output shows `0` where you expected `undefined`. Edit it to the `z.preprocess` form and watch the output flip.
+
+<ZodPlaygroundCallout
+  title="The silent zero: a blank optional number"
+  version="4.4.3"
+  schema={`const schema = z.object({
+  discount: z.coerce.number().nonnegative().optional(),
+})
+// To fix, wrap discount so the empty string becomes undefined first:
+//   discount: z.preprocess(
+//     (value) => (value === '' ? undefined : value),
+//     z.coerce.number().nonnegative().optional(),
+//   ),
+return schema`}
+  values={[`{ "discount": "" }`, `{ "discount": "10" }`, `{}`]}
+>
+  Open with the naive schema and a blank `discount`. The output pane shows
+  `discount: 0`, a discount the user never entered. Apply the commented
+  `z.preprocess` fix and the blank becomes `undefined`.
+</ZodPlaygroundCallout>
+
+## The date trap: `z.coerce.date()` is too loose about format
+
+The third trap isn't that `z.coerce.date()` lets garbage through. Feed it `"not-a-date"` and it rejects cleanly. The trap is the opposite: it's *too lenient* about what counts as a date.
+
+`z.coerce.date()` runs `new Date(input)`, which parses far more than a full ISO 8601 timestamp. A bare date with no time, `"2026-01-15"`, parses straight to a `Date` at midnight UTC. If your contract is "an invoice's `issuedAt` is a precise instant" but the form sends a date-only `"2026-01-15"`, `z.coerce.date()` says yes and silently invents a `00:00:00Z` time you never agreed to. It validates *that the input is parseable as some date*, not *that it's the format your contract specifies*, and on a boundary the format is part of the contract.
+
+`z.iso.datetime()` names the format: it requires a full ISO 8601 timestamp with a time component and a `Z`, and rejects a date-only string outright. Both reject true garbage like `"not-a-date"`; they differ on the date-only case, where `z.coerce.date()` is lenient and `z.iso.datetime()` holds the line.
+
+The exercise below is inverted on purpose: the starter uses bare `z.coerce.date()`, so the date-only fixture, which the contract should refuse, wrongly **passes (stays green when it should be red)**. You fix a false *pass* by switching to the format that names the contract precisely.
+
+<ZodCoding
+  schemaName="issuedAtSchema"
+  instructions="Backwards on purpose. The `date-only (too loose)` row should fail — the contract wants a precise timestamp — but with the starter `z.coerce.date()` it *passes*, because new Date('2026-01-15') is a valid Date (midnight UTC). The `garbage` row already fails under both. Switch `issuedAt` to z.iso.datetime() so the date-only string is rejected for missing its time component, then watch the `date-only` row flip to a correct fail."
+  starter={`import { z } from 'zod';
+
+export const issuedAtSchema = z.object({
+  issuedAt: z.coerce.date(),
+});
+
+type IssuedAtInput = z.infer<typeof issuedAtSchema>;
+//   ^?
+`}
+  fixtures={[
+    {
+      name: 'full ISO datetime',
+      input: { issuedAt: '2026-01-15T10:30:00Z' },
+      expect: 'pass',
+    },
+    {
+      name: 'date-only (too loose) — should fail',
+      input: { issuedAt: '2026-01-15' },
+      expect: 'fail',
+    },
+    {
+      name: 'garbage',
+      input: { issuedAt: 'not-a-date' },
+      expect: 'fail',
+    },
+  ]}
+/>
+
+You have a second choice once the format is named: whether the action wants the date as a `string` or a `Date`. **Pick by where the date is used next.**
+
+<TabbedContent>
+  <TabbedItem label="Stays a string → z.iso.datetime()">
+    ```ts
+    issuedAt: z.iso.datetime(),
+    // output type: string
+    ```
+
+    Reach for this when the date stays text all the way to the database. `z.iso.datetime()` validates the string format, a full ISO 8601 timestamp with a time component and a `Z`, and infers as `string`. The action receives a `string`, and if the next stop is a `timestamptz` column, Drizzle converts it on write. No JS `Date` is needed.
+  </TabbedItem>
+
+  <TabbedItem label="Needs a Date in JS → z.iso.datetime().transform(...)">
+    ```ts
+    issuedAt: z.iso.datetime().transform((value) => new Date(value)),
+    // output type: Date
+    ```
+
+    Reach for this when downstream code does date math or formatting in JavaScript. It validates the full-timestamp string strictly *first*, then constructs the `Date`, so the loose formats `z.coerce.date()` would have waved through are rejected before any `Date` exists. This is the canonical date exemplar from [Checks and transforms](/042-zod-4-schema-validation/3-checks-and-transforms/): validate, then transform.
+  </TabbedItem>
+</TabbedContent>
+
+## Validating uploaded files
+
+The last boundary is the one non-string value off a form. On a `multipart/form-data` form, a file input makes `formData.get('avatar')` return a `File` instance instead of text.
+
+The validator is `z.instanceof(File)`, constrained with refinements like anything else. The two checks that matter are size and type.
+
+```ts
+const MAX_BYTES = 5 * 1024 * 1024;
+const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+
+const avatarSchema = z
+  .instanceof(File)
+  .refine((file) => file.size > 0, { error: 'No file uploaded' })
+  .refine((file) => file.size <= MAX_BYTES, { error: 'File too large' })
+  .refine((file) => ALLOWED_TYPES.includes(file.type), {
+    error: 'Unsupported file type',
+  });
+```
+
+`file.size` is the byte count and `file.type` is the <Term term="The content-type string a File carries, like image/png. The browser sets it from the file; treat it as a hint, not a guarantee.">MIME type</Term>, a string like `image/png`. The `file.size > 0` refine earns its place because an empty file input yields a zero-byte `File` in some browsers, so "no file" and "a file" both arrive as a `File` and the size check is how you tell them apart. For a genuinely optional file, add `.optional()` and let that guard handle the empty case.
+
+Two things keep this in scope. First, `File` is a Web API global, not browser-only: Next.js provides it in Server Actions and route handlers, so this runs server-side with no polyfill. Second, this validates the file's *shape* and nothing more. The real upload pipeline (presigned URLs, object storage, streaming the bytes somewhere durable) is a later chapter. Here a file is just one more field: check that it's a file, not too big, and a type you allow, then move on.
+
+## Assembling `invoiceFormSchema`
+
+Pull the patterns into the schema you'll carry forward. This is `invoiceFormSchema` with the traps designed out: the coerced number, the strict date, the preprocess boolean for the checkbox, and the optional notes.
+
+<AnnotatedCode lang="ts" maxLines={14} code={`
+const invoiceFormSchema = z.object({
+  customerId: z.uuid(),
+  total: z.coerce.number().positive().multipleOf(0.01),
+  issuedAt: z.iso.datetime().transform((value) => new Date(value)),
+  archived: z.preprocess(
+    (value) => value === 'on' || value === true,
+    z.boolean(),
+  ),
+  notes: z.string().optional(),
+});
+
+type InvoiceFormInput = z.input<typeof invoiceFormSchema>;
+`}>
+  <AnnotatedStep meta="{2}" color="blue">
+    `customerId` is already a string off the wire, so it's validated, not coerced.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3}" color="blue">
+    `total` uses `z.coerce.number()` to bridge the string to a number, and the checks run on the coerced value.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4}" color="blue">
+    `issuedAt` runs strict ISO validation and *then* transforms to `Date`. This avoids the date trap: it names the exact format the contract requires, a full timestamp, so a too-loose date-only string is rejected before any `Date` is built. `z.coerce.date()` would have accepted that string.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5-8}" color="orange">
+    `archived` is the checkbox shape. `z.preprocess` maps `'on'`/`true` to `true` and the absent `undefined` to `false`. Don't use `z.coerce.boolean()` here: it tests for truthiness, so it accepts everything and would flip a literal `"false"`/`"off"` to `true`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12}" color="violet">
+    `InvoiceFormInput` is the form-side `z.input` type: strings where the output has a `number` and a `Date`.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That schema is the contract. Wire a `<form>` whose `name` attributes match its keys, open your action with `invoiceFormSchema.safeParse(Object.fromEntries(formData))`, and the bridge is built. Keep these patterns close, since you'll apply them to every form schema you write:
+
+- A **number** off a form uses `z.coerce.number()`, but an **optional** number maps empty to `undefined` first, or you'll write a silent zero.
+- A **boolean checkbox** uses `z.preprocess(v => v === 'on' || v === true, z.boolean())`, never `z.coerce.boolean()`.
+- A **date** uses `z.iso.datetime()` if it stays text, or the strict `.transform(s => new Date(s))` if you need a `Date`, never bare `z.coerce.date()`.
+- An **array** field uses `formData.getAll(name)`, not `Object.fromEntries`.
+- A **file** uses `z.instanceof(File)` with size and type refinements.
+
+Now apply those patterns to five fields you haven't seen as a set. Sort each into the Zod shape it needs.
+
+<Buckets twoCol instructions="Each chip describes a form field. Drag it into the Zod shape that field needs at the FormData boundary.">
+  <Bucket name="coerce-number" label="z.coerce.number()" description="Numeric, required, has a floor" />
+  <Bucket name="preprocess-bool" label="z.preprocess(… 'on' …)" description="A checkbox: present or absent" />
+  <Bucket name="iso-date-transform" label="z.iso.datetime().transform(…)" description="ISO string you need as a Date in JS" />
+  <Bucket name="instanceof-file" label="z.instanceof(File)" description="An uploaded file, size/type-checked" />
+
+  <Item bucket="coerce-number">A required `price` that must be positive</Item>
+  <Item bucket="coerce-number">A required `quantity` with `.min(1)`</Item>
+  <Item bucket="preprocess-bool">An `archived` checkbox, checked or not</Item>
+  <Item bucket="iso-date-transform">A `dueDate` used for a JavaScript countdown timer</Item>
+  <Item bucket="instanceof-file">A CSV `upload` field, max 5 MB</Item>
+</Buckets>
+
+You now have the bridge: one `safeParse` coerces and validates the whole form, and you know the four places where JavaScript's defaults disagree with HTML's wire format (checkboxes, optional numbers, dates, repeated keys) and how to design each one out. This stops at the parse. Next chapter picks up the `parsed.success` branch: the Server Action that calls this schema, the `Result` it returns, and the field errors it sends back to the form.
+
+<VideoCallout videoId="KhO4VjaYSXU" videoTitle="Forms with React 19 and Next.js">
+  Lee Robinson walks the full form boundary in 9 minutes: server actions, server-side validation, and sending errors and raw inputs back with `useActionState`, the wiring this schema plugs into next chapter.
+</VideoCallout>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Zod: Coercion, preprocess & stringbool"
+    href="https://zod.dev/api?id=coercion"
+    icon="simple-icons:zod"
+    iconColor="#3E67B1"
+    description="The canonical reference for the tools this lesson turns on: z.coerce, z.preprocess, and z.stringbool."
+  />
+  <ExternalResource
+    title="MDN: FormData"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/FormData"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The platform contract the whole lesson rests on: every value a string or File, with get() and getAll()."
+  />
+</CardGrid>

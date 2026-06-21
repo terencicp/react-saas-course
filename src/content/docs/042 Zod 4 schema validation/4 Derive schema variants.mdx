@@ -1,0 +1,461 @@
+---
+title: Derive schema variants from one source
+tagline: Reshape one canonical Zod schema into every boundary variant with .pick, .omit, .extend, .partial, and the z.input/z.output type split.
+chapter-id: 42
+course-progress: 0.4122
+rewrites: 1
+sidebar:
+  order: 4
+  label: Derive schema variants
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import ZodCoding from '../../../components/live-coding/ZodCoding/ZodCoding.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import ArrowDiagram from '../../../components/figures/ArrowDiagram.astro';
+import DerivationFanout from '../../../components/lessons/042/4/DerivationFanout.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You have a `userSchema`: one canonical declaration of a user, with an `email`, a `passwordHash`, a `name`, and an `avatarUrl`.
+One schema parses the user and infers the `User` type, and so far that has been enough.
+
+Then three tickets land.
+The sign-up form takes `email`, `password`, and `name`, a subset of the user, and not even the same `password`, since the form holds a plaintext password where the row holds a hash.
+The profile-edit form takes `name` and `avatarUrl`.
+The public profile endpoint returns the whole user except the password hash.
+Three boundaries, three shapes, each a reshaped view of the same user.
+
+You can write three fresh `z.object`s by hand, each repeating most of `userSchema`, or declare the user once and derive the other three from it.
+A few methods carry the whole approach: `.pick` and `.omit` to narrow a schema, `.extend` and a spread to grow one, and `.partial`, `.required`, and `.readonly` to flip its modifiers.
+
+You already have the intuition from the TypeScript chapter, where `Pick`, `Omit`, and `Partial` took a type and handed back a new one.
+Zod gives you the runtime twins of those operators, and because the type is inferred from the schema, reshaping the schema reshapes the type for free.
+The one place that splits apart is a schema with a `.transform`, whose input and output types differ; there you reach for `z.input` and `z.output`.
+
+## Hand-written schemas drift; derived ones can't
+
+Here are the three schemas the sprint asked for, written the obvious way: by hand. Notice how much of the first tab is the same words typed three times.
+
+<CodeVariants>
+  <CodeVariant label="Hand-written (the trap)">
+
+```ts title="lib/user.ts" "email" "name"
+const userSchema = z.object({
+  email: z.email(),
+  passwordHash: z.string(),
+  name: z.string(),
+  avatarUrl: z.url(),
+});
+type User = z.infer<typeof userSchema>;
+
+const createUserSchema = z.object({
+  email: z.email(),
+  password: z.string().min(8),
+  name: z.string(),
+});
+type CreateUser = z.infer<typeof createUserSchema>;
+
+const updateUserSchema = z.object({
+  name: z.string(),
+  avatarUrl: z.url(),
+});
+type UpdateUser = z.infer<typeof updateUserSchema>;
+
+const publicUserSchema = z.object({
+  email: z.email(),
+  name: z.string(),
+  avatarUrl: z.url(),
+});
+type PublicUser = z.infer<typeof publicUserSchema>;
+```
+
+**Looks fine today, breaks later.** Six months from now a `currency` column joins the user, and four separate places have to learn about it. Update three and forget the fourth, and that boundary silently rejects valid input or leaks a field you meant to drop. Nothing fails loudly; only a `git grep` and your memory keep the four copies in agreement.
+
+  </CodeVariant>
+
+  <CodeVariant label="Derived (the fix)">
+
+<div data-mark-color="green">
+
+```ts title="lib/user.ts" ".omit({ passwordHash: true })" ".pick({ email: true, name: true })" ".extend({ password: z.string().min(8) })" ".pick({ name: true, avatarUrl: true })"
+const userSchema = z.object({
+  email: z.email(),
+  passwordHash: z.string(),
+  name: z.string(),
+  avatarUrl: z.url(),
+});
+type User = z.infer<typeof userSchema>;
+
+const publicUserSchema = userSchema.omit({ passwordHash: true });
+type PublicUser = z.infer<typeof publicUserSchema>;
+
+const createUserSchema = userSchema
+  .pick({ email: true, name: true })
+  .extend({ password: z.string().min(8) });
+type CreateUser = z.infer<typeof createUserSchema>;
+
+const updateUserSchema = userSchema.pick({ name: true, avatarUrl: true });
+type UpdateUser = z.infer<typeof updateUserSchema>;
+```
+
+</div>
+
+**One edit flows everywhere.** Add `currency` to `userSchema` and the public response picks it up; the create and update shapes don't, because their `.pick` and `.omit` masks never named it. The variants can't drift because they don't independently exist: one source, three views onto it.
+
+  </CodeVariant>
+</CodeVariants>
+
+The second tab is the principle: **derive, don't duplicate.** Declare one canonical schema, derive every variant from it, and let each derived name carry its role, so `createUserSchema` and `publicUserSchema` state their intent. Drift stops being something you catch in review and becomes <Term definition="Two representations of one fact that have fallen out of agreement, because a change touched one of them and not the other.">drift</Term> that can't happen, because there's nothing left to drift *from*.
+
+This is the schema-layer version of what the database chapter taught: the schema is the source of truth. There, `db/schema.ts` was the one place a column was defined, and row types and inserts flowed from it. Here it's the same idea one layer up: one schema, every boundary derived from it.
+
+## Narrowing: `.pick` and `.omit`
+
+The two methods you'll reach for most cover the two most common boundaries in any app: a response that must hide a field, and a form that edits a subset of the entity.
+
+`.pick` keeps the keys you name and drops the rest:
+
+```ts
+const createUserSchema = userSchema.pick({ email: true, name: true });
+type CreateUser = z.infer<typeof createUserSchema>;
+// { email: string; name: string }
+```
+
+`.omit` is the mirror: keep everything *except* the keys you name. This is the method that builds the public-response shape, and getting it wrong is how a password hash leaks over the API:
+
+<div data-mark-color="red">
+
+```ts "passwordHash: true"
+const publicUserSchema = userSchema.omit({ passwordHash: true });
+type PublicUser = z.infer<typeof publicUserSchema>;
+// { email: string; name: string; avatarUrl: string }
+```
+
+</div>
+
+`publicUserSchema` can't describe a password hash at all. The field isn't in its shape, so the inferred `PublicUser` type lacks it, so an endpoint returning a `PublicUser` can't leak it without a type error first. The compiler enforces the omission, not your memory.
+
+Two details trip people up. First, the argument is a **mask**, `{ email: true, name: true }`, an object keyed by field name, not the array `['email', 'name']`. Second, `.pick` and `.omit` each return a new object schema that inherits the source's strictness mode. If `userSchema` were a `z.strictObject`, which rejects unknown keys, every derived schema would reject them too. The default `z.object` strips unknown keys, so that's the behavior here.
+
+That strictness mode has a consequence. Omitting a key removes it from the shape but adds no rule rejecting an input that still carries it. With the default `z.object`, an input that includes `passwordHash` still parses: the key is stripped from the output, like any unknown key. `.omit` changes what the schema describes and returns, not what it tolerates coming in. Try it below.
+
+<ZodCoding
+  schemaName="publicUserSchema"
+  instructions="Derive `publicUserSchema` from the given `userSchema` by omitting `passwordHash`. Watch the `^?` query — once you do, `passwordHash` disappears from the inferred type. Read the first fixture closely: an input that still *carries* a password hash passes, because the default object mode strips the extra key rather than rejecting it. `.omit` removes the field from the shape; it does not add a guard against the field arriving."
+  starter={`import { z } from 'zod';
+
+const userSchema = z.object({
+  email: z.email(),
+  passwordHash: z.string(),
+  name: z.string(),
+  avatarUrl: z.url(),
+});
+
+export const publicUserSchema = userSchema; // replace with the .omit derivation
+
+type PublicUser = z.infer<typeof publicUserSchema>;
+//   ^?
+`}
+  fixtures={[
+    {
+      name: 'full user, with hash',
+      input: {
+        email: 'ada@example.com',
+        passwordHash: '$2b$x',
+        name: 'Ada',
+        avatarUrl: 'https://x.test/a.png',
+      },
+      expect: 'pass',
+    },
+    {
+      name: 'no hash',
+      input: {
+        email: 'ada@example.com',
+        name: 'Ada',
+        avatarUrl: 'https://x.test/a.png',
+      },
+      expect: 'pass',
+    },
+    {
+      name: 'missing email',
+      input: { name: 'Ada', avatarUrl: 'https://x.test/a.png' },
+      expect: 'fail',
+    },
+  ]}
+/>
+
+The answer is `userSchema.omit({ passwordHash: true })`, a mask, not a list. The first fixture is the one to dwell on: it ships a `passwordHash` yet passes, because `.omit` on a default `z.object` strips the extra key rather than rejecting it. A `z.strictObject` base would reject it, but for a public-response shape, stripping is exactly what you want.
+
+## Adding and combining: `.extend` and the spread merge
+
+Narrowing has an inverse: sometimes a boundary needs *more* than the base entity carries. The classic case is a form field that lives only in the UI, never in the database, like a `confirmPassword` the user types twice or a `terms` checkbox they tick. `userSchema` shouldn't carry those fields, but the sign-up form schema must.
+
+`.extend` adds fields to an object schema. Hand it a shape and you get back a new schema with those keys added:
+
+```ts
+const signupFormSchema = userSchema.extend({
+  confirmPassword: z.string(),
+});
+```
+
+`.extend` has a second use: if the shape you pass reuses an existing key, the new definition wins. `userSchema.extend({ name: z.string().max(50) })` keeps every other field as it was and tightens just `name`. That's the clean way to override one field of a derived schema without re-declaring the rest.
+
+A different job is fusing two schemas you've already named, say `userSchema` and a separate `billingFieldsSchema`, into one object with every field of both. Older Zod reached for `.merge`, and you'll meet `.merge` in existing codebases, but in Zod 4 it's the wrong call:
+
+```ts del={1} ins={2}
+const accountSchema = userSchema.merge(billingFieldsSchema);
+const accountSchema = z.object({ ...userSchema.shape, ...billingFieldsSchema.shape });
+```
+
+`.merge` is deprecated in v4, and chaining a lot of `.extend` gets quadratically expensive enough to slow your type-checker on large schemas. The replacement is plainer than either: every object schema exposes its field map as `.shape`, so spreading both shapes into a fresh `z.object` is an ordinary object spread, no Zod method involved. On a key collision the rule is the one you know: last spread wins.
+
+So the decision is two cases. Adding a handful of fields to one base is `.extend`; fusing two named schemas is the spread. When you see `.merge` in old code, that's your cue it predates Zod 4.
+
+Now watch the methods compose. The sign-up schema isn't just a narrowing or just an addition; it's both. Pick the editable subset of the user, then extend it with the UI-only confirmation field:
+
+```ts {2-6}
+const signupSchema = userSchema
+  .pick({ email: true, name: true })
+  .extend({
+    password: z.string().min(8),
+    confirmPassword: z.string(),
+  });
+```
+
+That's one declaration of `signupSchema`, derived in two moves from the canonical user. The cross-field `.refine` from the last lesson, the one checking `password === confirmPassword`, belongs here on the derived schema, because this is the only shape where both fields coexist. Derive first, refine second: that order matters again in a moment.
+
+## Modifier flips: `.partial`, `.required`, `.readonly`
+
+The third family doesn't change *which* fields a schema has; it changes how those fields behave. Here the TypeScript connection is most direct: `.partial` is `Partial`, `.required` is `Required`, and `.readonly` is `Readonly`, the same operators you ran on types in the TypeScript chapter, except each is backed by a runtime check, not just a compile-time reshuffle.
+
+Start with `.partial`, because it answers a question every CRUD app asks: what's the shape of a PATCH? A partial update sends *some* fields and leaves the rest untouched, so its schema is the entity with every field optional. That's exactly what `.partial()` produces:
+
+```ts
+const updateInvoiceSchema = invoiceSchema.partial();
+const draftInvoiceSchema = invoiceSchema.partial({ tags: true });
+```
+
+With no argument, `.partial()` puts a `?` on every key, so `updateInvoiceSchema` is the everyday PATCH shape. With a mask (`{ tags: true }`, the same `{ key: true }` shape as `.pick`), only the named field goes optional and the rest stay required, so `draftInvoiceSchema` lets you save a draft without tags while still demanding the others. Derive your update schema this way every time rather than hand-writing a twin with a `?` on each field, often from a canonical schema that is itself generated from the database table.
+
+`.required()` is the inverse: it forces optional fields to be present, for the rarer case where a schema has optionals you want mandatory in a particular context. `.readonly()` does something the type-only `Readonly` does *not*:
+
+```ts {4}
+const frozenUserSchema = userSchema.readonly();
+const user = frozenUserSchema.parse(input);
+
+user.name = 'Grace'; // TypeScript error — and throws at runtime: the object is frozen
+```
+
+`.readonly()` infers as `Readonly<T>`, marking every field read-only to the type-checker, but it also runs `Object.freeze()` on the parsed result. So a later `user.name = '…'` doesn't just fail to compile; it *throws* at runtime. That's the difference from the type-only `Readonly`: a real guard enforced by the JavaScript engine, not a promise the compiler tracks. You reach for it later in the cache layer, where a frozen object shared to many consumers can't be mutated out from under the others.
+
+One mistake lives at the seam between this family and the last lesson's refinements:
+
+:::caution
+`.partial()` on a schema carrying a *cross-field* `.refine` can quietly break the rule. If your `signupSchema` refines `password === confirmPassword`, calling `.partial()` makes both fields optional, and the refine now fires against possibly-`undefined` values, turning it unsatisfiable or vacuous. The fix is the order from the last section: derive *before* you refine.
+:::
+
+Now make the PATCH shape concrete yourself. Turn the invoice into its update schema with `.partial()`, and watch every key in the `^?` query gain a `?`.
+
+<ZodCoding
+  schemaName="updateInvoiceSchema"
+  instructions="Derive `updateInvoiceSchema` from `invoiceSchema` with `.partial()`. Watch the `^?` query — every field gains a `?`. The fixtures prove the PATCH shape: a full body passes, a single field passes, even an empty body passes — but a wrong *type* still fails, because optional means 'may be absent', not 'anything goes'."
+  starter={`import { z } from 'zod';
+
+const invoiceSchema = z.object({
+  email: z.email(),
+  quantity: z.number().int().positive(),
+  status: z.enum(['draft', 'sent', 'paid', 'overdue']),
+  tags: z.array(z.string()).min(1).max(100),
+});
+
+export const updateInvoiceSchema = invoiceSchema; // make every field optional
+
+type UpdateInvoice = z.infer<typeof updateInvoiceSchema>;
+//   ^?
+`}
+  fixtures={[
+    {
+      name: 'full body',
+      input: { email: 'ada@example.com', quantity: 3, status: 'sent', tags: ['q3'] },
+      expect: 'pass',
+    },
+    { name: 'single field', input: { status: 'paid' }, expect: 'pass' },
+    { name: 'empty body', input: {}, expect: 'pass' },
+    { name: 'wrong type', input: { quantity: 'lots' }, expect: 'fail' },
+  ]}
+/>
+
+## Every derivation on one schema
+
+The family is a small algebra: narrow a schema, grow it, or flip its modifiers, and each move hands back a new schema and a new type. Here are all four on one `userSchema`, a single source fanning out into every boundary shape the app needs.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const userSchema = z.object({
+  email: z.email(),
+  passwordHash: z.string(),
+  name: z.string(),
+  avatarUrl: z.url(),
+});
+
+const createUserSchema = userSchema.pick({ email: true, name: true });
+
+const publicUserSchema = userSchema.omit({ passwordHash: true });
+
+const signupSchema = userSchema
+  .pick({ email: true, name: true })
+  .extend({ confirmPassword: z.string() });
+
+const updateUserSchema = userSchema.partial();
+`}>
+  <AnnotatedStep meta="{1-6}" color="blue">
+    The one canonical source, four fields defined once. Every shape below is a view onto it, so a change here flows to all of them.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{8} ".pick"`} color="blue">
+    `.pick` narrows to `email` and `name`, dropping the rest: the create-input shape a form submits.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{10} ".omit"`} color="blue">
+    `.omit` narrows the other way, keeping everything but the secret: the public-response shape, provably free of the password hash.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{12-14} ".pick" ".extend"`} color="blue">
+    Narrow then grow: pick the subset, then add the UI-only `confirmPassword`. Two moves, one derived schema.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{16} ".partial"`} color="blue">
+    `.partial` flips modifiers, making every field optional: the PATCH body shape. Four derivations, one source, zero copies to sync.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+<DerivationFanout />
+
+## Two specialist builders: `z.record` and `z.intersection`
+
+Most derivation reshapes an object's keys: pick, omit, extend, partial. These two composition tools don't. They show up less often, but each carries a Zod 4 gotcha worth knowing in advance.
+
+`z.record` describes a map: an object whose keys aren't known ahead of time but whose values all share one shape. Think feature flags keyed by an arbitrary flag name, a locale dictionary, or the open-ended `metadata` blob on an entity. In Zod 4, `z.record` takes **two** arguments, the key schema and the value schema:
+
+```ts del={1} ins={2}
+const flags = z.record(z.boolean());
+const flags = z.record(z.string(), z.boolean());
+// → Record<string, boolean>
+```
+
+The struck line is the v3 form, value schema alone, and it's gone in v4: it won't compile, and it's exactly what you'll hit pasting an old snippet or accepting an AI's first suggestion. Naming the key schema has two consequences. By default `z.record` now rejects keys that don't match it (the pass-through variant is `z.looseRecord`). And if you narrow the key to a `z.enum([...])`, Zod checks that *every* enum value is present, a handy exhaustiveness guarantee.
+
+`z.intersection` describes a value that must satisfy *two schemas at once*, an <Term definition="A type (or schema) a value must satisfy both of two constraints to match: A and B together. The ampersand to a union's pipe.">intersection</Term>. For two *object* schemas you already have the better tool: the spread merge from earlier is clearer and cheaper, so don't reach for intersection there. Intersection earns its place in the non-object case, a primitive that must clear two separate refined schemas:
+
+```ts
+const evenPositive = z.intersection(
+  z.number().positive(),
+  z.number().refine((n) => n % 2 === 0, 'must be even'),
+);
+```
+
+The decision rule: for two object shapes you want fused, spread `{ ...a.shape, ...b.shape }`; for anything else that has to satisfy two schemas, use `z.intersection`. One adjacent mistake to avoid: if you want an *object* that preserves unknown keys after parsing, that's `z.looseObject` from the first lesson, not a `z.record`. `z.looseObject` keeps extras on a known shape; `z.record` describes a shape that's *all* open keys.
+
+## When transforms split the type: `z.infer`, `z.input`, `z.output`
+
+The last idea is the one people most often get wrong in production, because the wrong choice doesn't fail at the schema. It surfaces later, as a confusing type error in code that looks innocent.
+
+Start from the default. For a *plain* schema, a `z.object` with ordinary fields and no transforms, the type the parser *accepts* and the type it *returns* are the same shape. A `{ name: string }` goes in, a `{ name: string }` comes out. So `z.infer<typeof schema>` is the only inference helper you need, and that's where most schemas live.
+
+A `.transform` breaks that symmetry. The last lesson taught you that a transform *moves* the inferred type; you watched `z.iso.datetime().transform((s) => new Date(s))` flip the `^?` query from `string` to `Date`. Once a transform is in the chain, the parser *accepts* a `string` but *returns* a `Date`: same schema, an input type and an output type that no longer agree. A single `z.infer` can't name both, so you need one helper per end:
+
+- `z.input<typeof schema>` is the type the parser **accepts**, the pre-transform shape. For our date field, that's `string`.
+- `z.output<typeof schema>` is the type the parser **returns**, the post-transform shape. That's `Date`.
+- `z.infer<typeof schema>` resolves to the **output** type, the same as `z.output`. `z.infer` always means the parsed, output side.
+
+This is the exact seam where a Server Action's form input lives. Picture the invoice's `issuedAt` field, validated as an ISO string and transformed to a `Date` with `z.iso.datetime().transform((s) => new Date(s))`. The form on the page sends a *string*, because form data is string-only, so the **form's contract is `z.input`**, which resolves to `string`. After parsing, the action body holds a real `Date`, so the **action's parameter type is `z.output`**, the same as `z.infer`. Type a form helper with `z.infer` and you've promised it a `Date`, when what arrives is the pre-transform `string`.
+
+See both types at once. The schema below validates `issuedAt` as an ISO string, then transforms it to a `Date`. Fill in the two type aliases so `FormInput` resolves to `string` and `Parsed` resolves to `Date`.
+
+<ZodCoding
+  schemaName="formSchema"
+  instructions="This schema validates `issuedAt` as an ISO string, then transforms it into a `Date`. Fix the two type aliases so each `^?` resolves correctly: `FormInput` is what the form *sends* — set it with `z.input`, and the query lands on `string`. `Parsed` is what the action *receives* — set it with `z.output` (which equals `z.infer`), and the query lands on `Date`. The fixtures prove the split: a string goes in and the parse succeeds, because the form contract is the string side."
+  starter={`import { z } from 'zod';
+
+export const formSchema = z.object({
+  issuedAt: z.iso.datetime().transform((s) => new Date(s)),
+});
+
+// the form SENDS this shape — fix the helper so the query reads string
+type FormInput = z.infer<typeof formSchema>;
+//                       ^?
+
+// the action RECEIVES this shape after parsing
+type Parsed = z.infer<typeof formSchema>;
+//                    ^?
+`}
+  fixtures={[
+    {
+      name: 'string in (form sends a string)',
+      input: { issuedAt: '2026-03-01T00:00:00Z' },
+      expect: 'pass',
+    },
+    {
+      name: 'non-date string',
+      input: { issuedAt: 'not a date' },
+      expect: 'fail',
+    },
+  ]}
+/>
+
+:::caution
+`z.infer` returns the **output** type. For the *input* shape of any transform or `z.coerce` schema, reach for `z.input` instead. Get this wrong and nothing complains at the schema; it hands you the post-transform shape silently. The mismatch only surfaces downstream, as a type error at the call site, much later and less clearly.
+:::
+
+## `.describe`: the schema's documentation channel
+
+A schema can also carry prose. `.describe()` attaches a human-readable note to a schema or a single field:
+
+```ts
+const nameField = z.string().describe('User-facing display name, NFC-normalized');
+```
+
+That string isn't decoration; consuming tools read it. An OpenAPI generator surfaces it as the field's `description`, `drizzle-zod` carries it through, and documentation pipelines pick it up, so one note feeds every surface that documents the field. That's the derive-don't-duplicate idea applied to documentation instead of shape, and later you'll lean on it again to describe the input fields of tools you give an LLM.
+
+## Self-referential shapes: the lazy getter
+
+Some shapes reference themselves: a comment whose replies are comments, a folder that contains folders. A schema can't reference its own `const` while that `const` is still being defined, so Zod 4's recommended pattern is a **getter** on the object shape:
+
+```ts {3-5}
+const categorySchema = z.object({
+  name: z.string(),
+  get children() {
+    return z.array(categorySchema);
+  },
+});
+```
+
+The getter defers evaluating `categorySchema` until the schema is used, so the self-reference resolves lazily, with no `z.lazy()` wrapper and no type cast. (`z.lazy(() => …)` still exists for compatibility.) It's uncommon in the flat CRUD entities most of an app is made of, but common the moment you model a true hierarchy.
+
+## Where to go deeper
+
+The Zod documentation has dedicated pages for both halves of this lesson: the object methods that do the deriving, and the inference helpers that name the input/output split.
+
+<CardGrid>
+  <ExternalResource
+    title="Zod: object schema methods"
+    href="https://zod.dev/api?id=objects"
+    icon="simple-icons:zod"
+    iconColor="#408AFF"
+    description="The full catalog of the derivation methods this lesson selected from: .pick, .omit, .extend, .partial."
+  />
+  <ExternalResource
+    title="Zod: input vs. output types"
+    href="https://zod.dev/basics?id=inferring-types"
+    icon="simple-icons:zod"
+    iconColor="#408AFF"
+    description="The reference for the transform-splits-the-type idea that closes this lesson: z.input, z.output, z.infer."
+  />
+</CardGrid>

@@ -1,0 +1,494 @@
+---
+title: parse, safeParse, and the error contract
+tagline: Running a Zod schema and routing its outcome, the throw-or-return choice and the ZodError shape that carries failures back to your forms.
+chapter-id: 42
+course-progress: 0.4143
+sidebar:
+  order: 5
+  label: parse vs safeParse
+rewrites: 1
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import ZodCoding from '../../../components/live-coding/ZodCoding/ZodCoding.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import ParseMethodGrid from '../../../components/lessons/042/5/ParseMethodGrid.astro';
+import TreeifyMirror from '../../../components/lessons/042/5/TreeifyMirror.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You have spent four lessons declaring schemas. Now picture one in use: a Server Action holds `createInvoiceSchema`, and an `unknown` value has just arrived off the wire, a form submission parsed into a plain object. The question is how you *run* the schema, and what comes back when the input is wrong.
+
+When validation fails, the failure can come back to you as a value, or it can interrupt the program. That single choice has a right answer at every boundary, and one rule decides it. This lesson covers that rule, and how an error message travels from the schema where it's written to the form where it's shown.
+
+## Every parse has two outcomes
+
+Running a schema against an `unknown` input forks into exactly two outcomes. Either the input is valid and you get back a fully typed value you can trust, where `email` is a string and `quantity` is a positive integer, or the input is invalid and you get a structured <Term definition={"The error class every failed parse produces.\nAn object carrying an issues array, one entry per validation failure, not a plain Error with a single message string."}>`ZodError`</Term> describing what was wrong. The rest of the lesson is about *how that fork is delivered*.
+
+There are two delivery styles. The fork can arrive **as control flow**: the invalid branch throws, the program jumps to the nearest error handler, and you never write an `if`, you just call the schema and either the valid value comes back or it doesn't. Or it can arrive **as a value**: the invalid branch is *returned* to you as a result object you branch on yourself. Control flow versus value is the `parse` versus `safeParse` axis, and most of this lesson lives there.
+
+A second axis: validation is **synchronous** or **asynchronous**. Almost everything you write is synchronous, deciding the moment it sees the input. But a refinement can return a Promise, say a check that asks the database whether an email is already taken, and a schema with such a refinement needs an async-aware runner. This course keeps those network-touching checks out of the schema and in the action body after the parse, so the synchronous forms are the default and the async ones are an escape hatch you'll meet later.
+
+Cross the two axes and you get the four method names Zod ships. They are not four things to memorize, but two binary choices.
+
+<Figure
+  caption="The four parse methods are two binary choices: throw or return, sync or async."
+  expandable={false}
+>
+  <ParseMethodGrid />
+</Figure>
+
+The trust boundary decides the column, the subject of the next two sections; the row is almost always the top one. We'll start with the column you'll write the most.
+
+## safeParse: the boundary default
+
+`schema.safeParse(input)` never throws. Whatever you hand it, you get back an object whose shape is the key to this whole section:
+
+```ts
+{ success: true; data: T } | { success: false; error: ZodError }
+```
+
+It's a union of two object shapes told apart by one field, `success`. When `success` is `true`, a `data` field carries the parsed value; when it's `false`, an `error` field carries the `ZodError`. This is a discriminated union, the pattern you met when typing application state, with `success` as the discriminant in place of `status` or `kind`.
+
+That discriminant is what makes the result safe to use. When you write `if (!result.success)`, TypeScript narrows `result` to the failure shape inside the block, so `result.error` is available and `result.data` is not. After the block, with failure ruled out, it narrows `result` to the success shape, so `result.data` is present and typed as the parsed `Invoice`. The branch is what earns you a typed `.data`: no cast, no `as`, no `!`. You prove the success case by eliminating the failure case, and the type follows.
+
+So every untrusted boundary in this course is the same four lines:
+
+<CodeTooltips tooltips={{
+  safeParse: 'Runs the schema and returns a result object instead of throwing. Never raises an exception, whatever the input.',
+  success: 'The discriminant.\ntrue means data is present and typed; false means error is present.',
+  data: 'The parsed value. Present and typed as Invoice only inside the success branch.',
+}}>
+```ts
+const result = createInvoiceSchema.safeParse(input);
+
+if (!result.success) {
+  return { ok: false }; // hand the failure back to the caller (fleshed out next chapter)
+}
+
+const invoice = result.data;
+// invoice is the typed Invoice shape here — trusted from this line on
+```
+</CodeTooltips>
+
+Call `safeParse`. If it failed, return the failure to your caller and stop. Past the guard, `result.data` is the fully typed value, and every line below it is trusted territory.
+
+**Reach for `safeParse` everywhere user input arrives**: form submissions, request bodies, webhook payloads, a `searchParams` object off a URL. At all of these, *the caller owns the failure*. A form submission with a bad email isn't your action's emergency; it's the user's, and your action's job is to hand the problem back so the form can show it beside the offending field. A failure the caller must inspect and react to has to be a value it can hold, not an exception that flies past it and unwinds the stack.
+
+You'll wire that handing-back for real one chapter from now. In a Server Action, this exact `result` maps onto the action's return: the success branch returns the data, the failure branch returns the validation error in a standard shape the form can read. That shape is a `Result` type with `ok` and `err` helpers, the next chapter's subject. For now, see that the seam sits right where the `safeParse` branch already is.
+
+Now make the fork concrete. The exercise below runs `safeParse` over `createInvoiceSchema` against a row of fixtures, some the contract should accept and some it should reject, and the table flips a check or a cross per input as you edit.
+
+<ZodCoding
+  schemaName="createInvoiceSchema"
+  instructions="This schema is the contract for a new invoice. Each fixture below forks to ✓ (the contract accepts it) or ✗ (it rejects it). One fixture should pass but doesn't: the contract rejects an `overdue` status it ought to allow. Widen the `status` enum to include `'overdue'` so the overdue invoice passes — and leave the other rows exactly as they fork. The fix is to the contract, not the form."
+  starter={`import { z } from 'zod';
+
+export const createInvoiceSchema = z.object({
+  email: z.email(),
+  quantity: z.number().int().positive(),
+  status: z.enum(['draft', 'sent', 'paid']),
+  tags: z.array(z.string()),
+});
+
+type Invoice = z.infer<typeof createInvoiceSchema>;
+//   ^?
+`}
+  fixtures={[
+    {
+      name: 'valid invoice',
+      input: { email: 'ada@acme.test', quantity: 2, status: 'sent', tags: ['urgent'] },
+      expect: 'pass',
+    },
+    {
+      name: 'overdue status',
+      input: { email: 'ada@acme.test', quantity: 2, status: 'overdue', tags: [] },
+      expect: 'pass',
+    },
+    {
+      name: 'unknown status',
+      input: { email: 'ada@acme.test', quantity: 1, status: 'archived', tags: [] },
+      expect: 'fail',
+      errorContains: 'status',
+    },
+    {
+      name: 'negative quantity',
+      input: { email: 'ada@acme.test', quantity: -3, status: 'draft', tags: [] },
+      expect: 'fail',
+    },
+    {
+      name: 'missing email',
+      input: { quantity: 1, status: 'draft', tags: [] },
+      expect: 'fail',
+    },
+  ]}
+/>
+
+## parse: throw on values you trust
+
+`schema.parse(input)` returns the typed value on success and **throws a `ZodError` on failure**. There's no `success` field to check, because success is the only path that returns: if the input is bad, the call doesn't come back, and the exception heads for the nearest handler.
+
+That would be hostile at a boundary, but `parse` has a specific legitimate home: **trusted, server-internal calls**, where you just built a value and want to assert its shape before passing it on. A `/lib` helper validating an object it assembled. A startup script checking its own config. A test asserting a fixture's shape. An `env.ts` loader validating the process environment at boot. In each case a failure means *your own code is wrong*: you built something malformed, or the deployment is misconfigured. That's a programmer error, not a user mistake to render politely, and an exception flying to the framework boundary is the right signal: crash loudly, surface the stack, fix the bug.
+
+This is why `parse` at an untrusted boundary is the headline beginner mistake. Drop a `parse` into a Server Action, forget that it throws, and the first user to submit a bad form gets a 500 instead of a friendly error under the email field. The action threw, nothing caught it, and the framework turned an *expected* validation failure into a server error. The fix is not to wrap the `parse` in a `try/catch`:
+
+<div data-mark-color="red">
+
+```ts {1-6}
+try {
+  const invoice = createInvoiceSchema.parse(input);
+  // ...use invoice
+} catch (error) {
+  // re-deriving the failure branch by hand — safeParse already gives you this
+}
+```
+
+</div>
+
+That `try/catch` is a code smell, not a fix. It re-implements `safeParse` by hand and does it badly: a bare `catch` swallows *every* throw, not just the `ZodError`, so a real bug downstream gets miscategorized as a validation failure. The correct move was never to throw. Reach for `safeParse`, branch on the result, and you're done.
+
+Underneath both methods is one rule that governs error handling across the codebase: **return the expected, throw the unexpected.** An invalid form submission is *expected*, a normal daily event a web app must handle gracefully, so it travels the return channel: `safeParse`. A value the server built for itself failing validation is *unexpected*, impossible if the code is correct, so it travels the throw channel: `parse`. The choice isn't style; it's a statement about whether this failure is normal or impossible.
+
+So the decision isn't "form or not." Walk it in order.
+
+<StateMachineWalker title="parse or safeParse?">
+  <Question id="origin" prompt="Where does this value come from?">
+    <Branch
+      label="From outside — a form, a request body, a webhook, searchParams"
+      to="leaf-safeparse-boundary"
+    />
+    <Branch
+      label="From inside — I built it, it's my own config, or it's a test fixture"
+      to="internal"
+    />
+  </Question>
+
+  <Question
+    id="internal"
+    prompt="Is a failure here a bug, or a legitimate outcome I need to handle?"
+  >
+    <Branch
+      label="A bug — it should never happen if my code is correct"
+      to="leaf-parse"
+    />
+    <Branch
+      label="It could legitimately fail and I need to react"
+      to="leaf-safeparse-internal"
+    />
+  </Question>
+
+  <Leaf id="leaf-safeparse-boundary" verdict="safeParse">
+    The caller owns the failure, so return it as a value the caller can render.
+    Every Server Action, route handler, and webhook lands here.
+  </Leaf>
+
+  <Leaf id="leaf-parse" verdict="parse">
+    Throw to the framework boundary and let `error.tsx` or the route's catch
+    handle it. A failure here is a programmer error, and a loud crash is the
+    correct signal. An `env.ts` loader at boot is the canonical case.
+  </Leaf>
+
+  <Leaf id="leaf-safeparse-internal" verdict="safeParse">
+    Even server-internal, if you branch on the failure you need it as a value.
+    The trust boundary isn't all that matters; whether you *react* to the
+    failure matters too.
+  </Leaf>
+</StateMachineWalker>
+
+The trust boundary is the first cut, but not the only one. The moment you need to *react* to a failure rather than crash on it, you need it as a value, which is `safeParse`, even for a value built inside. `parse` earns its place only where trusted *and* should-never-fail intersect, and that intersection is small, which is why you'll write `safeParse` almost everywhere.
+
+<MultipleChoice>
+  A webhook handler receives a payload from a third-party service you don't control.
+  You can't verify who sent it until you've checked the signature, the user sees nothing — on a bad shape the handler logs it and responds 400.
+  Which method parses the payload?
+
+  <McqChoice>`parse`, because a malformed webhook is a serious problem worth crashing on.</McqChoice>
+  <McqChoice>`parse` wrapped in a `try/catch` that returns 400 from the catch block.</McqChoice>
+  <McqChoice correct>`safeParse`, then return 400 when `result.success` is false.</McqChoice>
+
+  <McqWhy>The handler *branches* on the outcome — log and 400 on failure, proceed on success — so the failure has to be a value it can read, which is what `safeParse` returns. `parse` would throw, and the `try/catch` form just rebuilds `safeParse` around a method that throws everything, not only `ZodError`.</McqWhy>
+</MultipleChoice>
+
+## Async refinements require `parseAsync`
+
+If any refinement in your schema returns a Promise, the synchronous `parse` and `safeParse` cannot run it: they throw the instant they hit one, before validation finishes. Use `parseAsync` or `safeParseAsync` instead, and `await` the call.
+
+<div data-mark-color="violet">
+
+```ts "schema.parse"
+const schema = z.string().refine(async (slug) => isSlugFree(slug));
+
+schema.parse('my-invoice'); // throws: encountered async refinement; use .parseAsync
+```
+
+</div>
+
+You'll rarely meet this, by design. As established in the lesson on checks and transforms, this course keeps anything needing the network or database (uniqueness, slug availability, plan permissions) out of the schema and in the action body, after the parse. Nothing in a well-built schema is async, so the synchronous forms are enough and the async variants stay a rare escape hatch.
+
+## Inside a ZodError: the issues array
+
+You've treated `ZodError` as a black box, the thing the failure branch carries. Open it: the form layer is built directly on its contents, and custom rendering means reading those contents yourself.
+
+A `ZodError` carries an `issues` array, one entry per failure. Submit a form with three bad fields and you get one `ZodError` with three issues. It doesn't report "the parse failed"; it itemizes every way it failed.
+
+Each issue is an object, and four fields carry the weight. `code` names the kind of failure: `invalid_type`, `too_small`, `invalid_format`, `unrecognized_keys`, `custom`, and so on. `message` is the human-readable string, and crucially it's the one the schema authored, the thread the next two sections pull on. Alongside it sit code-specific fields: `invalid_type` carries `expected` and `received`, `too_small` carries `minimum`. That's the structured data behind the message, so a renderer can rebuild the wording itself.
+
+The fourth field is the one that makes forms possible. Each issue has a <Term definition={"An array locating the failing field inside the input, like ['lines', 0, 'quantity'] for a nested array of line items.\nAn empty path ([]) means a form-level error not tied to any single field."}>`path`</Term>, an array that pinpoints which field failed, descending into nested objects and arrays. An invalid top-level `email` produces `path: ['email']`. This is how a message gets anchored: the form reads the `path` and knows which field to render it beside.
+
+Here the two halves of the contract meet. Recall the cross-field refinement from the lesson on checks and transforms, the password-confirmation check that wrote `.refine(fn, { path: ['confirm'] })` to aim its error at the confirm field. That `path` you set is this `path` you're now reading: one value, authored on one side and consumed on the other.
+
+<AnnotatedCode lang="ts" maxLines={14} code={`
+[
+  {
+    code: 'invalid_format',
+    format: 'email',
+    path: ['email'],
+    message: 'Enter a valid email address',
+  },
+  {
+    code: 'too_small',
+    minimum: 8,
+    path: ['password'],
+    message: 'Password must be at least 8 characters',
+  },
+]
+`}>
+  <AnnotatedStep meta="{1, 14}" color="blue">
+    This is `error.issues`, an array. Two entries because two fields failed, always one entry per failure.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-4}" color="blue">
+    The first issue. `code` names the failure kind; here the email didn't match its `format`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="green">
+    The field anchor. The form reads this to place the message under the email input. `['email']` means the top-level email field.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="blue">
+    The human string, the one the *schema* authored, not a Zod default.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10}" color="blue">
+    A different `code` (`too_small`) carries different data. `minimum` is the structured value behind "at least 8 characters," there for a renderer that wants to rebuild the wording.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+For the common case you won't read `issues` by hand; the next section's shortcut reshapes the array into something a form walks directly. But the array is always underneath, and when the form layer needs full control (custom grouping, first error per field, severity levels) it reads `issues` itself.
+
+## treeifyError: errors nested like your input
+
+`z.treeifyError` takes a `ZodError` and returns a **nested object that mirrors the shape of the input you parsed**: not the flat `issues` array, but a tree keyed the way your data is keyed.
+
+<Figure caption="The error tree has the same skeleton as the data, which is why the form can walk it with the field paths it already uses for inputs.">
+  <TreeifyMirror />
+</Figure>
+
+The tree has a fixed grammar. At the top, an `errors` array holds *form-level* issues, the failures not tied to any single field (an empty `path` lands here). Beside it, a `properties` object holds one entry per field, each with its own `errors` array, nesting further into `properties` or `items` for nested objects and arrays. To show the message under the email input, the form reads that field's `errors` array and takes the first entry:
+
+<CodeVariants>
+  <CodeVariant label="treeifyError (nested)">
+    ```ts "tree.properties?.email?.errors?.[0]"
+    const tree = z.treeifyError(result.error);
+
+    tree.properties?.email?.errors?.[0];
+    //=> 'Enter a valid email address'
+    ```
+    **Mirrors the input shape.** Reach for it when fields nest. The optional chaining isn't decoration: `properties`, the field key, and `errors` each exist only when that field has an issue, so every hop needs the `?.`.
+  </CodeVariant>
+
+  <CodeVariant label="flattenError (flat)">
+    ```ts "flat.fieldErrors.email?.[0]"
+    const flat = z.flattenError(result.error);
+
+    flat.fieldErrors.email?.[0];
+    //=> 'Enter a valid email address'
+    ```
+    **One level deep.** Reach for it when the form is flat, with no nested objects or arrays. `flattenError` returns `{ formErrors: string[], fieldErrors: Record<string, string[]> }`: form-level messages in `formErrors`, per-field arrays keyed by field name in `fieldErrors`.
+  </CodeVariant>
+</CodeVariants>
+
+Match the tool to the schema: `treeifyError` for the nested schemas a real app's form has (line items, addresses, repeating groups), `flattenError` only when the schema is flat and the extra nesting buys you nothing. Don't mix them in one project; pick one so every form reads the same shape. **This course uses `treeifyError`**, and so will every example from here on.
+
+Zod 3 did this job with two instance methods on the error, `error.format()` and `error.flatten()`. Zod 4 deprecates both and replaces them one-to-one with the top-level functions above:
+
+```ts del={1, 4} ins={2, 5}
+error.format();        // Zod 3
+z.treeifyError(error); // Zod 4
+
+error.flatten();       // Zod 3
+z.flattenError(error); // Zod 4
+```
+
+When you meet `error.format()` in an old file, read it as a `z.treeifyError(error)` waiting to happen.
+
+One more helper, for logs rather than the UI: `z.prettifyError(error)` returns the whole error as a human-readable, multi-line string, for a server log or a script's stderr when you want to read the full failure at a glance.
+
+<VideoCallout videoId="T4Q1NvSePxs" videoTitle="You Should Try Zod v4 — Syntax">
+  CJ from Syntax (8 min) shows `prettifyError` and `flattenError` replacing hand-written error-formatting code, including the `env.ts` boot-time crash this lesson described.
+</VideoCallout>
+
+## Authoring messages with the `error` option
+
+You've seen `message` ride through every layer: authored in the issue, carried in the tree, read by the form. Here is the rule that makes that flow work: **error messages live on the schema, never in the form component.**
+
+When a new validation rule lands, a field gets a minimum length or an email gets a stricter format, you add it *and its message* in one place, the schema. The form picks the message up through the tree, because it never wrote the wording in the first place. The schema authors the message; the form only places it under the right input. One source of truth, no drift.
+
+The tool that does the authoring is Zod 4's unified `error` option. The simplest form is a string, one message for any failure from this schema:
+
+```ts "error: 'Name is required'" "error: 'Enter a valid email address'"
+const signupSchema = z.object({
+  name: z.string({ error: 'Name is required' }),
+  email: z.email({ error: 'Enter a valid email address' }),
+});
+```
+
+When one field needs different wording for different *kinds* of failure, pass a function instead. It receives the issue and returns a string, inspecting the issue to tell the failures apart:
+
+<CodeTooltips tooltips={{
+  error: 'The unified message option.\nA string for one message, or a function (issue) => string for per-failure wording.',
+  issue: 'The failure object the function inspects, the same shape as an entry in error.issues.',
+  input: "The value that failed.\nWhen it's undefined, the field was missing, which is how v4 detects a missing required field.",
+}}>
+```ts
+const name = z.string({
+  error: (issue) =>
+    issue.input === undefined
+      ? 'Name is required'
+      : 'Name must be text',
+});
+```
+</CodeTooltips>
+
+The `issue.input === undefined` check replaces something you might look for and not find: Zod 4 has no `required` issue code. A missing required field is an `invalid_type` whose input happens to be `undefined`, so testing `issue.input === undefined` is how you ask "was this left blank?" and author a distinct "required" message.
+
+The same `error` option works on a refinement: `.refine(fn, { error: 'Passwords must match' })`. It is the single surface for authoring messages, and a refinement is one more place it appears.
+
+If you've used Zod 3, this unifies something messier. Version 3 had *three* separate parameters for message customization, and version 4 collapses them into the single `error` param:
+
+<CodeVariants>
+  <CodeVariant label="Zod 3 (legacy)">
+    <div data-mark-color="red">
+
+    ```ts del={2-4}
+    const name = z.string({
+      message: 'Invalid name',
+      invalid_type_error: 'Name must be text',
+      required_error: 'Name is required',
+    });
+    ```
+
+    </div>
+    **Three separate params for three situations.** They couldn't be combined with an <Term definition={"A function (issue) => string that turns any issue into a message.\nThe single hook Zod 4 uses for custom wording, layered from the schema up to a global default."}>error map</Term>, and `required_error`/`invalid_type_error` didn't correspond to real issue codes: there is no `required` code under the hood.
+  </CodeVariant>
+
+  <CodeVariant label="Zod 4">
+    <div data-mark-color="green">
+
+    ```ts {2-3}
+    const name = z.string({
+      error: (issue) =>
+        issue.input === undefined ? 'Name is required' : 'Name must be text',
+    });
+    ```
+
+    </div>
+    **One `error` param does all three jobs.** The function branches on the issue: a missing input (`issue.input === undefined`) is the "required" case; everything else is the type/format case.
+  </CodeVariant>
+</CodeVariants>
+
+`invalid_type_error` and `required_error` are *dropped* in v4: they named no real issue code and couldn't compose with a custom error map. `message` still works but is deprecated. A legacy schema using the three-param form needs a one-shot rewrite to `error`; write only the v4 form in new code.
+
+Two narrower hooks set a message outside the schema. Pass `error` to a single parse call with `schema.safeParse(input, { error: (issue) => '...' })` when one schema needs different wording in different contexts. Set a process-wide default with `z.config({ customError: (issue) => '...' })`, wired once at startup; this global hook is where the internationalization layer plugs in later in this course to translate every default message at once.
+
+<MultipleChoice>
+  A legacy schema customizes one field's messages the Zod 3 way:
+
+  ```ts
+  z.string({
+    invalid_type_error: 'Must be text',
+    required_error: 'This field is required',
+  });
+  ```
+
+  Both of those params are dropped in Zod 4. Which single change replaces them?
+
+  <McqChoice>Keep both params — Zod 4 still reads `invalid_type_error` and `required_error`, just with a deprecation warning.</McqChoice>
+  <McqChoice>Move the type check into a `.refine()` and keep `required_error` for the missing-field case.</McqChoice>
+  <McqChoice correct>One `error` function that returns the required message when `issue.input === undefined` and the type message otherwise.</McqChoice>
+
+  <McqWhy>Both params are gone because neither names a real issue code: there is no `required` failure in v4. A blank field surfaces as an `invalid_type` whose `input` is `undefined`, so one `error` function testing `issue.input === undefined` distinguishes "missing" from "wrong type" and does both jobs at once. A `.refine()` runs *after* the type check it's meant to replace, so it never sees the missing-field case; and the dropped params are silently ignored, not warned about.</McqWhy>
+</MultipleChoice>
+
+## Operator signals versus field errors
+
+Not every validation failure is something the user can fix, and one issue shows why the form should leave certain failures alone.
+
+Recall `z.strictObject`, the senior default for a request body: it rejects any key it didn't declare, producing an `unrecognized_keys` issue.
+
+<div data-mark-color="blue">
+
+```ts "path: []"
+{
+  code: 'unrecognized_keys',
+  keys: ['isAdmin'],
+  path: [],
+}
+```
+
+</div>
+
+The user can't cause this through the form. The visible inputs map to the schema's declared fields, and nothing on the screen sends `isAdmin`. An unexpected key means something else happened: a stale client still sending a field you renamed, a hand-tampered request, or two versions of your contract that have drifted apart. None of it has a field to anchor a message to, which is why the `path` is empty.
+
+So this isn't a field error; it's an **operator signal**. The form ignores it, because there's no input it belongs beside. The action *logs* it, because a drifted contract is exactly what you'd want to reconstruct why a client started failing.
+
+The split generalizes. The `path` tells you not just *where* to render, but *whether* to render. An issue whose `path` points at a real input is a field error: show it, the user can fix it. An issue with an empty `path` is an operator signal: log it, the user can do nothing about it. The form renders what the user can fix, and leaves the rest for whoever's on call.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Zod — Basic usage"
+    href="https://zod.dev/basics"
+    icon="simple-icons:zod"
+    iconColor="#3E67B1"
+    description="The reference for parse vs safeParse and the success/data/error result shape."
+  />
+  <ExternalResource
+    title="Zod — Error formatting"
+    href="https://zod.dev/error-formatting"
+    icon="simple-icons:zod"
+    iconColor="#3E67B1"
+    description="The canonical reference for treeifyError, flattenError, and prettifyError."
+  />
+  <ExternalResource
+    title="Zod — Customizing errors"
+    href="https://zod.dev/error-customization"
+    icon="simple-icons:zod"
+    iconColor="#3E67B1"
+    description="The unified error param, the issue object, and the error-map chain."
+  />
+  <ExternalResource
+    title="Zod 4 is out, and it is CRAZY"
+    href="https://www.youtube.com/watch?v=xcm53k0ePmY"
+    icon="simple-icons:youtube"
+    iconColor="#FF0000"
+    description="Matt Pocock's 11-minute tour of Zod 4 — error pretty-printing, top-level formats, and what changed from v3."
+  />
+</CardGrid>

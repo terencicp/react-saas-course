@@ -1521,3 +1521,69 @@ drizzle-kit push | push | Drizzle Kit command pushing the schema straight to the
 linear-congruential generator | LCG | A PRNG built from a one-line recurrence (state = state * a + c) that turns a seed into a repeatable number stream. | first defined: Chapter 041 L4
 IDOR | insecure direct object reference | Exposing a row by a guessable/forgeable id with no ownership check; closed by scoping the query to the owner. | first defined: Chapter 041 L5
 tenant guard | - | The organizationId filter placed inside the query where, AND-ed with the id, so a cross-org row never loads; the IDOR defense. | first defined: Chapter 041 L5
+z.infer | z.infer<typeof>, Zod infer | Reads the TS type a Zod schema's successful parse returns, instead of hand-writing it. | first defined: Chapter 042 L1
+.parse (Zod) | schema.parse | Zod method validating an unknown against the schema, returning a typed value or throwing. | first defined: Chapter 042 L1
+z.object | object schema | Zod builder validating an object field by field; strips unknown keys by default. | first defined: Chapter 042 L1
+z.strictObject | strict object | Zod object builder that throws on any unknown key; the boundary default. | first defined: Chapter 042 L1
+z.looseObject | loose object, passthrough | Zod object builder that forwards unknown keys through untouched. | first defined: Chapter 042 L1
+.optional / .nullable / .nullish | absence wrappers | Zod wrappers admitting undefined, null, or both; prefer .optional. | first defined: Chapter 042 L1
+z.array | array schema | Zod builder for a list where every element matches one schema; .min/.max bound length. | first defined: Chapter 042 L1
+z.tuple (Zod) | tuple schema | Zod builder for a fixed-length list where each position has its own type. | first defined: Chapter 042 L1
+z.literal | literal schema | Zod builder accepting exactly one value, inferring its singleton type. | first defined: Chapter 042 L1
+z.enum | enum schema | Zod builder for a finite string set; infers the union and exposes an .enum accessor. | first defined: Chapter 042 L1
+z.union | union schema | Zod builder accepting any of several schemas; for shapeless alternatives. | first defined: Chapter 042 L1
+z.discriminatedUnion | discriminated union schema | Zod builder routing on a shared literal field to one branch; the tagged-variant default. | first defined: Chapter 042 L1
+discriminator (Zod) | discriminant | The shared literal field z.discriminatedUnion reads to pick a branch. | first defined: Chapter 042 L1
+z.unknown | unknown schema | Zod builder accepting anything, inferring unknown; narrow it later. | first defined: Chapter 042 L1
+z.never | never schema | Zod builder accepting nothing, inferring never. | first defined: Chapter 042 L1
+format builder (Zod) | top-level format | Zod 4 top-level string builder (z.email, z.uuid, z.iso.datetime) replacing v3's chained z.string().email(). | first defined: Chapter 042 L2
+z.email | email builder | Zod 4 top-level builder validating an RFC-aligned email; infers as string, tree-shakes. | first defined: Chapter 042 L2
+z.guid | guid builder | Permissive Zod builder: any 8-4-4-4-12 hex string, version/variant unchecked; v3's loose z.string().uuid(). | first defined: Chapter 042 L2
+OpenAPI | OpenAPI document | Standard machine-readable spec of a REST API's endpoints, inputs, and outputs. | first defined: Chapter 042 L2
+CIDR | cidr block | IP-address-range notation (10.0.0.0/8): an address plus a prefix length of fixed leading bits. | first defined: Chapter 042 L2
+CUID2 | cuid, ulid, nanoid | Collision-resistant ID string formats, each with its own alphabet; validate with the matching builder. | first defined: Chapter 042 L2
+E.164 | e164 | International phone-number format: a leading + and up to fifteen digits. | first defined: Chapter 042 L2
+JWT | JSON Web Token | Signed, self-describing token carrying claims, written as three base64url parts joined by dots. | first defined: Chapter 042 L2
+refinement (Zod) | refine, .refine | Custom pass/fail check stored in a schema's checks array; validates the value without changing it or its inferred type. | first defined: Chapter 042 L3
+transform (Zod) | .transform | Schema function producing a new value from the parsed one; can change the inferred output type. | first defined: Chapter 042 L3
+.superRefine | superRefine | Zod check getting (value, ctx); pushes multiple issues via ctx.addIssue instead of returning a boolean. | first defined: Chapter 042 L3
+.overwrite | overwrite | Zod value-changing function that preserves the input schema type; the normalization default. | first defined: Chapter 042 L3
+.pipe (Zod) | pipe | Chains two schemas end to end; the first schema's output is the second's input, re-validated. | first defined: Chapter 042 L3
+derive don't duplicate | schema derivation | Declare one canonical schema, derive every boundary variant from it so the variants can't drift. | first defined: Chapter 042 L4
+.pick (Zod) | pick | Zod object method keeping only the masked keys, returning a new narrowed schema. | first defined: Chapter 042 L4
+.omit (Zod) | omit | Zod object method dropping the masked keys, keeping the rest; builds the public-response shape. | first defined: Chapter 042 L4
+.extend (Zod) | extend | Zod object method adding fields to a schema; a reused key overrides the old definition. | first defined: Chapter 042 L4
+.partial (Zod) | partial | Zod object method making every field (or the masked ones) optional; the PATCH shape. | first defined: Chapter 042 L4
+.required (Zod) | required | Zod object method forcing optional fields to be present; inverse of .partial. | first defined: Chapter 042 L4
+.readonly (Zod) | readonly | Zod method inferring Readonly<T> and running Object.freeze on the parsed result. | first defined: Chapter 042 L4
+.merge (Zod) | merge | Deprecated Zod v4 object-fusing method; replaced by the .shape spread. | first defined: Chapter 042 L4
+.shape (Zod) | shape spread | An object schema's field map; spread two shapes into a fresh z.object to fuse them. | first defined: Chapter 042 L4
+mask (Zod) | key mask | The { key: true } object .pick/.omit/.partial take to name fields, not an array. | first defined: Chapter 042 L4
+z.record | record schema | Zod builder for an open-keyed map; v4 takes (keySchema, valueSchema). | first defined: Chapter 042 L4
+z.looseRecord | loose record | Pass-through z.record variant that accepts keys not matching the key schema. | first defined: Chapter 042 L4
+z.intersection | intersection schema | Zod builder for a value that must satisfy two schemas at once; for the non-object case. | first defined: Chapter 042 L4
+z.input | input type | The type a schema's parser accepts: the pre-transform shape. | first defined: Chapter 042 L4
+z.output | output type | The type a schema's parser returns: the post-transform shape; same as z.infer. | first defined: Chapter 042 L4
+.describe (Zod) | describe | Zod method attaching a human-readable note consuming tools (OpenAPI, drizzle-zod) read. | first defined: Chapter 042 L4
+createUpdateSchema | - | drizzle-zod generator for the patch shape: every column optional, generated columns absent. | first defined: Chapter 042 L7
+override map | refinement object | drizzle-zod generator's optional second arg, keyed by column, refining or replacing each column's generated schema. | first defined: Chapter 042 L7
+callback form | callback override | Override entry (schema) => schema.min()...; refines the generated base, nullability re-applied around it. | first defined: Chapter 042 L7
+direct-schema form | direct-schema override | Override entry { col: someSchema } replacing the column's schema wholesale; nullability NOT re-applied, you own it. | first defined: Chapter 042 L7
+int32 bounds | int32 range | -2147483648 to 2147483647; drizzle-zod bakes these into integer columns' generated schema. | first defined: Chapter 042 L7
+envelope | webhook envelope | Outer { type, data } wrapper a webhook provider puts around an event; parse it first, then the payload inside. | first defined: Chapter 042 L7
+createSchemaFactory | - | drizzle-zod factory binding generators to a custom Zod instance, with a coerce config (e.g. coerce: { date: true }). | first defined: Chapter 042 L7
+ZodError | - | Error class a failed parse produces; carries an issues array, one entry per failure, not a single message. | first defined: Chapter 042 L5
+issues array | error.issues | Array on a ZodError, one object per validation failure (code, message, path, code-specific fields). | first defined: Chapter 042 L5
+path (Zod issue) | issue.path | Array locating the failing field inside the input; empty path means a form-level error. | first defined: Chapter 042 L5
+parseAsync | safeParseAsync | Async-aware Zod runners needed when a refinement returns a Promise; sync parse/safeParse throw on async checks. | first defined: Chapter 042 L5
+treeifyError | z.treeifyError | Top-level fn turning a ZodError into a nested object mirroring the input shape; course default for forms. | first defined: Chapter 042 L5
+flattenError | z.flattenError | Top-level fn turning a ZodError into { formErrors, fieldErrors }; one level deep, for flat forms. | first defined: Chapter 042 L5
+prettifyError | z.prettifyError | Top-level fn returning a ZodError as a human-readable multi-line string, for logs not UI. | first defined: Chapter 042 L5
+error option (Zod) | error param | Zod 4's unified message hook: a string or (issue) => string, on a schema, refinement, or parse call. | first defined: Chapter 042 L5
+error map | custom error | A (issue) => string function turning any issue into a message; Zod's single layered custom-wording hook. | first defined: Chapter 042 L5
+operator signal | - | A validation failure the user can't fix (empty path, e.g. unrecognized_keys); log it, don't render it. | first defined: Chapter 042 L5
+unrecognized_keys | - | ZodError issue code from a strict object rejecting an undeclared key; an operator signal with empty path. | first defined: Chapter 042 L5
+z.coerce | coerce (Zod) | A transform fixed to a JS constructor (Number, Date, …) running before the inner schema validates; turns form strings into typed values. | first defined: Chapter 042 L6
+z.preprocess | preprocess (Zod) | Maps the raw input before the inner schema validates; used to shape wire values (e.g. checkbox 'on') into real types. | first defined: Chapter 042 L6
+z.stringbool | stringbool | Zod 4 validator for a present string that spells a boolean ('true'/'false', 'yes'/'no', 'on'/'off', '1'/'0'). | first defined: Chapter 042 L6
+multipart/form-data | multipart form | Form encoding that splits the body into one part per field so binary file data can ride alongside text fields. | first defined: Chapter 042 L6

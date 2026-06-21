@@ -1,0 +1,421 @@
+---
+title: Checks and transforms
+tagline: Zod 4 refinements and transforms, the two extension points for custom validation rules and reshaping parsed values the built-in schemas can't express.
+chapter-id: 42
+course-progress: 0.4103
+sidebar:
+  order: 3
+  label: Checks and transforms
+rewrites: 1
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import PipeStages from '../../../components/lessons/042/3/PipeStages.astro';
+import ZodCoding from '../../../components/live-coding/ZodCoding/ZodCoding.astro';
+import ZodPlaygroundCallout from '../../../components/embeds/ZodPlaygroundCallout.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Your `signupSchema` has a password field of `z.string().min(8)`, but put the schema next to a real sign-up form and you'll hit rules it can't state. The password has to *match* the confirmation field. The email you store should be lowercased and trimmed, not whatever the user typed. The invoice has the same problem: `dueAt` is a valid `z.iso.datetime()`, but the business rule is that it must fall *after* `issuedAt`, a relationship between two fields.
+
+None of these come from a catalog. `z.email()`, `z.uuid()`, `.min(8)`: you pick the named check that fits and the validation is written for you. But "this field equals that one" and "lowercase whatever comes in" aren't named checks, and a format builder only ever looks at one value at a time. These rules are yours to write, and Zod 4 gives you two extension points for writing them. <Term definition="A custom pass/fail check you attach to a schema. In Zod 4 it lives in the schema's checks array; it validates the value without changing it or its inferred type.">**Refinements**</Term> are your own pass/fail check: is this value acceptable? <Term definition="A function attached to a schema that produces a new value from the parsed one, and can change the inferred output type.">**Transforms**</Term> reshape the value: what should it become?
+
+One question picks the tool for you:
+
+**Does this rule judge the value, or change it?**
+
+Judge it, leaving the value alone, and you want a refinement. Produce something new, and you want a transform.
+
+## A schema is a pipeline of checks and transforms
+
+A Zod schema isn't a single yes-or-no validation, it's a **pipeline** that runs stages in order.
+A value enters and passes through the base type check (is this a string?), then any constraints you chained (`.min`, `.max` from the last lesson), then any refinements, then any transforms.
+Take `z.string().min(8).refine((p) => !p.includes(' '))`: is it a string, is it at least eight characters, then your check, no spaces.
+The value coming out is still a `string`.
+
+That last fact is the whole distinction.
+Refinements are **checks**: <Term definition="A function that returns true or false. Here, true means the value passes the check.">predicates</Term> that judge a value and never change it or its inferred type.
+Transforms are **functions**: they produce a new value and can change the output type.
+A refinement judges, a transform changes; the rest of the lesson is those two tools at different sizes.
+
+One piece of history is worth naming, because you'll meet it in older code and AI output trained on older docs.
+In Zod 3, `.refine()` wrapped your schema in an outer `ZodEffects` object, a shell that sat around the schema.
+In Zod 4, a refinement is stored as an entry in a **`checks` array on the schema itself**, so custom rules now compose cleanly: they interleave with built-in constraints, and they survive the derivation methods you'll meet next lesson (`.pick`, `.omit`, `.extend`) with no shell to unwrap.
+The call site is unchanged from v3, still `.refine(predicate, options)`, so unlike last lesson's `z.string().email()` migration there's no before-and-after rewrite to learn here; only the internals changed.
+
+## `.refine` for a single-field rule the built-ins lack
+
+Start with the simplest case: a rule about a single field, no cross-field complication yet.
+
+Take a password that can't contain spaces. There's no `.noSpaces()` builder, so you write the rule yourself, and `.refine` is how:
+
+<div data-mark-color="blue">
+
+```ts title="lib/password-schema.ts" {4-6}
+const passwordSchema = z
+  .string()
+  .min(8)
+  .refine((value) => !value.includes(' '), {
+    error: 'Password cannot contain spaces',
+  });
+```
+
+</div>
+
+Four things are happening here, and each is a place beginners stumble.
+
+**The predicate returns `true` when the value passes.** `(value) => !value.includes(' ')` is `true` exactly when there are no spaces, when the password is *good*. The common bug is to invert this and describe the *problem* instead: `value.includes(' ')` returns `true` for the broken case, so it accepts every password with a space and rejects every clean one. In a refinement, `true` means acceptable; you describe the passing state, not the failing one.
+
+**The `error` option authors the message.** When the predicate returns `false`, the parse produces an issue carrying that text. Zod 4 uses one unified `error` parameter; Zod 3 used a separate `message` key, which you'll still see in older code. A static string is all you need today, though `error` can also take a function for dynamic messages, the subject two lessons from now.
+
+**The refinement runs only after the base checks pass.** The pipeline runs in order: a non-string fails at `z.string()`, a short string fails at `.min(8)`, and the value reaches your predicate only when both let it through. So inside the predicate, `value` is already a validated string and needs no defensive type check.
+
+**The inferred type is unchanged.** `passwordSchema` is still inferred as `string`. You added a runtime check without touching the type.
+
+Reach for `.refine` for any single-field rule a built-in doesn't cover. It's pure, value-only validation, which, as you'll see at the end of the lesson, is exactly the kind of rule that belongs inside a schema.
+
+## Cross-field rules and the `path` that anchors the error
+
+Now the rule that opened the lesson: `password` has to equal its confirmation. You'll reuse this pattern in nearly every form you build, and it's where people ship broken forms, so slow down here.
+
+The rule references *two* fields, so it can't live on either field's schema: a check on `password` only ever sees the password and has no way to read `confirm`. A rule that needs both fields has to attach where both are visible, which is the **object** schema. You call `.refine` on the whole object, and your predicate receives the entire parsed object, so it can compare across the fields.
+
+<AnnotatedCode lang="ts" code={`
+const passwordChangeSchema = z
+  .object({
+    password: z.string().min(8),
+    confirm: z.string(),
+  })
+  .refine((data) => data.password === data.confirm, {
+    error: "Passwords don't match",
+    path: ['confirm'],
+  });
+`}>
+  <AnnotatedStep meta="{2-5}" color="blue">
+    The two fields. A cross-field rule can't live on either one: `password`'s schema can't see `confirm`, and `confirm`'s can't see `password`. It has to attach where both fields are visible, the object as a whole.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="green">
+    The predicate. Here `data` is the whole parsed object, so `data.password === data.confirm` can compare the two. Same convention as the single-field case: `true` means the pair is acceptable, which here means they match.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="orange">
+    The line that makes or breaks the form. `path: ['confirm']` tells the validation layer which field the issue belongs to, so the form renders the message under the `confirm` input. It's an array because it can point into nested shapes too: `path: ['address', 'zip']` anchors an issue deep inside a nested object.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Skip that third step and the failure is subtle. Leave out `path` and the refinement still works: the parse fails when the passwords differ. But the issue attaches to the object's *root* instead of to a field, and the form layer has nowhere to put it. There's no input named "the whole object," so the user gets a vague form-level complaint with no hint of which box is wrong: "passwords don't match" floating above two fields that both look fine. That's not a styling nitpick; it's a form the user can't fix.
+
+:::caution
+A cross-field refinement without a `path` is a bug, not a shortcut. Its message has no field to anchor to, so the UI can't place it under the right input. Make it a habit: **every cross-field check names its `path`.**
+:::
+
+How the form reads that `path` and renders the message under the input comes later: the error-tree shape is the next lesson, and the form plumbing comes in a later chapter. For now, just author the `path` correctly so that machinery has something to anchor to.
+
+Now write the rule yourself. The starter has two fields with nothing linking them, so a mismatched pair wrongly passes. Add the `.refine` that requires them to match, with the `path`, and keep one eye on the `^?` query under the schema.
+
+<ZodCoding
+  schemaName="passwordChangeSchema"
+  instructions="The starter has `password` (min 8) and `confirm`, but no rule linking them, so a mismatched pair wrongly passes. Add a `.refine` that requires `password === confirm`, with `path: ['confirm']`. Watch the `^?` query as you do: it does **not** move. A refinement tightens the runtime contract without touching the inferred type, and that's the line between a refine and a transform."
+  starter={`import { z } from 'zod';
+
+export const passwordChangeSchema = z.object({
+  password: z.string().min(8),
+  confirm: z.string(),
+});
+
+type PasswordChange = z.infer<typeof passwordChangeSchema>;
+//   ^?
+`}
+  fixtures={[
+    {
+      name: 'matching pair',
+      input: { password: 'longenough', confirm: 'longenough' },
+      expect: 'pass',
+    },
+    {
+      name: 'mismatched pair',
+      input: { password: 'longenough', confirm: 'different' },
+      expect: 'fail',
+      errorContains: 'match',
+    },
+    {
+      name: 'too short',
+      input: { password: 'short', confirm: 'short' },
+      expect: 'fail',
+    },
+  ]}
+/>
+
+Notice what the exercise showed: you made the runtime stricter, so pairs that used to pass now fail, yet the inferred type didn't move. That non-movement is the clearest proof of what a refinement is, a tightening of the runtime contract that leaves the type alone. In two sections you'll add a transform and watch the `^?` query do the opposite.
+
+## `.superRefine` when one rule reports many issues
+
+A `.refine` adds exactly **one** issue when its predicate fails: one predicate, one message. That fits most rules. But some rules are a *policy* with several independent ways to fail, and you want to report all of them at once.
+
+The password policy is the canonical case. A real one checks length, an uppercase letter, and a digit. Written as three separate `.refine`s, the parse stops at the first failure: the user fixes the length, resubmits, *now* learns they need an uppercase letter, fixes that, resubmits, *now* learns about the digit. That's three round-trips for one form. `.superRefine` is the fix: one rule that raises **multiple distinct issues**, each with its own message.
+
+<div data-mark-color="blue">
+
+```ts title="lib/password-policy.ts" "ctx.addIssue"
+const passwordPolicySchema = z.string().superRefine((value, ctx) => {
+  if (value.length < 8) {
+    ctx.addIssue({ code: 'custom', message: 'At least 8 characters' });
+  }
+  if (!/[A-Z]/.test(value)) {
+    ctx.addIssue({ code: 'custom', message: 'At least one uppercase letter' });
+  }
+  if (!/[0-9]/.test(value)) {
+    ctx.addIssue({ code: 'custom', message: 'At least one digit' });
+  }
+});
+```
+
+</div>
+
+The shape differs from `.refine`, and that difference is the point. Your function gets `(value, ctx)`, the value and a *context object*, and does **not** return a boolean. Instead of returning pass or fail, you **push** issues onto `ctx` with `ctx.addIssue(...)`, one call per problem. No issues pushed means the value passed. So every check runs every time, each failing check adds its own issue, and the user gets the full list in one submission. Each `ctx.addIssue` can also carry its own `path`, something a single `.refine` can't do.
+
+One wrinkle to flag: inside `ctx.addIssue({ ... })` the message key is **`message`**, not `error`. That's a real inconsistency with `.refine`, which uses `error` in its options object. The reason is that `addIssue` takes a raw issue object (`{ code: 'custom', message }` plus a few optional fields), not the friendlier options bag `.refine` accepts. Don't change it to `error:` — here, `message` is correct.
+
+:::note
+`.superRefine` is heavier than `.refine`: more surface to get wrong, no clean boolean to read at a glance. Reach for it *only* when one rule genuinely produces multiple issues. A single-issue rule written as a `.superRefine` is over-engineered; collapse it back to a `.refine`.
+:::
+
+## `.transform` reshapes the value and the type
+
+Every tool so far *judged* the value and handed it back unchanged. A transform *changes* it. The routing question shifts with it: a refinement asked "is this value acceptable?", a transform asks "what should this value become?"
+
+Take `startAt` from the running examples. You validated it as an ISO datetime *string*, but the Server Action that consumes it wants to do date math, comparing it or adding days. A string is the wrong shape for that; you want a real `Date`. So after validating the format, you transform the string into a `Date`.
+
+Here the value changes but the type doesn't, because uppercasing a string still gives back a `string`:
+
+<div data-mark-color="blue">
+
+```ts "value.toUpperCase()"
+z.string().transform((value) => value.toUpperCase());
+//                                          → output: string (the value changed)
+```
+
+</div>
+
+This time the type moves with the value: a `Date` comes out where a `string` went in:
+
+<div data-mark-color="orange">
+
+```ts "new Date(value)"
+z.iso.datetime().transform((value) => new Date(value));
+//                                          → output: Date (the TYPE changed)
+```
+
+</div>
+
+`.transform(fn)` returns a **new schema** whose output is whatever `fn` returns. The parse no longer hands back the value you put in; it hands back the transformed one.
+
+And **the inferred output type updates to match.** `z.iso.datetime().transform((s) => new Date(s))` *accepts* a string but *infers as* `Date`, the exact opposite of a refinement: a refinement leaves the type alone, a transform moves it.
+
+That split is worth naming: the parse now accepts one type (a string) and returns another (a `Date`), so there are two types in play, with helpers `z.input` and `z.output` for each, covered in the next lesson.
+
+Try it. This is the same exercise shape as the matching-passwords one, with the `^?` query doing the opposite.
+
+<ZodCoding
+  schemaName="startAtSchema"
+  instructions="The starter validates `startAt` as an ISO datetime string, so the `^?` query reads `string`. Add `.transform((s) => new Date(s))` and watch it flip to `Date`. The valid string still has to clear the format check *first*: the transform only runs on what already passed. A refinement left the type alone; a transform moves it. That's the whole difference."
+  starter={`import { z } from 'zod';
+
+export const startAtSchema = z.iso.datetime();
+
+type StartAt = z.infer<typeof startAtSchema>;
+//   ^?
+`}
+  fixtures={[
+    {
+      name: 'valid datetime',
+      input: '2026-09-01T10:00:00Z',
+      expect: 'pass',
+    },
+    {
+      name: 'not a date',
+      input: 'not-a-date',
+      expect: 'fail',
+    },
+  ]}
+/>
+
+## `.overwrite` for normalization that keeps the type
+
+`.transform` is the right tool when the type *should* change, like string to `Date`. But the most common transform in real code isn't a type change at all; it's **normalization**: trim the whitespace, lowercase the email, normalize the unicode. Each of those produces the *same* type it consumed, a lowercased string is still a string. You want the same type with a cleaned-up value, not a new one.
+
+`.transform` will do this, but at a quiet cost: it widens the inferred type away from the string schema into a generic transform output. The value is still a string, but the *schema* is no longer a `ZodString`, so the string-specific methods are gone and the clean type is muddied. For a job that never meant to change the type, that's pure downside. `.overwrite` is Zod 4's answer: it runs a value-changing function but **preserves the input type**.
+
+<CodeVariants>
+  <CodeVariant label=".transform — type drifts">
+    <div data-mark-color="orange">
+
+    ```ts ".transform"
+    z.string().transform((v) => v.trim().toLowerCase());
+    ```
+
+    </div>
+    **Normalizes correctly, but the schema is no longer a `ZodString`.** The output value is still a `string`; the *schema's* type generalized into a transform output, so downstream code loses the string-schema methods and the clean type.
+  </CodeVariant>
+
+  <CodeVariant label=".overwrite — type held">
+    <div data-mark-color="green">
+
+    ```ts ".overwrite"
+    z.string().overwrite((v) => v.trim().toLowerCase());
+    ```
+
+    </div>
+    **Same normalization, still a `ZodString`.** Downstream code keeps every string method and the clean type. This is the default reach for normalization in v4.
+  </CodeVariant>
+</CodeVariants>
+
+You've seen this idea already. Last lesson's `.trim()`, `.toLowerCase()`, and `.toUpperCase()` change the value but keep the type `string`. `.overwrite` is the general-purpose version of that behavior, for normalization the built-ins don't cover: NFC unicode normalization, stripping a currency symbol off an amount, collapsing internal whitespace.
+
+:::tip
+**Normalizing the value but keeping its type → `.overwrite`. Converting to a different type → `.transform`.** A `.transform` reached for normalization is a type-drift bug; that's the tell that you wanted `.overwrite`.
+:::
+
+## `.pipe` for validation after a transform
+
+This is the heaviest tool, and you'll reach for it least. The trigger: a `.transform` produces a value that sometimes needs *its own* validation, and you'd rather express that validation as a real schema than hand-roll a check inside the transform. `.pipe` chains two schemas end to end, the first schema's output becomes the second schema's input.
+
+<div data-mark-color="blue">
+
+```ts title="lib/positive-int.ts" {3}
+z.string()
+  .transform((value) => Number(value))
+  .pipe(z.number().int().positive());
+```
+
+</div>
+
+A string comes in and passes `z.string()`, the transform turns it into a number, and `.pipe(z.number().int().positive())` runs a *second, full validation pass* on that number, checking it's an integer and positive. That second pass is the thing a bare transform can't do: a transform reshapes and hands back, it doesn't re-validate its own output, but `.pipe` does.
+
+<DiagramSequence>
+  <DiagramStep caption='A string "42" arrives and passes the first schema, z.string().'>
+    <PipeStages step={1} />
+  </DiagramStep>
+  <DiagramStep caption='The transform reshapes the value: the string "42" becomes the number 42.'>
+    <PipeStages step={2} />
+  </DiagramStep>
+  <DiagramStep>
+    <PipeStages step={3} />
+    <Fragment slot="caption">
+      The piped schema validates the *transformed* value. `42` is a positive integer, so it passes, but `"-1"` would clear step 1 and then fail right here.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+Use `.pipe` when the post-transform validation is itself a real schema, like a constrained number or another object shape, not a one-liner you could fold into the transform.
+
+Be honest about its weight, though, because the everyday version of this job has a lighter, dedicated tool. The common "string from a form, needs to be a number" case isn't a `.pipe`; it's `z.coerce.number()`, which you'll meet a couple of lessons from now. `.pipe` earns its place only when coercion's defaults *don't* fit your case *and* the follow-on validation is a genuine schema.
+
+## In v4, a transform can run after a failed refine
+
+One v4 behavior will surprise you if your intuition came from older Zod, and it can cause real production bugs:
+
+**A `.transform` in a schema chain can run even when an earlier `.refine` on that chain has already failed.**
+
+If you learned Zod on v3, or from an AI trained on it, you expect a failed refinement to short-circuit everything downstream: a check fails, the parse is over, nothing after it runs. v4 changed that deliberately for performance, so a transform later in the chain can execute even after a refine before it has already raised its issue.
+
+<ZodPlaygroundCallout
+  title="When a refine fails but the transform still runs"
+  version="4.4.3"
+  schema={`const schema = z
+  .number()
+  .refine((n) => n > 0, { error: 'Must be positive' })
+  .transform((n) => n * 2)
+return schema`}
+  values={[`-5`, `5`]}
+>
+  Run both values and watch the order of operations. The positive `5` passes
+  and comes out doubled. The negative `-5` *fails* the refine, yet check the
+  transform: in v4 it can still execute on that failing input, which the v3
+  mental model would not predict.
+</ZodPlaygroundCallout>
+
+The fix is a small discipline:
+
+:::caution
+Write transforms to be safe over any input the schema would *structurally* accept, and let the refine raise its validation issue separately. Don't write a transform that assumes a refine "protected" it from bad values, because in v4 that refine may not have run first.
+:::
+
+A transform that would throw on the very input an earlier refine rejects is a latent bug. Keep the transform robust on its own and let the refine report the problem, and the order between them stops mattering.
+
+## Pure checks in the schema, side-effects at the action
+
+One boundary remains, and it isn't new. The last lesson drew a line for *format* rules: shape and format belong in the schema, but cross-resource questions like "is this email already registered?" belong at the action layer, because answering them needs a database the schema has no business touching. Everything you learned today falls on that same line, now for custom logic.
+
+**On the schema** goes any rule the schema can prove from the value or values *alone*. A single-field `.refine`, a cross-field `.refine`, a `.superRefine` policy, a transform, a normalization. "Do these two passwords match?" needs only the two passwords. "Is `dueAt` after `issuedAt`?" needs only the two dates. The schema has everything in hand.
+
+**In the Server Action body, after the parse** goes any rule that needs a **database lookup or external call**. "Is this email *already registered*?" "Is this org slug *taken*?" "Does the customer's plan *allow* another invoice?" The value alone can't answer these; you have to go ask something outside it.
+
+The failure mode is the one the last lesson named: a schema that needs a database connection to parse has crossed the line. It can't run in a test without spinning up a database, it can't run at the edge, and it tangles pure validation with live infrastructure. So keep the boundary: pure checks in the schema, side-effects in the action, where each gets its own typed error path the form can render.
+
+:::note
+If a rule can be proven from the value alone, it belongs in the schema. If it needs the database or an external service, it belongs in the action body, after the parse. The schema stays pure; the side-effects live at the boundary.
+:::
+
+Now make the call yourself. For each rule, ask the question that decides it: can the schema prove this from the value alone, or does it need to ask the database?
+
+<Buckets twoCol instructions="Each rule needs a home. Sort it: can the schema prove it from the value alone, or does it need the database?">
+  <Bucket name="schema" label="On the schema" description="Provable from the value — a `.refine` or transform" />
+  <Bucket name="action" label="In the action body" description="Needs a database lookup or external call" />
+
+  <Item bucket="schema">The password matches its confirmation</Item>
+  <Item bucket="schema">`dueAt` is after `issuedAt`</Item>
+  <Item bucket="schema">The email is trimmed and lowercased</Item>
+  <Item bucket="schema">The password has an uppercase letter and a digit</Item>
+  <Item bucket="action">The email isn't already registered</Item>
+  <Item bucket="action">The org slug isn't taken</Item>
+  <Item bucket="action">The customer's plan allows another invoice</Item>
+</Buckets>
+
+## Where to go deeper
+
+For the full catalog behind this lesson, the Zod documentation's schema-definition reference covers every `.refine`, `.superRefine`, `.transform`, `.overwrite`, and `.pipe` option, and the Zod Playground lets you build a refine-plus-transform chain and watch the order of operations live.
+
+<CardGrid>
+  <ExternalResource
+    title="Zod — Defining schemas"
+    href="https://zod.dev/api"
+    icon="simple-icons:zod"
+    iconColor="#3E67B1"
+    description="The refinements and transforms reference: .refine, .superRefine, .transform, .overwrite, and .pipe, with the options each takes."
+  />
+  <ExternalResource
+    title="Zod Playground"
+    href="https://zod-playground.vercel.app/"
+    icon="lucide:flask-conical"
+    iconColor="#F59E0B"
+    description="Build refine and transform chains and run real inputs through them live, including the order-of-operations behaviors from this lesson."
+  />
+  <ExternalResource
+    title="Zod 4 — Release notes"
+    href="https://zod.dev/v4"
+    icon="simple-icons:zod"
+    iconColor="#3E67B1"
+    description="The v4 changes behind this lesson, straight from the source: refinements as a checks array, the new .overwrite, and the unified error parameter."
+  />
+  <ExternalResource
+    title="zod#4926 — transform runs after a failed refine"
+    href="https://github.com/colinhacks/zod/issues/4926"
+    icon="simple-icons:github"
+    iconColor="#181717"
+    description="The exact v4 trap from this lesson, as a real bug report: a .transform that executes even when an earlier .refine has failed."
+  />
+</CardGrid>

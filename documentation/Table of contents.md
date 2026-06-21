@@ -366,13 +366,13 @@
 
 ## Unit 6 — Forms, Validation, and Server Actions
 
-### Chapter 042 — Zod 4: the validation contract
+### Chapter 042 — Zod 4 schema validation
 - 1 The eight builders (Walks the core Zod 4 schema constructors — primitives, `z.object` / `z.strictObject` / `z.looseObject`, arrays, tuples, literals, `z.enum`, `z.union`, and `z.discriminatedUnion` — that compose every validator in the chapter.)
 - 2 Formats over regexes (Catalogues the v4 top-level format builders (`z.email`, `z.uuid` vs. `z.guid`, `z.url`, `z.iso.datetime`, IP and ID encodings) plus number, bigint, and date constraints, replacing the deprecated `z.string().email()` chains.)
 - 3 Checks and transforms (Teaches single-field and cross-field `.refine` with `path`, `.superRefine` for multi-issue rules, `.transform` versus type-preserving `.overwrite`, `.pipe` for staged validation, and the v4 transform-on-refine-fail behavior.)
-- 4 Derive, don't duplicate (Teaches `.extend`, `.merge`, `.pick`, `.omit`, `.partial`, `.required`, and `.readonly` for deriving schema variants from a canonical source, plus `z.infer` versus `z.input` versus `z.output` for transform schemas.)
+- 4 Derive schema variants (Teaches `.extend`, the spread merge that replaces the deprecated `.merge`, `.pick`, `.omit`, `.partial`, `.required`, and `.readonly` for deriving schema variants from a canonical source, plus `z.infer` versus `z.input` versus `z.output` for transform schemas, `z.record`/`z.intersection`, `.describe`, and the recursive lazy getter.)
 - 5 parse, safeParse, and the error contract (Covers the four parse methods, the `ZodError` issue anatomy, `z.treeifyError` as the v4 form-friendly shape, and the unified `error` option that replaces v3's `message` / `invalid_type_error` / `required_error` trio.)
-- 6 Crossing the FormData boundary (Teaches `z.coerce` (number, boolean, date, bigint), `z.preprocess` for the HTML checkbox shape, the `Object.fromEntries(formData)` pattern, the empty-string and `"on"` traps, `z.coerce.date` versus `z.iso.datetime`, and `File` validation.)
+- 6 Coercing FormData strings (Teaches `z.coerce` (number, boolean, date, bigint), `z.preprocess` and `z.stringbool` for the HTML checkbox shape, the `Object.fromEntries(formData)` pattern, the empty-string and `"on"` traps, `z.coerce.date` versus `z.iso.datetime`, and `File` validation.)
 - 7 drizzle-zod: one source of truth (Teaches `createSelectSchema`, `createInsertSchema`, and `createUpdateSchema` to derive validators from the Drizzle table, the per-column override map for refinement-on-top, the `jsonb` schema pairing, and `createSchemaFactory` for custom Zod instances.)
 - 8 Quiz
 
