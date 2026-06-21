@@ -1667,3 +1667,10 @@ mutator | pure mutator, shared mutator | Pure /lib function taking parsed typed 
 extension member | Problem extension member | A custom field on a Problem Details body beyond the five core members; here errors carries per-field validation messages. | first defined: Chapter 046 L2
 RouteContext | - | Next.js-generated helper type, keyed by route path, typing a handler's context argument (params etc.) from the URL segments. | first defined: Chapter 046 L2
 trigram index | - | Index breaking each value into overlapping three-char n-grams so Postgres serves leading-wildcard ILIKE fast. | first defined: Chapter 046 L4
+five-seam action shape | five seams (action), five-seam shape | A Server Action's five ordered stages: parse, authorize, mutate, revalidate, return a Result. | first defined: Chapter 047 L1
+auth stub | getActiveContext stub | A placeholder returning the seeded org and user, marking where real auth drops in; reads no cookie. | first defined: Chapter 047 L1
+network boundary | - | The client/server divide a Server Action call crosses; React serializes the args over the network. | first defined: Chapter 047 L2
+native select | NativeSelect | Thin wrapper over a plain `<select>`; submits with the form and works with no JS, unlike Radix's div-tree Select. | first defined: Chapter 047 L2
+island | island component | A small Client Component embedded in server-rendered HTML; an interactive island hydrated on its own. | first defined: Chapter 047 L6
+audit log | audit-log | Append-only record of who did what and when; one row per significant action, for accountability. | first defined: Chapter 047 L6
+database trigger | BEFORE DELETE trigger | A function Postgres runs automatically on insert/update/delete; BEFORE DELETE fires before the delete and can abort it. | first defined: Chapter 047 L6

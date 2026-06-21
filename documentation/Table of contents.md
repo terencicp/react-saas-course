@@ -413,7 +413,7 @@
 - 1 Project Overview
 - 2 Create an invoice
 - 3 Edit an invoice
-- 4 Delete with confirmation
+- 4 Delete an invoice
 - 5 Optimistic create
 - 6 Transactional delete
 
