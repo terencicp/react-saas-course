@@ -1674,3 +1674,45 @@ native select | NativeSelect | Thin wrapper over a plain `<select>`; submits wit
 island | island component | A small Client Component embedded in server-rendered HTML; an interactive island hydrated on its own. | first defined: Chapter 047 L6
 audit log | audit-log | Append-only record of who did what and when; one row per significant action, for accountability. | first defined: Chapter 047 L6
 database trigger | BEFORE DELETE trigger | A function Postgres runs automatically on insert/update/delete; BEFORE DELETE fires before the delete and can abort it. | first defined: Chapter 047 L6
+deliverability | - | Likelihood a sent email reaches the inbox, not spam or a bounce. | first defined: Chapter 048 L1
+Resend | - | Developer-focused transactional email provider; the course default. | first defined: Chapter 048 L1
+ESP | email service provider | A company that sends email on your behalf. | first defined: Chapter 048 L1
+transactional email | transactional mail | Email triggered by a user action, carrying info the user expects. | first defined: Chapter 048 L1
+DX | developer experience | How quickly and pleasantly a developer gets productive with a tool. | first defined: Chapter 048 L1
+apex domain | bare domain, root domain | Root domain with no subdomain prefix (yourapp.com). | first defined: Chapter 048 L1
+DNS propagation | - | Delay before a new DNS record is visible to resolvers worldwide. | first defined: Chapter 048 L1
+least privilege | - | Grant a credential only the permissions its job needs, no more. | first defined: Chapter 048 L1
+key rotation | rotate key | Replacing a credential with a fresh one and revoking the old, no downtime. | first defined: Chapter 048 L1
+local part | - | The portion of an email address before the @ sign. | first defined: Chapter 048 L1
+reply-to | replyTo | Email header routing Reply to a different mailbox than the From address. | first defined: Chapter 048 L1
+SMTP | - | Protocol mail servers use to hand email to one another. | first defined: Chapter 048 L1
+mailbox provider | - | Service running a recipient's inbox; decides if mail lands (Gmail, Outlook). | first defined: Chapter 048 L1
+sender reputation | reputation | A mailbox provider's trust score for a sending domain/IP, from delivery history. | first defined: Chapter 048 L1
+hard bounce | - | Permanent delivery failure: address doesn't exist or refuses mail. | first defined: Chapter 048 L1
+SPF | Sender Policy Framework | Published list of servers allowed to send mail for a domain; checks the envelope MAIL FROM. | first defined: Chapter 048 L2
+DKIM | DomainKeys Identified Mail | Cryptographic signature proving a message was authorized and unaltered. | first defined: Chapter 048 L2
+DMARC | - | Policy tying a passing SPF/DKIM check to the visible From address, with reporting. | first defined: Chapter 048 L2
+envelope sender | MAIL FROM | Hidden return-path address from the SMTP transaction; distinct from the visible From. | first defined: Chapter 048 L2
+include mechanism | include | SPF mechanism delegating to another domain's SPF record, inheriting its IPs. | first defined: Chapter 048 L2
+softfail | ~all | SPF result: probably unauthorized, but deliver anyway and note it. | first defined: Chapter 048 L2
+hardfail | -all | SPF result: definitely unauthorized, treat as a failure. | first defined: Chapter 048 L2
+keypair | - | Matched private (signs) and public (verifies) keys; public never forges. | first defined: Chapter 048 L2
+MTA | mail transfer agent | Server software that relays email between systems. | first defined: Chapter 048 L2
+DKIM selector | selector | Label naming which DKIM public key to use, published at a subdomain. | first defined: Chapter 048 L2
+alignment | - | DMARC requirement that a passing SPF/DKIM check match the visible From domain. | first defined: Chapter 048 L2
+one-click unsubscribe | RFC 8058 | Standard letting a mailbox provider unsubscribe a user in one tap; required for marketing mail. | first defined: Chapter 048 L2
+BIMI | Brand Indicators for Message Identification | Standard displaying a brand's logo beside its authenticated mail. | first defined: Chapter 048 L2
+Verified Mark Certificate | VMC | Certificate tying a BIMI logo to a registered trademark, required by some providers. | first defined: Chapter 048 L2
+CAN-SPAM | - | US anti-spam law requiring marketing mail to carry a working one-click unsubscribe. | first defined: Chapter 048 L3
+dedicated IP | - | A sending IP used by one sender alone; starts at zero reputation and needs steady volume to warm up. | first defined: Chapter 048 L3
+shared IP pool | shared pool | A provider's IP range shared across customers, kept warm collectively; the early-stage default. | first defined: Chapter 048 L3
+complaint | spam complaint | A recipient clicking "report spam"; routed back to the sender via an FBL, the costliest reputation signal. | first defined: Chapter 048 L4
+soft bounce | - | Temporary delivery failure (mailbox full, server hiccup, greylisted); may succeed on retry. | first defined: Chapter 048 L4
+greylisted | greylisting | Anti-spam tactic temporarily rejecting unknown-sender mail, expecting a legitimate retry. | first defined: Chapter 048 L4
+Feedback Loop | FBL | Agreement forwarding a recipient's "report spam" click back to the sender so they can stop mailing them. | first defined: Chapter 048 L4
+single writer, many readers | single-writer | Pattern where one component inserts rows into a table and everything else only reads and branches on them. | first defined: Chapter 048 L4
+failing open | fail open | A safety check that, when it errors, lets the operation proceed; defaults to yes. | first defined: Chapter 048 L4
+fail closed (access gate) | failing closed | A safety gate that, when the check itself errors, refuses the operation; the senior default for access control. | first defined: Chapter 048 L4
+complaint rate | - | Share of delivered mail recipients mark as spam; the top reputation metric, with hard provider thresholds. | first defined: Chapter 048 L4
+postmaster tools | Google Postmaster Tools | Free provider dashboards showing a sender their own reputation: complaint rate, spam rate, auth status. | first defined: Chapter 048 L4
+throttled (deliverability) | throttling | A provider deliberately slowing or limiting how much of a sender's mail it accepts, as a reputation penalty. | first defined: Chapter 048 L4
