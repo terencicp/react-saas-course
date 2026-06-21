@@ -434,9 +434,9 @@
 - 3 Readable in every client (Teaches the SDK-auto-generated plain-text fallback derived from the same `react` node, the email accessibility checklist (lang, headings, link text, alt, contrast, font size, touch targets), and the three-tier dark-mode posture with its `color-scheme` head plumbing.)
 - 4 Quiz
 
-### Chapter 050 — Project: the welcome email send path
-- 1 Project Overview
-- 2 The verified-domain ceremony
+### Chapter 050 — Project: welcome email send path
+- 1 Project overview
+- 2 Verify your sending domain
 - 3 The suppression-gated send wrapper
 - 4 The welcome email send path
 

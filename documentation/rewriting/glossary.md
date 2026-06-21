@@ -1739,3 +1739,9 @@ touch target | tap target | Tappable area around an interactive element; CTA flo
 dir="auto" | dir auto | HTML attribute telling the client to infer text direction from the first strong directional character. | first defined: Chapter 049 L3
 partial inversion | - | Dark-mode client behavior flipping light backgrounds dark while preserving already-dark elements. | first defined: Chapter 049 L3
 full inversion | - | Dark-mode client behavior inverting everything, hue-shifting brand colors and negating dark-on-light logos. | first defined: Chapter 049 L3
+registrar | domain registrar | Company you bought a domain from and where you manage its DNS records. | first defined: Chapter 050 L2
+TXT record | - | DNS record type holding free-form text; carries SPF, DKIM, DMARC values. | first defined: Chapter 050 L2
+MX record | mail exchanger | DNS record naming the mail server for a domain; here routes bounce/complaint reports to Resend. | first defined: Chapter 050 L2
+dig | - | Command-line DNS lookup tool printing the raw records a resolver returns. | first defined: Chapter 050 L2
+chokepoint | - | The single function every email passes through, where shared send disciplines live; a named side-effect seam. | first defined: Chapter 050 L3
+pure renderer | pure-renderer discipline | Template taking typed props in and returning HTML/text out, with no env, session, or database reads, so preview and production never diverge. | first defined: Chapter 050 L4
