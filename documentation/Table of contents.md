@@ -444,10 +444,10 @@
 
 ## Unit 8 — Authentication with Better Auth
 
-### Chapter 051 — The auth mental model
-- 1 Authn, authz, and the 401/403 split (Distinguishes authentication from authorization, places each check at its proper boundary in the request lifecycle, and catalogues the misframes (identification-vs-authentication, signed-in-vs-allowed, paid-vs-authorized) that produce the 401-versus-403 bugs seniors must recognize.)
-- 2 Sessions versus JWTs, and the cookie that carries them (Compares server-stored opaque sessions against signed JWTs with revocation as the load-bearing trade, then specifies the `__Host-` cookie defaults, the session row's load-bearing columns, and the issue/refresh/revoke/expire lifecycle that the rest of Unit 8 assumes.)
-- 3 OAuth 2.1, PKCE, and the code-for-tokens exchange (Walks the eight-step authorization-code-with-PKCE flow end-to-end — verifier/challenge derivation, `state` for CSRF, exact-match redirect URIs, the token exchange, `id_token` verification against JWKS — and names the OAuth-2.1 hardenings that make the 2026 social-login button legible.)
+### Chapter 051 — Authentication concepts
+- 1 Authn, authz, 401 vs 403 (Distinguishes authentication from authorization, places each check at its proper boundary in the request lifecycle, and catalogues the misframes (identification-vs-authentication, signed-in-vs-allowed, paid-vs-authorized) that produce the 401-versus-403 bugs seniors must recognize.)
+- 2 Sessions vs JWTs (Compares server-stored opaque sessions against signed JWTs with revocation as the load-bearing trade, then specifies the `__Host-` cookie defaults, the session row's load-bearing columns, and the issue/refresh/revoke/expire lifecycle that the rest of Unit 8 assumes.)
+- 3 OAuth 2.1, PKCE, and the code exchange (Walks the eight-step authorization-code-with-PKCE flow end-to-end — verifier/challenge derivation, `state` for CSRF, exact-match redirect URIs, the token exchange, `id_token` verification against JWKS — and names the OAuth-2.1 hardenings that make the 2026 social-login button legible.)
 - 4 Quiz
 
 ### Chapter 052 — Better Auth setup

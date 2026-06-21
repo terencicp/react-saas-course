@@ -1,0 +1,342 @@
+---
+title: Sessions vs JWTs and the auth cookie
+tagline: "Why a server-stored session beats a JWT for a browser app, and how a hardened cookie carries the proof from one request to the next."
+chapter-id: 51
+course-progress: 0.4914
+sidebar:
+  order: 2
+  label: Sessions vs JWTs
+rewrites: 2
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import ArrowDiagram from '../../../components/figures/ArrowDiagram.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import HandleAsymmetry from '../../../components/lessons/051/2/handle-asymmetry.astro';
+import JwtAnatomy from '../../../components/lessons/051/2/jwt-anatomy.astro';
+import CookieAnatomy from '../../../components/lessons/051/2/cookie-anatomy.astro';
+import SessionColumns from '../../../components/lessons/051/2/session-columns.astro';
+import SessionLifecycle from '../../../components/lessons/051/2/session-lifecycle.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson you proved *who*: the user typed an email and password, the server checked them, and from that one click it knows it's talking to a verified person.
+
+But HTTP has no memory.
+The next request, loading the dashboard or deleting an invoice, arrives as a blank stranger, carrying no trace of the proof the server accepted half a second ago.
+Re-typing a password on every click would be absurd, so something must travel with each request and carry that proven identity forward.
+
+That something takes one of two shapes: a small **server-stored session ID** pointing back to a record on the server, or a **self-contained signed token**, a JWT, that packs the identity into the request itself.
+One question decides between them every time: can you take the proof away?
+The cookie that carries the model across the wire is the last piece, and every value in next chapter's session config will already mean something.
+
+## A session is a handle, not the data
+
+A <Term definition="A server-side record that maps a session ID to a user and its metadata (creation time, expiry, device). The browser holds only the ID; the record is the source of truth.">session</Term> is a record on the server: *this ID maps to user X, created at 09:14, last seen two minutes ago, expires in 30 days, on this browser.*
+That record is the truth.
+The browser holds one thing, the ID, a random, meaningless-looking string.
+Every request presents the ID, the server looks it up, and the request runs as whatever user the record points to.
+No record, anonymous stranger again.
+
+A coat check makes this concrete.
+You hand over your coat and get a numbered ticket.
+The ticket isn't the coat: you can't wear it, and the number tells no one which coat it's for.
+The coat hangs on a numbered hook on the server side, and you present the ticket to claim it.
+What matters most is that the staff can pull your coat off the hook whenever they want.
+The moment they do, your ticket points to nothing; wave it around and it's just cardboard.
+Destroying the record server-side, so the ticket goes dead instantly, is why this lesson lands on sessions.
+
+<HandleAsymmetry />
+
+The ID has to be <Term definition="Carries no readable meaning. An opaque token is a random lookup key, not encoded data you can decode back into something.">opaque</Term> and unguessable, because anyone who guesses a valid ID *is* that user as far as the server can tell.
+So it comes from a <Term definition="Cryptographically secure pseudo-random number generator. Produces unguessable randomness suitable for secrets, unlike Math.random().">CSPRNG</Term>, not `Math.random()`.
+Just how unguessable comes later in this lesson.
+
+## The two shapes: opaque session vs JWT
+
+There are two ways to answer "who is this request from?" on every request.
+
+### Server-stored opaque sessions
+
+The default for browser web apps, and the handle you just met.
+The cookie carries a random, unguessable token: `crypto.randomUUID()` packs 122 bits of randomness, or 32 raw bytes from `crypto.getRandomValues()` if you want more.
+That token is the primary key of a row in a `session` table.
+On every protected request the server does one indexed lookup: find the row whose token matches, read off the user.
+
+```ts title="Sketch — the shape of the lookup, not real API"
+const cookieToken = 'a8f3c1d9b2e7…'; // the opaque handle from the cookie
+
+findSession(cookieToken); // -> { userId, expiresAt } | null
+```
+
+That lookup is the whole per-request cost, and it's small: an indexed primary-key read on a warm connection pool runs in roughly one to three milliseconds.
+In exchange you get three properties that matter:
+
+- **Instant revocation.** Delete the row and the token is dead on the very next request.
+- **Arbitrary metadata.** The row can carry anything next to the user ID: last-seen time, device, IP, the active organization. It's just columns.
+- **Stateful by definition.** The server holds state per session. That looks like a cost, but it's the feature you're paying for.
+
+### Self-contained JWTs
+
+The other shape moves the data *into* the request.
+A <Term definition="JSON Web Token — a signed, self-describing token carrying claims in its payload. Pronounced 'jot'.">JWT</Term> (pronounced "jot") is a small JSON payload, `{ sub, iat, exp, … }`, that the server signs with a secret it holds.
+`sub` is a <Term definition="A key/value statement inside a JWT payload. For example, sub is the subject — the user ID the token represents.">claim</Term>: the *subject*, the user this token represents.
+`iat` and `exp` are the issued-at and expiry times.
+The browser holds the whole signed thing in the cookie.
+
+On each request the server looks nothing up.
+It recomputes the signature with its secret, checks it matches, and checks that `exp` hasn't passed.
+If both hold, the token is genuine and current, and the server trusts its claims with no database read.
+That's the appeal: validation is pure CPU, no I/O.
+And because any service holding the same secret can verify the token, one token can authenticate a request against a completely separate API.
+
+<JwtAnatomy />
+
+So the rule follows directly: never put a secret in a JWT claim.
+The signature proves the claims weren't *changed* after signing; it doesn't hide them.
+<Term definition="Signing proves a payload's integrity and authenticity — that it wasn't altered and came from the holder of the key. It does not hide the contents; encryption is what hides contents.">Signed is not encrypted</Term>.
+
+<VideoCallout videoId="Y2H3DXDeS3Q" videoTitle="JWT Explained In Under 10 Minutes (JSON Web Tokens)">
+  Ariel Weinberger walks through the header/payload/signature anatomy in 9 minutes and demonstrates the "encoded, not encrypted" point live in jwt.io.
+</VideoCallout>
+
+A JWT has **no instant revocation.**
+Once handed out, it's valid until `exp` arrives: the server has nothing to delete, because the token isn't *stored* anywhere on the server.
+You can bolt on a denylist of revoked tokens and check it every request, but that re-introduces the per-request database read you adopted JWTs to escape, throwing away the statelessness that was the whole point.
+
+A JWT earns its place in two narrow situations, where you accept that revocation is *eventual* rather than instant.
+The first is **edge-rendered routes** where validating against a database means a slow round-trip to a distant region, and the latency is a *measured* problem.
+The second is **service-to-service calls**, where one backend hands a token to another with no shared session store between them.
+In both, you keep access tokens short (5 to 15 minutes) and rotate them with refresh tokens so a stolen one expires fast.
+
+### The comparison table
+
+| | **Opaque session** | **JWT** |
+| --- | --- | --- |
+| What's in the cookie | A random handle (lookup key) | The signed claims themselves |
+| Per-request server work | One indexed DB lookup (~1–3 ms) | Verify signature + `exp`, no I/O |
+| **Revocation** | **Instant: delete the row** | **None until `exp` (or a denylist that undoes statelessness)** |
+| Metadata (last-seen, device, org) | Lives on the row, free to add | Bloats the cookie; still can't be revoked |
+| Payload visibility | Nothing readable in the cookie | Anyone with the cookie reads every claim |
+| Cross-service portability | Needs a shared session store | Any service with the key can verify |
+| Statefulness | Stateful (a row per session) | Stateless (until you add a denylist) |
+| 2026 default for browser SaaS? | **Yes** | No, the special-case reach |
+
+### Why sessions win for this stack
+
+The table looks balanced, but the revocation row decides, and it decides one way for a browser web app.
+"Sign me out everywhere," "this account is compromised, kill it now," "this stolen cookie has to stop working this second" — each is routine, and each is a single `DELETE` against the session table.
+A pure JWT can't do any of them until the token expires on its own, which can be minutes or hours of an attacker holding a session you can't touch.
+Add the denylist to win revocation back and you're running two systems with the per-request DB read you left to avoid.
+
+:::caution
+Reaching for a JWT because "stateless is modern" is the most common way this decision goes wrong.
+The revocation bill always comes due; the only question is how you pay it.
+A session row is cheaper, simpler, and one system fewer than a denylist.
+:::
+
+You'll also hear about the **hybrid**: a short-lived access JWT (5 to 15 minutes) for fast reads, paired with a server-side refresh token you *can* revoke.
+It's a real, production-grade pattern, but the refresh-token rotation is operational overhead that doesn't pay for itself until the database round-trip is a *measured* bottleneck.
+Start with sessions; move to the hybrid only when the numbers tell you to.
+
+<VideoCallout videoId="fyTxwIa-1U0" videoTitle="Session Vs JWT: The Differences You May Not Know!">
+  ByteByteGo animates both flows side by side in 7 minutes, the same revocation-versus-statelessness trade-off this section turns on.
+</VideoCallout>
+
+<Buckets twoCol instructions="Sort each scenario into the session shape an experienced engineer would reach for. Notice how lopsided the result is — that imbalance is the point.">
+  <Bucket name="session" label="Opaque session" description="The default for browser SaaS" />
+  <Bucket name="jwt" label="JWT" description="The special-case reach" />
+
+  <Item bucket="session">A user clicks "Sign out everywhere"</Item>
+  <Item bucket="jwt">Edge middleware reads identity with no database nearby</Item>
+  <Item bucket="session">Support needs to instantly kill a compromised account</Item>
+  <Item bucket="jwt">A separate analytics service must trust the same token</Item>
+  <Item bucket="session">Settings → show my active devices with revoke buttons</Item>
+  <Item bucket="session">The browser session for a typical Next.js SaaS</Item>
+</Buckets>
+
+## The cookie carries the handle
+
+The handle is an opaque string pointing at a server row, and it rides between browser and server on every request.
+The cookie's configuration is what keeps it from being stolen, read by JavaScript, or sent where it shouldn't go.
+You've met cookies and `Set-Cookie`; what's new is the configuration an auth cookie wears, where each attribute closes a specific attack.
+
+<CookieAnatomy />
+
+**The `__Host-` prefix.**
+The browser refuses to store a `__Host-`-prefixed cookie unless `Secure` and `Path=/` are set and no `Domain=` is present.
+A too-loose scope can't slip through, because the misconfigured cookie is never stored in the first place.
+Tight scoping stops being something the developer must remember and becomes a platform guarantee.
+
+**`HttpOnly`.**
+`document.cookie` can't read an `HttpOnly` cookie, so JavaScript never sees the token.
+This is the defense against XSS: even a script an attacker runs on your page can't read the session token and ship it off.
+It's exactly the protection `localStorage` lacks, where anything is plain JavaScript-readable, which is why session tokens never live there.
+
+**`Secure`.**
+The cookie is sent only over HTTPS, so it can't leak over a plaintext connection.
+The `__Host-` prefix already requires this, but local and preview environments sometimes relax it to work over `http://localhost`, while production never does.
+
+**`SameSite=Lax`.**
+With <Term definition="A cookie attribute controlling whether the cookie is sent on cross-site requests. Lax sends it on top-level navigations but withholds it on cross-site POSTs.">`SameSite`</Term>`=Lax`, the browser sends the cookie when the user clicks a link to your site but withholds it when another site POSTs to yours in the background.
+That withholding is the default defense against <Term definition="Cross-site request forgery — a malicious site triggering an authenticated request from the victim's browser using their existing cookies.">CSRF</Term>: a forged cross-site POST arrives without the cookie and is treated as anonymous.
+`Strict` withholds the cookie even on a top-level navigation, so a sign-in link from email would land the user logged-out.
+`None` sends it on every cross-site request, reopening CSRF; it exists for third-party embeds this app doesn't have.
+`Lax` is the considered middle.
+
+**`Path=/`.**
+Also required by the `__Host-` prefix, this attaches the cookie to every same-origin request, so the session is visible to your whole app.
+
+**Expiration.**
+`Max-Age` sets how long the cookie lives.
+The session uses a sliding lifetime: good for a generous window, with the clock resetting each time the user is active.
+Whether it survives a browser restart (persistent) or dies with the tab (session-only) is a UX decision, and a "remember me" checkbox is just a toggle on `Max-Age`.
+
+The defaults this stack uses, which you'll see as real config in the next chapter:
+
+- Name: `__Host-` prefix.
+- Flags: `HttpOnly; Secure; SameSite=Lax; Path=/`.
+- Lifetime: 30 days, with sliding renewal roughly once a day of activity.
+- `Secure` is relaxed only in dev and preview; production never relaxes it.
+
+One more clock is worth naming: a much shorter **freshness** window of about 10 minutes that high-stakes actions check first.
+Changing a password or deleting an account shouldn't run on a session that signed in three weeks ago.
+
+:::caution
+Naming the cookie `session` instead of `__Host-session`, or forgetting `Secure` in production, is a classic miss.
+The `__Host-` prefix is the structural guarantee that the browser won't let a loosely-scoped auth cookie exist.
+Use it.
+:::
+
+## Token entropy and constant-time comparison
+
+The token has two safety properties worth knowing.
+A good library handles both, so the point is to recognize them and notice their absence in hand-rolled auth.
+
+**Entropy.**
+The token is a secret, so it has to be unguessable to an attacker firing requests at your server: at least 128 bits of randomness from a CSPRNG.
+`crypto.randomUUID()` gives 122 bits, which is fine; 32 bytes from `crypto.getRandomValues()` gives far more.
+What fails the bar is a sequential ID (guess one, guess the next) or anything from `Math.random()`, which is predictable and never for secrets.
+
+**Constant-time comparison.**
+Comparing the raw bytes with `===` short-circuits at the first mismatched byte, so a wrong guess returns almost immediately while one correct for ten characters takes measurably longer.
+An attacker who times the responses can walk the secret character by character: a <Term definition="Inferring a secret by measuring how long an operation takes. A comparison that short-circuits on the first mismatch leaks how much of the input was correct.">timing attack</Term>.
+The fix is a <Term definition="A comparison whose running time doesn't depend on where the inputs first differ — it always examines every byte. Defeats timing attacks.">constant-time compare</Term>, which examines every byte and so takes the same time wherever the inputs differ.
+
+:::caution
+In hand-rolled auth, comparing session tokens with `===` instead of a constant-time compare is a real timing leak.
+The library does this right, but catch the `===` the instant you see it in someone else's code.
+:::
+
+## What lives on the session row
+
+Because the session is a row, you can hang useful columns off it, and each earns its place by powering a concrete feature.
+The minimum is `(id, userId, expiresAt)`; the rest pull their weight by what they unlock.
+
+<SessionColumns />
+
+`lastActiveAt` is both a display value and the field an idle-timeout policy checks.
+`userAgent` and `ipAddress` make an active-sessions list readable ("Chrome on macOS, signed in from Madrid") and give anomaly detection something to flag.
+`activeOrganizationId` remembers which organization's data to show when a user belongs to several.
+`impersonatedBy` records who is really behind the session when a support engineer acts as a user.
+
+This is leverage only the opaque-session shape has cheaply.
+Carry the same metadata in a JWT and you bloat the cookie on every request, and still can't revoke it.
+
+:::caution
+Keep the cookie opaque.
+Store real user data in it, an email or a role, as JWT claims or otherwise, and you hold a second copy of the truth that drifts: change the role on the server and the cookie still claims the old one until it's reissued, letting a user act with capabilities they no longer have.
+So the cookie answers only "which session is this?"
+The action boundary re-reads identity and permissions from the database every time, never trusting what the cookie claims.
+You'll wire up that re-read when roles arrive.
+:::
+
+## The session lifecycle: issue, refresh, revoke, expire
+
+A session is created, kept alive, and torn down; if nothing tears it down, it eventually lapses.
+
+- **Issue.** On successful authentication, the server inserts a new session row and sends `Set-Cookie` with the opaque handle.
+- **Refresh.** On activity, the server bumps `lastActiveAt` and, on a *cadence*, rotates the token to a fresh value as defense-in-depth. Cadence is the key word: Better Auth rotates roughly once a day, **not** per request. Per-request rotation sounds safer but breaks concurrent tabs, since two requests in flight race to rotate the same token and one is left holding a stale value.
+- **Revoke.** On sign-out, a password change, or an admin killing the account, the server deletes the row. The next request carrying the now-orphaned cookie finds no row, fails authentication cleanly, and is bounced to sign-in.
+- **Expire.** Left alone, a session lapses at `expiresAt`. The server filters expired rows out at lookup time with `WHERE expires_at > now()`, and a periodic sweep deletes the dead rows.
+
+Revocation is the asymmetry from the start of the lesson paying off: the server deletes the row, and the next request arrives with a byte-for-byte unchanged cookie that's already dead.
+The cookie didn't change; the truth on the server did.
+
+<SessionLifecycle />
+
+Two refinements, both handled by the library; you only need to recognize them.
+
+**Session fixation.**
+Suppose an attacker plants a <Term definition="An attack where an attacker gets a known session ID adopted by the victim before sign-in, so the post-sign-in session is one the attacker already knows. Defended by regenerating the token at sign-in.">session ID they know</Term> into the victim's browser *before* sign-in, and the server then reuses that same ID for the authenticated session.
+The attacker's pre-planted ID is now a fully authenticated session.
+The defense is one rule: **regenerate the token at sign-in.**
+Mint a fresh token the moment authentication succeeds, so whatever the attacker planted is worthless.
+Better Auth does this; in hand-rolled auth, its absence is the bug.
+
+**Multi-device.**
+Because each session is its own row, signing in on your laptop and your phone produces two independent rows for the same user.
+Everything you'd want falls out for free: "Settings → Security" lists devices by reading `WHERE userId = ? ORDER BY lastActiveAt DESC` with a revoke button on each, and "sign out everywhere" is `DELETE WHERE userId = ?`.
+The statefulness you might have read as a cost is exactly what makes each a one-line query.
+
+<MultipleChoice>
+  A user's laptop is stolen with a live session on it. They want every session of theirs dead *right now*. With opaque sessions that's one step; with a pure JWT it isn't. What's the actual reason for the difference?
+
+  <McqChoice correct>The server keeps the proof, so erasing it leaves the cookie pointing at nothing the next time it's checked — but a JWT *is* its own proof, carried in the request, so the server has nothing to take away before the token's clock runs out.</McqChoice>
+  <McqChoice>A JWT can be killed just as fast — the server looks it up in the token table it was saved to at sign-in and removes that entry.</McqChoice>
+  <McqChoice>Swapping out the JWT signing secret would void this user's token on the spot.</McqChoice>
+  <McqChoice>Neither design has an edge here; opaque sessions only revoke a little quicker.</McqChoice>
+
+  <McqWhy>With a session the proof is a row the server owns, so deleting it is instant and surgical — one user, this second. A pure JWT is never stored server-side, so there's no entry to delete (which rules out the second option). Rotating the signing secret would void *everyone's* tokens at once, not this one user's. And revocation isn't a speed difference — it's the one axis the two designs genuinely diverge on: the only thing that stops a live JWT is its own `exp`, unless you add a denylist and hand back the very per-request database read JWTs were chosen to avoid.</McqWhy>
+</MultipleChoice>
+
+## Where this cookie gets read
+
+The same model recurs everywhere ahead: same cookie, same lookup, same `User | null` at the end, with only the location and use differing.
+
+- **The proxy** (Next.js 16's `proxy.ts`, formerly `middleware.ts`) runs before a page renders and does a cheap **cookie-presence** check to bounce signed-out visitors to `/sign-in`. It gates on presence, not validation, and a short caching window can let it read a session that was already revoked, so it's a fast first filter, never where real security decisions live.
+- **Layouts and Server Components** read the session to drive identity-dependent UI: your name in the corner, the right nav for a signed-in user.
+- **Server Actions and route handlers** read it on every mutating call. This is the action boundary, where identity and permissions get checked for real, because the cookie is only a tamper-evident pointer to a row the server owns and can erase at will.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="MDN — Set-Cookie"
+    href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The full attribute reference, including the __Host- and __Secure- cookie name prefixes."
+  />
+  <ExternalResource
+    title="OWASP — Session Management Cheat Sheet"
+    href="https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html"
+    icon="simple-icons:owasp"
+    iconColor="#000000"
+    description="Session ID entropy, lifecycle, fixation defense, and cookie hardening, from the source."
+  />
+  <ExternalResource
+    title="jwt.io — Decode & inspect a JWT"
+    href="https://www.jwt.io/"
+    icon="simple-icons:jsonwebtokens"
+    iconColor="#FB015B"
+    description="Paste any token and watch the payload decode in plain text: the 'encoded, not encrypted' point, hands-on."
+  />
+  <ExternalResource
+    title="Better Auth — Session Management"
+    href="https://better-auth.com/docs/concepts/session-management"
+    icon="lucide:key-round"
+    iconColor="#0070F3"
+    description="The session config this stack uses: expiry, sliding renewal, revocation, and cookie caching."
+  />
+</CardGrid>

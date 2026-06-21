@@ -1745,3 +1745,45 @@ MX record | mail exchanger | DNS record naming the mail server for a domain; her
 dig | - | Command-line DNS lookup tool printing the raw records a resolver returns. | first defined: Chapter 050 L2
 chokepoint | - | The single function every email passes through, where shared send disciplines live; a named side-effect seam. | first defined: Chapter 050 L3
 pure renderer | pure-renderer discipline | Template taking typed props in and returning HTML/text out, with no env, session, or database reads, so preview and production never diverge. | first defined: Chapter 050 L4
+authentication | authn | Verifying the identity behind a request and producing a verified principal. | first defined: Chapter 051 L1
+authorization | authz | Deciding whether an authenticated principal may perform a specific action on a specific resource. | first defined: Chapter 051 L1
+principal | - | The authenticated identity a request runs as; concretely a verified user row. | first defined: Chapter 051 L1
+identification | - | An unverified claim of identity, with no proof yet. | first defined: Chapter 051 L1
+authentication factor | factor | A category of identity proof: something you know, have, or are. | first defined: Chapter 051 L1
+resource | - | The specific thing an action targets (this invoice, this org), not a category. | first defined: Chapter 051 L1
+action boundary | - | The server-side entry point of a mutation where authorization is enforced. | first defined: Chapter 051 L1
+fresh session | elevated session | A session whose most recent proof of identity is recent enough to clear high-stakes actions. | first defined: Chapter 051 L1
+passkey | - | Device-bound credential signing a server challenge with a private key the device never reveals. | first defined: Chapter 051 L1
+RBAC | role-based access control | Authorization driven by the principal's role rather than per-user rules. | first defined: Chapter 051 L1
+session record | server-stored session | A server-side row mapping an opaque session ID to a user and metadata; the source of truth the browser only holds an ID for. | first defined: Chapter 051 L2
+opaque session | server-stored opaque session | Session shape where the cookie holds a random lookup handle, not data; one indexed DB read per request, instantly revocable. | first defined: Chapter 051 L2
+session fixation | - | Attacker pre-plants a known session ID before sign-in so the authenticated session is one they know; defended by regenerating the token at sign-in. | first defined: Chapter 051 L2
+signed is not encrypted | - | A signature proves a payload wasn't altered and came from the key holder; it does not hide the contents. | first defined: Chapter 051 L2
+sliding session | sliding lifetime, sliding renewal | Session whose expiry window resets on activity rather than at a fixed time from issue. | first defined: Chapter 051 L2
+denylist | revoked-token denylist | List of revoked JWTs checked per request to fake revocation; re-introduces the DB read statelessness was meant to avoid. | first defined: Chapter 051 L2
+refresh token | - | Long-lived server-side token used to mint fresh short-lived access tokens; revocable, unlike the access token. | first defined: Chapter 051 L2
+access token | - | Short-lived (5-15 min) token authorizing requests; in the hybrid pattern, rotated via a refresh token. | first defined: Chapter 051 L2
+OAuth | Open Authorization | Delegated-authorization protocol letting an app act on a user's behalf at a service without seeing their password. | first defined: Chapter 051 L3
+OIDC | OpenID Connect | Authentication layer on top of OAuth; adds the id_token and userinfo so the app learns who the user is. | first defined: Chapter 051 L3
+authorization-code flow | authorization code flow, auth code flow | OAuth flow that returns a one-time code via the browser, then exchanges it server-side for tokens. | first defined: Chapter 051 L3
+PKCE | Proof Key for Code Exchange, pixy | Binds a flow's start to its finish so a stolen authorization code can't be redeemed without the original secret; mandatory in OAuth 2.1. | first defined: Chapter 051 L3
+code verifier | - | High-entropy random secret the app keeps; its hash goes out, the verifier itself closes the PKCE loop on the back channel. | first defined: Chapter 051 L3
+code challenge | - | SHA-256 hash of the code verifier, sent on the front channel; the provider re-hashes the verifier against it. | first defined: Chapter 051 L3
+authorization code | code | One-time, short-lived code returned via the browser, exchanged on the back channel for tokens. | first defined: Chapter 051 L3
+front channel | - | Any path through the browser (redirects, URLs); visible in history, logs, and to extensions, so untrusted by default. | first defined: Chapter 051 L3
+back channel | - | Direct server-to-server HTTPS call with no browser in the middle; safe to carry secrets. | first defined: Chapter 051 L3
+resource owner | - | The human who owns the data and grants access; in a login flow, the person signing in. | first defined: Chapter 051 L3
+authorization server | - | Provider endpoint that authenticates the user and issues the code and tokens (e.g. accounts.google.com). | first defined: Chapter 051 L3
+resource server | - | The API a token unlocks; for a pure login, just the userinfo profile endpoint. | first defined: Chapter 051 L3
+consent screen | - | Provider screen showing the user exactly the scopes requested, where they pick an account and approve. | first defined: Chapter 051 L3
+redirect URI | redirect_uri | Pre-registered callback URL the provider returns the code to; matched by exact string, no wildcards. | first defined: Chapter 051 L3
+client secret | client_secret | Back-channel credential proving the app's identity during the token exchange; one per environment, never in the browser. | first defined: Chapter 051 L3
+OAuth scope | scope | What an OAuth request asks for (e.g. openid email profile); shown verbatim on the consent screen. | first defined: Chapter 051 L3
+OAuth state | state parameter | Random per-flow value echoed on the callback and checked, defending login CSRF. | first defined: Chapter 051 L3
+login CSRF | - | Attacker tricks a victim into completing a flow with the attacker's code, linking the attacker's identity onto the victim's account; blocked by state. | first defined: Chapter 051 L3
+id_token | - | Signed OIDC JWT carrying identity claims (sub, email, ...); must be signature/aud/iss/exp verified before trust. | first defined: Chapter 051 L3
+JWKS | JSON Web Key Set | Provider's published public keys, used to verify an id_token's signature without contacting it per request. | first defined: Chapter 051 L3
+implicit grant | - | Removed OAuth grant that returned the token directly in the URL fragment on the front channel. | first defined: Chapter 051 L3
+client credentials | - | Service-to-service OAuth grant with no human involved; not a login flow. | first defined: Chapter 051 L3
+device code | - | OAuth grant for input-constrained devices like a TV. | first defined: Chapter 051 L3
+Resource Owner Password Credentials | ROPC | Removed OAuth grant where the user typed their password into the third-party app. | first defined: Chapter 051 L3
