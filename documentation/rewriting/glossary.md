@@ -1627,3 +1627,37 @@ React Hook Form | RHF | Client-side library managing a form's field state, valid
 pre-hydration window | - | Gap between server HTML arriving and hydration finishing; submits in it take the native door even with JS on. | first defined: Chapter 044 L7
 permalink | - | useActionState's optional third arg; URL the browser navigates to for a pre-hydration submit, must render the same form. | first defined: Chapter 044 L7
 graceful degradation | - | Start from the rich JS version and strip features away; opposite of progressive enhancement. | first defined: Chapter 044 L7
+Conform | conform.guide | Form library optimizing progressive enhancement on Server Actions; one Zod schema both sides, action gets FormData. | first defined: Chapter 045 L1
+TanStack Form | tanstack form | Smallest-bundle form library with strong TS inference and per-validator timing; for form-heavy products. | first defined: Chapter 045 L1
+useForm | - | RHF root hook, called once; creates the form's state container and returns every other primitive as a property. | first defined: Chapter 045 L2
+register | register (RHF) | RHF call spread onto a native input (name/ref/onChange/onBlur); DOM owns the value, the uncontrolled fast path. | first defined: Chapter 045 L2
+Controller | - | RHF render-prop bridge wiring a controlled value-owning component into form state via field value/onChange. | first defined: Chapter 045 L2
+useController | - | Hook form of Controller; returns the same field and fieldState, for reusable field components. | first defined: Chapter 045 L2
+handleSubmit | - | RHF wrapper returning a submit handler that intercepts, validates, then hands typed values to your onSubmit. | first defined: Chapter 045 L2
+formState | - | RHF read side; a proxy of errors, isSubmitting, isDirty, etc., re-rendering only on the properties you read. | first defined: Chapter 045 L2
+fieldState | - | Per-field RHF state (invalid, error, isDirty, isTouched) from Controller's render prop or useController. | first defined: Chapter 045 L2
+watch | watch (RHF) | RHF call returning a field's live value, re-rendering the caller on every change; re-renders the whole form if read at the root. | first defined: Chapter 045 L2
+useWatch | - | Hook form of watch; subscribes a small child to a live value so only that child re-renders. | first defined: Chapter 045 L2
+defaultValues | - | RHF useForm option setting each field's initial value and declaring the full set of fields it tracks. | first defined: Chapter 045 L2
+reset (RHF) | form.reset | RHF call re-setting field values and clearing dirty/touched state; called after a successful save. | first defined: Chapter 045 L2
+mode (RHF) | validation mode | RHF useForm option deciding when validation first runs per field (onSubmit/onBlur/onChange/onTouched/all). | first defined: Chapter 045 L2
+resolver (RHF) | - | Function RHF calls to validate; zodResolver builds one from a Zod schema so client and server share it. | first defined: Chapter 045 L2
+zodResolver | - | @hookform/resolvers adapter turning a Zod schema into an RHF resolver. | first defined: Chapter 045 L2
+proxy (formState) | tracked proxy | Wrapped object recording which properties you read and notifying only on those; reading subscribes you. | first defined: Chapter 045 L2
+shadcn Field family | Field, FieldLabel, FieldError | Form-library-agnostic shadcn layout primitives used with RHF's Controller; successor to the old Form/FormField wrappers. | first defined: Chapter 045 L2
+setError | form.setError | RHF call pushing an error into formState.errors[name]; routes a server fieldError onto the field, same place the resolver writes. | first defined: Chapter 045 L3
+setValue | form.setValue | RHF call changing a field's value (optionally re-validating); not for pushing server errors. | first defined: Chapter 045 L3
+reValidateMode | - | RHF useForm option deciding when a field re-validates after it has already errored (default onChange). | first defined: Chapter 045 L3
+useFieldArray | - | RHF hook managing a variable-length array field; owns the rows' identity, ordering, re-indexing, and per-row error wiring. | first defined: Chapter 045 L4
+field.id | - | Stable render key RHF assigns each field-array row; survives reorder/removal, used as the React key, never persisted. | first defined: Chapter 045 L4
+fields (RHF) | - | Render-time snapshot array useFieldArray returns; each entry carries field.id plus values, not the live value. | first defined: Chapter 045 L4
+field-array operations | append, prepend, insert, remove, swap, move, replace | The imperative API useFieldArray returns to mutate the array; each also re-indexes and migrates per-row field state. | first defined: Chapter 045 L4
+getValues | form.getValues | RHF call reading current field values once without subscribing; for reads inside event handlers. | first defined: Chapter 045 L4
+root error | errors.<name>.root | Error attached to a whole array field rather than any element; array rules like .min(1) report here, not at .message. | first defined: Chapter 045 L4
+reconcile (line items) | - | Compute INSERT/UPDATE/DELETE writes by diffing the submitted list against the rows currently in the database. | first defined: Chapter 045 L4
+FormProvider | - | RHF context provider wrapping the steps once at the root; publishes the useForm instance to every descendant, no props threaded. | first defined: Chapter 045 L5
+useFormContext | - | Hook a descendant calls to read the useForm instance an ancestor FormProvider published; the consumer side of FormProvider. | first defined: Chapter 045 L5
+trigger (RHF) | form.trigger | RHF call running the resolver against named field paths, returning Promise<boolean>; no argument validates the whole form. | first defined: Chapter 045 L5
+shouldUnregister | - | RHF useForm option; whether a field's value is dropped when its input unmounts. Defaults to false (values kept), the safe wizard default. | first defined: Chapter 045 L5
+isValid (RHF) | formState.isValid | Whole-form boolean, true only once every field passes; wrong tool for gating a single wizard step. | first defined: Chapter 045 L5
+progressive disclosure | - | Revealing sections of one form inline as the user goes, behind a single native submit; keeps progressive enhancement. | first defined: Chapter 045 L5
