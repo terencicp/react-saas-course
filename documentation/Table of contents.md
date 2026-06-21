@@ -428,10 +428,10 @@
 - 4 The suppression list as a send-time chokepoint (Defines the `email_suppressions` table schema, the bounce/complaint taxonomy that writes to it, the read-before-send check enforced inside `lib/email.ts`, the `bypassSuppression` carve-out, and the 0.3 percent complaint-rate budget the team manages against.)
 - 5 Quiz
 
-### Chapter 049 — Authoring templates
-- 1 JSX for the email DOM (Teaches the React Email component vocabulary, the Tailwind styling wrapper, the JSX-to-inline-table render pipeline, and the `emails/*.tsx` props-and-`PreviewProps` file convention.)
+### Chapter 049 — Authoring email templates
+- 1 Email templates with React Email (Teaches the React Email component vocabulary, the Tailwind styling wrapper, the JSX-to-inline-table render pipeline, and the `emails/*.tsx` props-and-`PreviewProps` file convention.)
 - 2 The preview server loop (Teaches the `pnpm email dev` server, the viewport and dark-mode toggles, the HTML and plain-text tabs, and the test-send-to-inbox cross-client verification path.)
-- 3 Readable in every client (Teaches the auto-generated plain-text fallback via `render({ plainText: true })`, the email accessibility checklist (lang, headings, link text, alt, contrast, font size, touch targets), and the three-tier dark-mode posture with its `color-scheme` head plumbing.)
+- 3 Readable in every client (Teaches the SDK-auto-generated plain-text fallback derived from the same `react` node, the email accessibility checklist (lang, headings, link text, alt, contrast, font size, touch targets), and the three-tier dark-mode posture with its `color-scheme` head plumbing.)
 - 4 Quiz
 
 ### Chapter 050 — Project: the welcome email send path

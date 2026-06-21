@@ -1716,3 +1716,26 @@ fail closed (access gate) | failing closed | A safety gate that, when the check 
 complaint rate | - | Share of delivered mail recipients mark as spam; the top reputation metric, with hard provider thresholds. | first defined: Chapter 048 L4
 postmaster tools | Google Postmaster Tools | Free provider dashboards showing a sender their own reputation: complaint rate, spam rate, auth status. | first defined: Chapter 048 L4
 throttled (deliverability) | throttling | A provider deliberately slowing or limiting how much of a sender's mail it accepts, as a reputation penalty. | first defined: Chapter 048 L4
+React Email | react-email | React library for authoring email templates in JSX/Tailwind that render to inbox-safe HTML; the course default. | first defined: Chapter 049 L1
+2004-shaped HTML | - | The HTML-4, table-layout, inline-styles baseline the worst email client still requires. | first defined: Chapter 049 L1
+React Email primitive | email primitive | A React Email component that is the email-safe version of a known web element (Section, Button, Img, etc.). | first defined: Chapter 049 L1
+MJML | Mailjet Markup Language | XML-like email templating language compiling to bulletproof table HTML; the pre-React-era Outlook-compat tool. | first defined: Chapter 049 L1
+plain-text part | text part | The text/plain version of an email carried alongside the HTML for clients that won't render HTML. | first defined: Chapter 049 L1
+multipart/alternative | - | MIME container holding text/plain and text/html of one message so the client picks which to render. | first defined: Chapter 049 L1
+bulletproof button | - | A CTA built from table cells plus a VML fallback so its fill/padding/shape survive every mailbox client. | first defined: Chapter 049 L1
+VML | Vector Markup Language | Legacy Microsoft vector format; bulletproof buttons emit a hidden VML shape so Outlook renders the fill. | first defined: Chapter 049 L1
+preheader | - | The short preview line an inbox shows next to the subject, set via a hidden Preview element. | first defined: Chapter 049 L1
+pixelBasedPreset | - | React Email Tailwind preset re-basing rem utilities onto a 16px pixel scale for clients that ignore rem. | first defined: Chapter 049 L1
+PreviewProps | - | Static property on a template holding mock props; the preview server auto-renders the template with them. | first defined: Chapter 049 L1
+preview server | - | Local React Email dev server (pnpm email dev) that renders templates from PreviewProps and hot-reloads on save; the fast inner loop. | first defined: Chapter 049 L2
+test-send | - | A real email fired through Resend to inboxes you open; the verification gate for what no local preview can fake. | first defined: Chapter 049 L2
+inner loop | - | The fast, local iterate cycle (save, preview, fix) versus the slow real-send verification gate. | first defined: Chapter 049 L2
+file watcher | - | Background process watching source files and reacting instantly on change, here re-rendering the template. | first defined: Chapter 049 L2
+hot-reload | hot reload, hot-reloads | The page updates in place from new source, no manual reload, watcher-pushed. | first defined: Chapter 049 L2
+color inversion | - | Client-side transform flipping light backgrounds dark and dark text light, often heuristic and beyond your control. | first defined: Chapter 049 L2
+SDK | software development kit | Official client library you call from app code; here the Resend SDK for sending email. | first defined: Chapter 049 L3
+toPlainText | toPlainText(html) | react-email helper converting rendered HTML into clean plain text; run on render() output. | first defined: Chapter 049 L3
+touch target | tap target | Tappable area around an interactive element; CTA floor 44x44 CSS px per iOS HIG. | first defined: Chapter 049 L3
+dir="auto" | dir auto | HTML attribute telling the client to infer text direction from the first strong directional character. | first defined: Chapter 049 L3
+partial inversion | - | Dark-mode client behavior flipping light backgrounds dark while preserving already-dark elements. | first defined: Chapter 049 L3
+full inversion | - | Dark-mode client behavior inverting everything, hue-shifting brand colors and negating dark-on-light logos. | first defined: Chapter 049 L3
