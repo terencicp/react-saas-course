@@ -476,10 +476,10 @@
 - 4 CSRF and XSS: the defaults and the footguns (Teaches the structural browser-security defenses the 2026 stack already ships — `SameSite=Lax` plus the Server Actions origin check for CSRF, React 19's auto-escaping plus `HttpOnly` cookies for XSS — paired with the one footgun per category (`SameSite=None`, `dangerouslySetInnerHTML`), the `DOMPurify` sanitization shape, and CSP / full security headers named as Chapter 082's territory.)
 - 5 Quiz
 
-### Chapter 055 — Project: email+password auth with verification
-- 1 Project Overview
-- 2 Sign up lands a session
-- 3 The email verification gate
+### Chapter 055 — Project: email and password auth
+- 1 Project overview
+- 2 Sign up creates the account (real `user`/`account` rows, but no session — verification is required first)
+- 3 Email verification (React Email template fires the link; the link verifies the address and auto-signs-in)
 - 4 Sign in, with unverified refusal and safe redirects
 - 5 Gate the protected surface
 

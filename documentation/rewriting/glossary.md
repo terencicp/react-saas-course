@@ -1902,3 +1902,21 @@ React auto-escaping | auto-escaping, JSX escaping | React converts HTML-signific
 dangerouslySetInnerHTML | - | React prop injecting a string into the DOM as raw HTML, bypassing auto-escaping; an XSS hole unless the input is sanitized server-side first. | first defined: Chapter 054 L4
 DOMPurify | isomorphic-dompurify | HTML sanitizer stripping executable content via an allowlist; the 2026 standard, run server-side before dangerouslySetInnerHTML. | first defined: Chapter 054 L4
 synchronizer token | - | Classic CSRF defense: server plants a secret in the page, the form echoes it back, the server checks the match; unneeded under SameSite=Lax. | first defined: Chapter 054 L4
+two-layer gate | two-layer request-time gate | Protected-route guard: a cheap cookie-presence redirect in proxy.ts plus a validating session read in the protected layout. | first defined: Chapter 054 L1
+inverse gate | - | The mirror of the protected-route gate: on an auth page, a signed-in user is bounced to /dashboard while a signed-out user sees the form. | first defined: Chapter 054 L1
+emailAndPassword | emailAndPassword block | Better Auth instance block enabling the password strategy and its knobs; presence of it emits the account password column. | first defined: Chapter 055 L2
+requireEmailVerification | - | Better Auth emailAndPassword knob: sign-up creates the account but issues no session until the email is verified. | first defined: Chapter 055 L2
+autoSignIn | - | Better Auth emailAndPassword knob; false means sign-up issues no session, and a duplicate email returns generic success (enumeration-safe). | first defined: Chapter 055 L2
+minPasswordLength | - | Better Auth emailAndPassword knob setting the server-side minimum password length; pairs with the action's schema check. | first defined: Chapter 055 L2
+auth-schema generator config | auth-schema.config.ts | A server-only-free mirror of lib/auth.ts holding only schema-shaping options, loaded by the Better Auth CLI to generate the Drizzle schema. | first defined: Chapter 055 L2
+verification table | verification row | Better Auth schema table holding short-lived token rows; the JWT-link email-verification flow leaves it empty (the token rides the URL, not a row). | first defined: Chapter 053 L1
+emailVerification | emailVerification block | Better Auth instance block configuring the email-verification flow: the send callback, sendOnSignUp, autoSignInAfterVerification, and the link's expiresIn. | first defined: Chapter 055 L3
+sendVerificationEmail | - | emailVerification callback Better Auth invokes with the user and built verify URL; you hand both to sendEmail. | first defined: Chapter 055 L3
+sendOnSignUp | - | emailVerification knob firing the verification email automatically when sign-up succeeds. | first defined: Chapter 055 L3
+autoSignInAfterVerification | - | emailVerification knob that signs the user in when they follow the link, issuing the flow's first session and cookie. | first defined: Chapter 055 L3
+signInEmail | auth.api.signInEmail | Better Auth call that checks credentials and, with requireEmailVerification on, validates the password first then throws EMAIL_NOT_VERIFIED. | first defined: Chapter 055 L4
+mapAuthError | - | Provided helper turning Better Auth error codes into a typed Result; collapses wrong-email and wrong-password into one opaque unauthorized message. | first defined: Chapter 055 L4
+enumeration oracle | - | A response difference (e.g. distinct sign-in errors) letting an attacker learn which emails are registered, one request at a time. | first defined: Chapter 055 L4
+typedRoutes | typedRoutes: true, as Route | Next.js flag typing redirect()/Link against routes that exist; a runtime string needs an `as Route` cast, safe only behind a path guard. | first defined: Chapter 055 L4
+read ladder | session-read ladder | The three-helper session read surface (cache()d getSession, getCurrentUser, requireUser); one deduped DB read per request, many consumers. | first defined: Chapter 055 L2
+revocation | revoke | Killing a session early by deleting its opaque row, so the cookie value resolves to nothing on the next read; instant with server-stored sessions. | first defined: Chapter 054 L3
