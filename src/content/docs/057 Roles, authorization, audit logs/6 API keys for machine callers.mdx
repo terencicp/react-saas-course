@@ -1,0 +1,704 @@
+---
+title: API keys for machine callers
+tagline: How API keys authenticate non-browser callers, resolving into the same identity context your route wrapper builds for session cookies.
+chapter-id: 57
+course-progress: 0.5606
+rewrites: 2
+sidebar:
+  order: 6
+  label: API keys
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import TwoDoorsOneCtx from '../../../components/lessons/057/6/two-doors-one-ctx/TwoDoorsOneCtx.astro';
+import KeyTrustBoundaries from '../../../components/lessons/057/6/KeyTrustBoundaries.astro';
+import ScopeCeiling from '../../../components/lessons/057/6/ScopeCeiling.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+`authedRoute` resolves one kind of caller: a browser replaying a session cookie your domain set.
+But the wrapper left a branch open for callers that carry no cookie at all.
+A partner's job server posting records at 3am, an engineer's command-line tool, a mobile app on the same backend: none is a browser, so `requireOrgUser`'s cookie path never fires.
+
+Such a caller needs another way to prove who it is, and you want that proof to be revocable: a credential you can hand a partner and take back the day the contract ends or the key leaks, without resetting a password or touching a human login.
+The answer is an **API key**, a credential your app mints, hands to a machine, and can revoke at will.
+
+This is not a second authentication system.
+A request arriving with `Authorization: Bearer <key>` resolves into the same `ctx = { user, orgId, role, db }` a cookie produces, so the role check, tenant scoping, audit write, and every handler body keep working unchanged.
+
+## What an API key is: a revocable secret
+
+An API key is an opaque, high-entropy secret your app generates and hands to a machine caller, which stores it and sends it on every request.
+Opaque is the key word: unlike a signed JWT, the key carries no readable claims.
+It is just a long random string that points at a row in your database, where the real facts about the caller live.
+
+Two contrasts pin down its shape.
+Against a password: a password is human-chosen and singular, one human and one login, while a key is machine-generated and revocable on its own.
+You can mint one key per partner, scope each tightly, and kill any single one the moment it leaks while every other key and human login keeps working.
+Against OAuth: OAuth 2.1's client-credentials flow is the standards-based model, and the right reach when you build a marketplace of third-party apps acting on users' behalf, but for handing your own known partners a credential in year one it is far more machinery than the problem needs.
+The stored-hash key is the year-one default.
+
+A key is a <Term definition="A credential where possession alone grants access — whoever holds it is treated as authorized. There's no second factor; the secret is the identity.">bearer token</Term>: whoever bears it is treated as the caller, no questions asked.
+Verification is trivial, but a leaked key works until you revoke it, which is why the table you are about to design carries a `revokedAt` column, and why everything in this lesson, hashing it at rest, never logging it, comparing it in constant time, scoping it tightly, exists because possession alone is the whole game.
+
+## The shape: a hashed key, shown once
+
+A full key your partner pastes into their config looks like `rsk_live_ab12cd34.s3cr3tPartH3re…`, and the dot splits it into two parts that do different jobs.
+
+- The **prefix**, `rsk_live_ab12cd34`, is the public key-id. It's safe to show in a settings list, store in plaintext, and put in a log line. It's the *lookup handle*: a request arrives, you find the row by its prefix, and the secret is never involved. (An `rsk_test_` prefix is a convention worth borrowing, so a reader can tell a production credential from a sandbox one at a glance.)
+- The **secret half**, everything after the dot, proves identity. It's 32 bytes from a <Term definition="Cryptographically Secure Pseudo-Random Number Generator — a randomness source built for security, where outputs can't be predicted from prior ones. crypto.getRandomValues in the browser and Node.">CSPRNG</Term>, encoded as <Term definition="A text encoding of binary data using only URL- and filename-safe characters (A–Z, a–z, 0–9, - and _). The same alphabet you used for tokens earlier in the course.">base64url</Term> so it ships safely as a string.
+
+Your database stores the `prefix` in plaintext and only the SHA-256 hash of the secret.
+The raw full key is assembled once at creation, returned to the person who minted it that one time, and then gone: you never store it, log it, or email it.
+If your `api_keys` table leaked in full tomorrow, an attacker would get prefixes and hashes and could reconstruct *zero* working keys, because a SHA-256 hash can't be run backwards into the secret that produced it.
+
+SHA-256 is the deliberate choice here.
+A human password gets a *slow* hash (bcrypt, argon2) because passwords are low-entropy and guessable, so you make each guess expensive.
+An API key's 32 bytes of CSPRNG entropy are unguessable by brute force in any timeframe that matters, so a slow hash buys nothing and taxes every verify.
+The right tool for a high-entropy secret is a *fast* cryptographic hash: `SHA-256` via `crypto.subtle.digest`.
+
+<Figure caption="The raw secret has one legitimate exit: the create response, shown once. The database keeps only its hash; the logs keep only its prefix.">
+  <KeyTrustBoundaries />
+</Figure>
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const apiKeys = pgTable(
+  'api_keys',
+  {
+    id: uuid().primaryKey().$defaultFn(() => uuidv7()),
+    prefix: text().notNull(),
+    keyHash: text().notNull(),
+    organizationId: uuid()
+      .notNull()
+      .references(() => organization.id, { onDelete: 'cascade' }),
+    createdByUserId: uuid().references(() => user.id, { onDelete: 'set null' }),
+    name: text().notNull(),
+    scopes: text().array().notNull().default([]),
+    lastUsedAt: timestamp({ withTimezone: true }),
+    revokedAt: timestamp({ withTimezone: true }),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('api_keys_prefix_unique').on(t.prefix),
+    index('idx_api_keys_org_created').on(t.organizationId, t.createdAt.desc()),
+  ],
+);
+`}>
+  <AnnotatedStep meta="{5-6} {18}" color="blue">
+    **The two halves, two columns.** `prefix` is the public lookup handle, in plaintext; `keyHash` is the SHA-256 of the secret. The `uniqueIndex` on `prefix` finds the row on every verify: you look up by the safe half and verify against the hashed half.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7-10}" color="green">
+    **Two foreign keys, two `onDelete` choices.** `organizationId` cascades, because the org *owns* the key: deleting the org takes its keys with it. `createdByUserId` is `set null`, mirroring the audit table's actor column: delete the human who minted the key and the row survives with a null creator.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12}" color="blue">
+    **`scopes`, a text array, is the capability ceiling.** It lists what the key may do (`invoices:read`, `invoices:write`), capping it *below* the org role it acts under. It defaults to empty, so a key can do nothing until you grant it a scope.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13-14}" color="orange">
+    **`lastUsedAt` and `revokedAt` are nullable state, not deletes.** `lastUsedAt` is bumped on every successful verify, so you can answer "is this key still in use, safe to rotate?". Killing a key *sets* `revokedAt` rather than deleting the row, so `lastUsedAt` and the audit trail stay legible.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+This table has no row-level security policy: unlike `audit_logs`, which RLS protects as an append-only tier, `api_keys` is ordinary org-owned data, scoped through `tenantDb(orgId)` like every other tenant table.
+
+:::note
+The settings UI that lists, mints, and revokes keys, including the "copy this key now, you won't see it again" modal, is routine to build and out of scope here.
+What matters is the *contract*: the create call returns the full key exactly once, the list reads `prefix`, `lastUsedAt`, and a revoke button per row, and a revoked key shows as revoked rather than vanishing.
+:::
+
+## Minting and revoking keys
+
+Minting and revoking both run through `authedAction` and end with `logAudit` inside the transaction, the same machinery as the rest of the chapter.
+Only an admin should mint a key for the org, so the role floor is `'admin'`.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const createApiKey = authedAction(
+  'admin',
+  createApiKeySchema,
+  async (input, ctx) => {
+    const prefix = \`rsk_live_\${randomToken(8)}\`;
+    const secret = randomToken(32);
+    const keyHash = await sha256Hex(secret);
+
+    const row = await withTenant(ctx.orgId, async (tx) => {
+      const [inserted] = await tx
+        .insert(apiKeys)
+        .values({
+          prefix,
+          keyHash,
+          organizationId: ctx.orgId,
+          createdByUserId: ctx.user.id,
+          name: input.name,
+          scopes: input.scopes,
+        })
+        .returning();
+
+      await logAudit(tx, {
+        action: 'api-key.created',
+        subjectType: 'api-key',
+        subjectId: inserted.id,
+        payload: { name: input.name, scopes: input.scopes },
+      });
+
+      return inserted;
+    });
+
+    revalidatePath('/settings/api-keys');
+    return ok({ fullKey: \`\${prefix}.\${secret}\`, ...row });
+  },
+);
+`}>
+  <AnnotatedStep meta="{5-7}" color="blue">
+    **Generate the two halves, then hash the secret.** `randomToken` is the CSPRNG-to-base64url pipeline from earlier in the course, and `sha256Hex` is `crypto.subtle.digest('SHA-256', …)` rendered to hex. The prefix is public; the secret is hashed, and its plaintext stays in local variables.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9-30}" color="green">
+    **One transaction holds the insert and the audit row.** `withTenant(ctx.orgId, …)` opens the transaction and the tenant scope, then `logAudit(tx, …)` records `api-key.created` on the *same* `tx`, so the row exists if and only if the key was created. The event name and payload are a contract: the security chapter catalogs every event, so `api-key.created` carrying `{ name, scopes }` must match exactly.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{33}" color="orange">
+    **The show-once return.** `ok({ fullKey, ...row })` is the *only* time the assembled `prefix.secret` leaves the server. The UI displays it once to copy; after that it's never persisted or recoverable. Every later read returns the row *without* `fullKey`.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Revoking is a state change, not a delete:
+
+```ts
+export const revokeApiKey = authedAction(
+  'admin',
+  revokeApiKeySchema,
+  async (input, ctx) => {
+    await withTenant(ctx.orgId, async (tx) => {
+      await tx
+        .update(apiKeys)
+        .set({ revokedAt: new Date() })
+        .where(eq(apiKeys.id, input.id));
+
+      await logAudit(tx, {
+        action: 'api-key.revoked',
+        subjectType: 'api-key',
+        subjectId: input.id,
+      });
+    });
+
+    revalidatePath('/settings/api-keys');
+    return ok(null);
+  },
+);
+```
+
+Deleting the row instead would lose `lastUsedAt`, the answer to "was this leaked key still in use when we killed it?", and the row the audit trail points at.
+The key stops working the instant `revokedAt` is set, because the verify path you build next refuses any row that carries one.
+
+The `api_keys` UPDATE is wrapped in `withTenant` even though `api_keys` has no RLS policy of its own.
+The scope is there for the `logAudit` passenger: that insert lands on RLS-guarded `audit_logs`, which needs `app.org_id` set and needs to share the transaction so the two commit or roll back together.
+
+The schemas use a top-level `z.uuid()` and model `scopes` as a `z.enum`:
+
+```ts
+export const createApiKeySchema = z.object({
+  name: z.string().min(1),
+  scopes: z.array(z.enum(['invoices:read', 'invoices:write'])),
+});
+
+export const revokeApiKeySchema = z.object({
+  id: z.uuid(),
+});
+```
+
+Enumerating known scopes rather than accepting free-form text is the same instinct as keeping the `Role` union small: a typo'd scope should fail to parse, not silently grant or deny something nobody named.
+
+## Adding a Bearer branch to `authedRoute`
+
+Your wrapper resolves identity one way: it calls `requireOrgUser({ headers: request.headers })`, which reads the session cookie.
+You'll add *one branch ahead of it*: when a request carries an `Authorization: Bearer` header, resolve identity from the key and produce the *identical* `ctx`.
+
+<Figure caption="A second door on the same wall. The key branch and the cookie branch resolve identity differently, but both produce one identical `ctx`, so every gate and handler past this point is blind to which door the caller used.">
+  <TwoDoorsOneCtx />
+</Figure>
+
+That convergence is the whole design: both branches exit into the same `ctx`, so the wrapper's `roleAtLeast` gate, parse, and `fn` call run unchanged, and every handler you already wrote serves key callers untouched.
+
+The resolver is the only new algorithm here.
+Call it `resolveApiKey(request)`: it returns the resolved identity, or `null` when there's no Bearer header, which tells the wrapper to fall through to the cookie path.
+One step uses a <Term definition="Comparing two secrets in a way whose duration doesn't depend on where they first differ, so an attacker can't learn the secret byte by byte from how long the comparison takes.">constant-time compare</Term>; the rest is plain control flow.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import 'server-only';
+
+import { eq } from 'drizzle-orm';
+
+import { db } from '@/db';
+import { apiKeys } from '@/db/schema';
+import { sha256Hex, timingSafeEqualHex } from '@/lib/crypto';
+
+export type ResolvedKey = {
+  orgId: string;
+  createdByUserId: string | null;
+  scopes: string[];
+};
+
+export const resolveApiKey = async (
+  request: Request,
+): Promise<ResolvedKey | null> => {
+  const header = request.headers.get('authorization');
+  if (!header?.startsWith('Bearer ')) return null;
+
+  const presented = header.slice('Bearer '.length);
+  const [prefix, secret] = presented.split('.');
+  if (!prefix || !secret) throw new ApiKeyError('malformed key');
+
+  const [row] = await db
+    .select()
+    .from(apiKeys)
+    .where(eq(apiKeys.prefix, prefix));
+  if (!row || row.revokedAt) throw new ApiKeyError('invalid key');
+
+  // constant-time compare to prevent timing attack
+  const presentedHash = await sha256Hex(secret);
+  if (!timingSafeEqualHex(presentedHash, row.keyHash)) {
+    throw new ApiKeyError('invalid key');
+  }
+
+  await db
+    .update(apiKeys)
+    .set({ lastUsedAt: new Date() })
+    .where(eq(apiKeys.id, row.id));
+
+  return {
+    orgId: row.organizationId,
+    createdByUserId: row.createdByUserId,
+    scopes: row.scopes,
+  };
+};
+`}>
+  <AnnotatedStep meta="{18-19}" color="blue">
+    **No Bearer header returns `null`.** The branch fires only when an `Authorization: Bearer` header is present; the `null` return tells the wrapper to fall through to the cookie path. This is what keeps the second door *additive*: with no Bearer header, the existing flow is unchanged.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{21-23}" color="orange">
+    **Reject a malformed shape before touching the database.** Split `prefix.secret` on the dot; if either half is missing, the value isn't key-shaped, so reject it now. Never spend a round-trip on a string that couldn't be a key, the cheapest-disqualifier-first reflex from the `authedRoute` lesson.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{25-29}" color="green">
+    **Look up the row by prefix, the one deliberate bare-`db` read in the app.** Every other query goes through `tenantDb(orgId)`, but here there's no `orgId` yet: this lookup is how you *establish* it from the key. You can't scope by a tenant you haven't identified. Reject if there's no row, or if `revokedAt` is set.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{31-35}" color="violet">
+    **Constant-time compare, never `===`.** Hash the presented secret and compare it to the stored hash with `timingSafeEqualHex`. A naive `===` short-circuits on the first differing byte, and that timing difference leaks how many bytes an attacker guessed right, letting them recover the secret byte by byte. The constant-time compare always examines every byte. The inline comment is the one place a security note earns one.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{37-46}" color="blue">
+    **Bump `lastUsedAt`, then return the resolved identity.** On a match, record the use, then hand back what the wrapper needs to build `ctx`: the org the key belongs to, the human who created it (the audit actor), and the key's scopes. Note what's absent: no `user`, no `role`, no `db`. The wrapper assembles those, as it does for the cookie path.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The resolved shape stops at `orgId` and `createdByUserId`, but the `ctx` handlers expect also needs a `user` and a `role`.
+The wrapper fills those by reading the creating member's row in that org, so the key *acts under the current org role of the human who minted it*: a key minted by an admin acts as an admin, and if that human is later demoted, the key's authority follows.
+For an unattended service key whose creator was deleted, `createdByUserId` is null and the key acts as a machine principal.
+
+:::caution
+Read the key from `Authorization: Bearer`, never from a query parameter or a custom header you invented.
+A key in a URL (`?api_key=…`) is a secret written into places that *get logged and cached everywhere*: your access logs, the partner's logs, any proxy between, browser history.
+The standard `Authorization` header is where a bearer secret belongs, because the whole ecosystem already knows to keep it out of logs and caches.
+:::
+
+Now the wrapper itself: here's the resolve gate before and after.
+
+<CodeVariants>
+  <CodeVariant label="Before — one identity path">
+    ```ts
+    async (request, route) => {
+      const { user, orgId, role: actorRole } = await requireOrgUser({
+        headers: request.headers,
+      });
+
+      // …authorize (roleAtLeast) → parse → call fn — unchanged…
+    };
+    ```
+    **One door.** Identity is always the session cookie, resolved by `requireOrgUser`. A caller with no cookie can't get in.
+  </CodeVariant>
+
+  <CodeVariant label="After — Bearer branch added">
+    ```ts ins={2,4-6}
+    async (request, route) => {
+      const resolved = await resolveApiKey(request);
+
+      const { user, orgId, role: actorRole, scopes } = resolved
+        ? await ctxFromKey(resolved)
+        : await requireOrgUser({ headers: request.headers });
+
+      // …authorize (roleAtLeast) → parse → call fn — unchanged…
+    };
+    ```
+    **Two doors.** `resolveApiKey` runs first. A Bearer header resolves through the key, where `ctxFromKey` reads the creating member to fill `user` and `role`; anything else falls through to the same `requireOrgUser` as before. Both produce `{ user, orgId, role }`, plus `scopes` for the key path. **Everything below this point is byte-for-byte unchanged.**
+  </CodeVariant>
+</CodeVariants>
+
+The authorize gate still runs `roleAtLeast(actorRole, role)`, so a key is gated by the exact role check a member faces: by the time that gate runs, a key *is* just a `role` in a `ctx`.
+
+This is where the chapter's thesis lands.
+The shortcut under deadline is to skip the wrapper and bolt an inline `x-api-key` check onto each route that needs one, reopening the missing-check bug class you closed at the Server Action boundary.
+Scatter the check across forty handlers and you've signed up to get it right forty times, forever, including in the one a tired teammate adds on a Friday.
+Identity resolution belongs in *one* place, the wrapper, beside the cookie path, so a new handler gets key support for free and forgetting it becomes impossible.
+
+Now write the resolver yourself.
+The exercise gives you a working harness: an in-memory `apiKeys` store with one valid row, `sha256Hex` and constant-time `timingSafeEqualHex` shims, and a counter for store hits.
+Implement `resolveApiKey(authHeader)` so it passes every case.
+
+<ScriptCoding
+  runner="sandpack"
+  instructions="Implement resolveApiKey(authHeader) — the Bearer branch of the wrapper. Given the Authorization header value (or null), resolve it to the key's identity or reject it. (1) No 'Bearer ' header → return null (not a key request, the wrapper falls through to the cookie path). (2) Slice off 'Bearer ' and split the token on the dot into prefix.secret — if either half is missing, throw new ApiKeyError('malformed key') and DON'T touch the store. (3) Look the row up with store.findByPrefix(prefix). (4) If there's no row, or row.revokedAt is set, throw new ApiKeyError('invalid key'). (5) Hash the presented secret with sha256Hex(secret) and compare it to row.keyHash with timingSafeEqualHex — never === — throwing ApiKeyError('invalid key') on mismatch. (6) On a match, return { orgId, createdByUserId, scopes } read off the row. The tests feed a valid key, a revoked key, a wrong secret, an unknown prefix, a malformed header (and assert the store was NEVER queried), and a no-Bearer header."
+  maxHeight={560}
+  starter={`// ── Shims so this runs in the sandbox (Web Crypto / Drizzle stand-ins) ──
+// sha256Hex(secret): the real one is crypto.subtle.digest('SHA-256', …) -> hex.
+// Here a trivial deterministic stand-in: enough to prove "hash then compare".
+const sha256Hex = async (secret) => \`sha256(\${secret})\`;
+
+// timingSafeEqualHex(a, b): the real one compares every byte in constant time
+// to prevent a timing attack. Equality is all the test needs; the POINT is that
+// you call THIS, never ===.
+const timingSafeEqualHex = (a, b) => a === b;
+
+// ApiKeyError: in the real wrapper this becomes a 401. The tests just check
+// that a rejection happened.
+class ApiKeyError extends Error {}
+
+// The store double. ONE valid row + ONE revoked row. findByPrefix counts its
+// calls so a test can assert a malformed header never reaches the database.
+let storeHits = 0;
+const rows = [
+  {
+    id: 'key_1',
+    prefix: 'rsk_live_abc',
+    keyHash: 'sha256(realsecret)',
+    organizationId: 'org_1',
+    createdByUserId: 'user_1',
+    scopes: ['invoices:read'],
+    revokedAt: null,
+  },
+  {
+    id: 'key_2',
+    prefix: 'rsk_live_dead',
+    keyHash: 'sha256(deadsecret)',
+    organizationId: 'org_1',
+    createdByUserId: 'user_1',
+    scopes: ['invoices:read'],
+    revokedAt: new Date(),
+  },
+];
+const resetStore = () => { storeHits = 0; };
+const store = {
+  findByPrefix: (prefix) => {
+    storeHits += 1;
+    return rows.find((r) => r.prefix === prefix);
+  },
+};
+// The malformed-header test reads this to prove the store was never queried.
+const getStoreHits = () => storeHits;
+
+// ── Your task: implement resolveApiKey. ──
+// Return null for "no Bearer header". Throw new ApiKeyError(...) for malformed,
+// missing, revoked, or wrong-secret. Return { orgId, createdByUserId, scopes }
+// on a valid match. Look up via store.findByPrefix; hash with sha256Hex; compare
+// with timingSafeEqualHex (never ===).
+
+export const resolveApiKey = async (authHeader) => {
+  // implement me
+  return null;
+};
+`}
+  tests={`
+// The runner is jest-flavored async; this helper asserts a call REJECTS and
+// hands back the thrown error so a test can inspect it.
+const expectReject = async (promise) => {
+  try {
+    await promise;
+  } catch (e) {
+    return e;
+  }
+  throw new Error('Expected the call to reject, but it resolved.');
+};
+
+test('no Bearer header resolves to null (falls through to the cookie path)', async () => {
+  expect(await resolveApiKey(null)).toBe(null);
+  expect(await resolveApiKey('Basic xyz')).toBe(null);
+});
+
+test('a malformed Bearer token rejects WITHOUT hitting the store', async () => {
+  resetStore();
+  const thrown = await expectReject(resolveApiKey('Bearer notdotted'));
+  expect(thrown).toBeTruthy();
+  // The cheap structural check runs before any DB read.
+  expect(getStoreHits()).toBe(0);
+});
+
+test('a valid key resolves to the right org, creator, and scopes', async () => {
+  resetStore();
+  const resolved = await resolveApiKey('Bearer rsk_live_abc.realsecret');
+  expect(resolved).toEqual({
+    orgId: 'org_1',
+    createdByUserId: 'user_1',
+    scopes: ['invoices:read'],
+  });
+});
+
+test('a revoked key is rejected', async () => {
+  resetStore();
+  const thrown = await expectReject(resolveApiKey('Bearer rsk_live_dead.deadsecret'));
+  expect(thrown).toBeTruthy();
+});
+
+test('a wrong secret is rejected (right prefix, bad secret)', async () => {
+  resetStore();
+  const thrown = await expectReject(resolveApiKey('Bearer rsk_live_abc.wrongsecret'));
+  expect(thrown).toBeTruthy();
+});
+
+test('an unknown prefix is rejected', async () => {
+  resetStore();
+  const thrown = await expectReject(resolveApiKey('Bearer rsk_live_nope.whatever'));
+  expect(thrown).toBeTruthy();
+});
+`}
+/>
+
+<details>
+<summary>Reveal solution</summary>
+
+```js
+const resolveApiKey = async (authHeader) => {
+  if (!authHeader?.startsWith('Bearer ')) return null;
+
+  const presented = authHeader.slice('Bearer '.length);
+  const [prefix, secret] = presented.split('.');
+  if (!prefix || !secret) throw new ApiKeyError('malformed key');
+
+  const row = store.findByPrefix(prefix);
+  if (!row || row.revokedAt) throw new ApiKeyError('invalid key');
+
+  const presentedHash = await sha256Hex(secret);
+  if (!timingSafeEqualHex(presentedHash, row.keyHash)) {
+    throw new ApiKeyError('invalid key');
+  }
+
+  return {
+    orgId: row.organizationId,
+    createdByUserId: row.createdByUserId,
+    scopes: row.scopes,
+  };
+};
+```
+
+The order is the lesson.
+The structural `prefix.secret` check runs *before* the store lookup, which is why the malformed-header test asserts zero store hits: you never pay a round-trip on a string that isn't key-shaped.
+The missing-or-revoked check then rejects a row that exists but isn't valid.
+The secret check hashes first, then compares with `timingSafeEqualHex`, never `===`, so a wrong key and a revoked key both come back as the same opaque "invalid," giving an attacker nothing to tell them apart.
+Everything the real wrapper adds, turning the throw into a 401, reading the creating member for `role`, building `ctx`, sits *around* this function.
+
+</details>
+
+## Scopes: the second gate that narrows a key's role
+
+A key resolves to a role, but a role is too blunt for a credential you mailed to a partner: "admin" lets them do *everything* an admin can, when all they need is to push invoices nightly.
+So a key carries a second, finer gate, its **scopes**, under one rule: a key can only narrow its role, never exceed it.
+
+The two gates answer different questions:
+
+- **Role** answers *who is this, and how powerful are they in the org?* It's the gate you already have, `roleAtLeast` in the wrapper, checked identically for keys and humans.
+- **Scope** answers *of everything this caller's role allows, how much did the issuer grant this specific key?* It's checked *after* the role gate, inside the handler, with a tiny helper.
+
+The two combine as an intersection: the narrowest side wins.
+
+<Figure caption="The role allows a wide set of capabilities; the key's grant is a smaller box beneath it. Effective access keeps only the capabilities both rows share.">
+  <ScopeCeiling />
+</Figure>
+
+Scopes only mean something for a key; a human at the dashboard operates with the full reach of their role.
+So `ctx` gains an *optional* `scopes` field: an array when a key resolved the request, absent when a cookie did.
+The `hasScope` helper treats "absent" as "no ceiling":
+
+```ts
+export const hasScope = (ctx: Ctx, scope: string): boolean =>
+  ctx.scopes === undefined || ctx.scopes.includes(scope);
+```
+
+The `ctx.scopes === undefined` branch is load-bearing.
+A cookie caller has no `scopes`, so `hasScope` returns `true` for everything and the human's role stays their only ceiling, as before.
+A key caller has the granted array, so `hasScope` returns `true` only for scopes in it.
+The same call, `hasScope(ctx, 'invoices:write')`, gives the right answer for both.
+
+A handler that mutates invoices then has the role gate at the door and the scope gate in the body:
+
+```ts
+export const POST = authedRoute(
+  'member',
+  createInvoiceSchema,
+  async (input, ctx) => {
+    if (!hasScope(ctx, 'invoices:write')) {
+      return problem(403, 'This key is not scoped to write invoices.');
+    }
+    const result = await createInvoice(input, ctx);
+    return result.ok
+      ? Response.json(result.data, { status: 201 })
+      : problemFrom(result.error);
+  },
+);
+```
+
+A scope can take an admin-roled key and restrict it to read-only; it can *never* let a member-roled key do something a member can't.
+That's least privilege made concrete for a credential living on someone else's server: you grant the integration its minimum, and a leak can reach only that minimum, not everything the role could.
+
+This distinction is easy to get backwards, so check it.
+
+<MultipleChoice>
+  A partner's key is scoped to `invoices:read` only, but it was minted by an `admin` — so the key acts under the admin role. A request carrying this key hits `DELETE /api/invoices/:id`. The route's wrapper requires the `admin` role, and the handler body calls `hasScope(ctx, 'invoices:write')` before deleting. What does the caller get back?
+
+  <McqChoice correct>A `403` from inside the handler. The wrapper lets the request through, then the body's `hasScope` check stops it.</McqChoice>
+  <McqChoice>A `204` — the delete goes through, because the key carries admin authority and an admin may delete invoices.</McqChoice>
+  <McqChoice>A `403` from the wrapper's role gate, before the handler body ever runs.</McqChoice>
+  <McqChoice>A `204` — `hasScope` waves through any caller whose role is `admin` or higher.</McqChoice>
+
+  <McqWhy>The correct answer is the first: a `403` raised inside the handler. The two gates are independent, and the narrowest one wins. The key really does act with admin authority, so the wrapper's `roleAtLeast(role, 'admin')` passes and the request reaches the body. But scopes are a *second*, tighter ceiling checked there: this key was granted only `invoices:read`, so `hasScope(ctx, 'invoices:write')` returns `false` and the handler returns `403`. A scope can only narrow what the role allows — never widen it, and never be skipped just because the role is high. That is the whole point of mailing a partner a key scoped below its role: even with admin authority behind it, the key does only the one thing you granted.</McqWhy>
+</MultipleChoice>
+
+## Auditing actions made with a key
+
+A key-authenticated request has no human at the keyboard, so when it does something audit-worthy, what does the row record as the *actor*?
+
+`actorUserId` is nullable, with `onDelete: 'set null'`, precisely so the column can express "no specific human."
+A key-authored row uses that in one of two ways:
+
+- **`actorUserId` is the key's `createdByUserId`**, so the human who minted the key is accountable for what it does. A request made with Acme's nightly-sync key is attributed to the admin who created it.
+- **Or it's `null`, for a true unattended service key** whose creator was deleted or never a specific person. As with scheduled jobs and webhooks, a `null` actor is *information*: it says "a machine did this," and the `payload` carries which one, the key's `prefix`, so "which key?" stays answerable even when "which human?" has no answer.
+
+You can't reach for `logAudit` here, for the same reason the *system* actor couldn't: it derives the actor and org from `requireOrgUser()` and `await headers()`, both of which read the **session cookie** a key caller doesn't have.
+With no session to derive "who" and "which org" from, you insert the `audit_logs` row by hand, on the same `tx` as the work, sourcing `organizationId` and `actorUserId` from the resolved key's `ctx` and carrying the key's `prefix` in the `payload`:
+
+```ts
+await tx.insert(auditLogs).values({
+  organizationId: ctx.orgId,
+  actorUserId: ctx.user?.id ?? null, // the key's creator, or null
+  action: 'invoice.created',
+  subjectType: 'invoice',
+  subjectId: invoice.id,
+  payload: { viaApiKey: prefix },
+});
+```
+
+The discipline is unchanged: the row rides inside the same transaction as the work, so it exists if and only if the work landed.
+Only the *source* of "who" and "which org" changes, from a session cookie to the identity the wrapper resolved from the key.
+The header columns `logAudit` fills, `actorIp` and `actorUserAgent`, are simply absent; a machine caller has no browser, and both are nullable.
+
+A row can carry four kinds of actor, a human, the system, an API key, or a webhook, yet there is no `actorType` column.
+The distinction lives entirely in whether `actorUserId` is null, plus the `action` string and the `payload`, so don't add a column the schema doesn't need.
+
+## Personal access tokens: the same mechanism, owned by a user
+
+Everything you just built becomes a **personal access token** with one change: swap the owner.
+
+An org key is owned by an organization and acts under an org role.
+A personal access token is owned by a *user* and acts *as that user*: the credential an engineer mints for their own scripts, CLI, and automation, carrying their own identity.
+The `prefix`, `keyHash`, constant-time compare, and Bearer header are identical.
+Two things differ:
+
+- **The owner column** decides whose identity `ctx` resolves to. An org key resolves `ctx` to an org and a role; a PAT resolves it to the user who owns the token.
+- **The lifecycle.** An org key is *revoked* and kept for the trail. A PAT is *hard-deleted* with its owner's account, because the owner's right to erasure outranks the key's trail. That is the "personal API keys" entry in the account-erasure job the security chapter builds later.
+
+<CodeVariants>
+  <CodeVariant label="Org key — owned by an organization">
+    <div data-mark-color="green">
+
+    ```ts {4}
+    {
+      prefix: 'rsk_live_ab12cd34',
+      keyHash,
+      organizationId: 'org_1',
+      createdByUserId: 'user_1',
+      scopes: ['invoices:read'],
+    }
+    ```
+
+    </div>
+    The owner is `organizationId`. The key acts inside that org, under the role of the member who created it. Revoke sets `revokedAt`, and the row survives for the trail.
+  </CodeVariant>
+
+  <CodeVariant label="Personal access token — owned by a user">
+    <div data-mark-color="green">
+
+    ```ts {4}
+    {
+      prefix: 'rsk_pat_ef56gh78',
+      keyHash,
+      userId: 'user_1',
+      createdByUserId: 'user_1',
+      scopes: ['invoices:read'],
+    }
+    ```
+
+    </div>
+    The one changed line is the owner: `userId` where the org key had `organizationId`. The token acts *as that user*, with the user's own authority, and is deleted, not just revoked, when the user's account is erased.
+  </CodeVariant>
+</CodeVariants>
+
+Don't build two systems.
+Treating "org keys" and "personal tokens" as two features with two tables and two verify paths is tempting but wrong: it is one mechanism, one verify branch, one hash-and-show-once posture, and the owner column alone decides whose identity the resolved `ctx` carries.
+In a real schema you'd express this as one table with a nullable `organizationId` *and* a nullable `userId`, exactly one set, or as two thin tables sharing the verify helper.
+
+## Better Auth's `apiKey` plugin
+
+Hand-building the mechanism end to end, the table, the hash-and-show-once storage, the verify branch, and the scopes, is how you learn what a key is: what's stored, what's compared, what makes a leak survivable, and why the secret is shown once.
+In a real project you wouldn't ship that hand-rolled table; you'd reach for **Better Auth's `apiKey` plugin**, which does the hashing, scoped permissions, expiry, and per-key rate limiting for you.
+
+Two things shift when you adopt it.
+The plugin models permissions as a structured object like `{ invoices: ['read'] }` rather than the flat `invoices:read` strings we used for teaching.
+And it owns the hashing and storage you hand-rolled, so configuring it *replaces* your table rather than sitting on top of it: `auth.api.createApiKey()` and `auth.api.verifyApiKey()` are the production replacements for your `createApiKey` and `resolveApiKey`.
+
+The judgment is the one that runs through this chapter: hand-roll to learn the shape, adopt the plugin to ship.
+
+<VideoCallout videoId="CpBgjjnXuy4" videoTitle="Dreams of Code — 10 Better Auth plugins that every SaaS should use">
+  Dreams of Code tours Better Auth's plugin lineup (Jan 2026). The `apiKey` section at 9:44 names the production features that replace this lesson's table: scoped permissions, expiry, per-key rate limiting, and the custom prefix.
+</VideoCallout>
+
+Machine identity now resolves at the same boundary as the session cookie, into the same `ctx`; the next chapter reuses this store-the-hash, show-once shape to mint and verify invitation tokens.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Better Auth — API Key plugin"
+    href="https://www.better-auth.com/docs/plugins/api-key"
+    icon="simple-icons:betterauth"
+    iconColor="#000000"
+    description="The production path: hashing at rest, scoped permissions, expiry, and per-key rate limiting, configured rather than hand-rolled. The replacement for this lesson's table."
+  />
+  <ExternalResource
+    title="OWASP — Secrets Management Cheat Sheet"
+    href="https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html"
+    icon="simple-icons:owasp"
+    iconColor="#000000"
+    description="The vendor-neutral case for the posture this lesson takes: hash at rest, show once, least privilege, and never a secret in a URL or a log."
+  />
+  <ExternalResource
+    title="MDN — Crypto.getRandomValues()"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The CSPRNG behind the secret half of every key, the same randomness source you used for tokens earlier in the course."
+  />
+</CardGrid>

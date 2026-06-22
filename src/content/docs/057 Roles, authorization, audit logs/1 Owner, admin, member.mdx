@@ -1,0 +1,365 @@
+---
+title: Owner, admin, member
+chapter-id: 57
+course-progress: 0.5483
+tagline: Role-based access control on Better Auth's organization roles, turning owner, admin, and member into a typed authority gradient your app enforces.
+sidebar:
+  order: 1
+  label: Owner, admin, member
+rewrites: 2
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import TypeCoding from '../../../components/live-coding/TypeCoding/TypeCoding.astro';
+import TrueFalse from '../../../components/exercises/true-false/TrueFalse.astro';
+import Statement from '../../../components/exercises/true-false/Statement.astro';
+import TfWhy from '../../../components/exercises/true-false/TfWhy.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Picture three people sharing one organization in your app.
+Dana signed the contract and pays the invoices; she owns the relationship.
+Marcus runs the place day to day: adding teammates, removing the ones who leave, managing settings.
+Priya does the work the product exists for, creating and sending invoices to clients, and never thinks about billing or the team roster.
+
+Same org, three relationships to it, and your software has to tell them apart, because the moment Priya can change the plan or delete the org you have a problem.
+This is **authorization**: authentication answered *who are you*, authorization answers *what are you allowed to do here*.
+Almost every web app handles it with <Term definition="Role-Based Access Control: permissions are attached to roles, and users get permissions by holding a role.">RBAC</Term>, where each person holds a role and the role decides what they can do.
+
+The answer that shapes the rest is **three roles, not a permission matrix.**
+`owner`, `admin`, and `member` cover almost everything early-stage SaaS needs.
+You don't give every action its own permission and let customers author their own roles; that granular system exists, and you reach for it only when a paying customer needs a seat the three roles can't express.
+
+You are not starting from zero.
+The previous chapter stood up the org skeleton: the `organization` and `member` tables, the `activeOrganizationId` slot on the session, and the `tenantDb(orgId)` helper that pins every query to one tenant.
+Better Auth's organization plugin also put a `role` column on `member`, a plain string defaulting to `'member'`, sitting there with no meaning attached.
+This lesson gives it meaning.
+
+## The capability map
+
+Before you write any code, answer one question: what can each role do?
+Write it down in one place and the code falls out of it; leave it scattered and a dozen files give subtly different answers.
+
+| Capability | member | admin | owner |
+| --- | :---: | :---: | :---: |
+| Read and write content | ✓ | ✓ | ✓ |
+| Edit own profile | ✓ | ✓ | ✓ |
+| Leave the org | ✓ | ✓ | ✓ |
+| Invite and remove members | | ✓ | ✓ |
+| Change roles (up to admin) | | ✓ | ✓ |
+| Edit org settings | | ✓ | ✓ |
+| View the audit log | | ✓ | ✓ |
+| Billing and plan changes | | | ✓ |
+| Transfer ownership | | | ✓ |
+| Delete the org | | | ✓ |
+
+The roles are **cumulative**: a `member` works on content, an `admin` adds running the team, an `owner` adds the things that touch money and the org's existence.
+Each role is a strict superset of the one below, so `member < admin < owner` is an *order*, and every authorization decision reduces to one comparison against it.
+
+That order lives in `lib/auth/roles.ts`, and the team treats it as the source of truth for who can do what.
+When you add a privileged action, you don't invent a fresh rule inside the handler; you decide which column the capability belongs in and add a row.
+
+You did not invent these three roles.
+Better Auth's organization plugin ships `owner`, `admin`, and `member` as defaults, and its `admin` is full control except deleting the org or changing the owner, exactly the line your table draws.
+
+:::note
+The plugin's access-control system can express more roles for the day the three defaults can't cover a customer's need; we return to that trigger at the end of the lesson.
+:::
+
+## An org always has at least one owner
+
+Get one rule wrong here and a paying customer is locked out of their own organization for good.
+
+That rule is an <Term definition="A condition the system guarantees is always true; code is written so it can never be violated.">invariant</Term>: **at every moment, an org has at least one owner** — someone who can change the plan, transfer ownership, or recover the account.
+
+Three ordinary actions can each delete the last owner:
+
+- **Removing a member** who is the last owner.
+- **Demoting yourself** from owner to admin as the last owner.
+- **Leaving the org** as the last owner.
+
+Each is a normal thing to click, so the guard cannot live in the UI.
+A hidden button is only cosmetic: someone can call the action directly, a race between two admins can slip through, or a later refactor can drop the check.
+**The guard belongs in the helper that performs the mutation**, next to the database write; the UI only renders the error it sends back.
+
+The check counts the owner rows to answer one question, *is this the last owner?*
+
+```ts
+export const isLastOwner = async (orgId: string): Promise<boolean> => {
+  const rows = await db
+    .select({ owners: count() })
+    .from(member)
+    .where(and(eq(member.organizationId, orgId), eq(member.role, 'owner')));
+
+  return (rows[0]?.owners ?? 0) <= 1;
+};
+```
+
+You build the member-management actions later in this chapter; each calls `isLastOwner` first and refuses with a shared error code, `'last-owner'`, when it returns `true`.
+Naming the query and the code here keeps the three actions from reinventing the rule.
+
+## Ordering roles with `roleAtLeast`
+
+You know that `member < admin < owner`, but the code doesn't, and there's a catch.
+
+Better Auth stores each role as an **independent bag of permissions**, with no notion that `owner` outranks `admin`.
+That ordering is a fact about your product, not one the plugin enforces, so it holds in your table but not in code until you write it.
+
+You write it in one file, with three declarations.
+
+<AnnotatedCode lang="ts" code={`
+export type Role = 'owner' | 'admin' | 'member';
+
+const ROLE_RANK = { member: 0, admin: 1, owner: 2 } as const satisfies Record<Role, number>;
+
+export const roleAtLeast = (role: Role, required: Role): boolean =>
+  ROLE_RANK[role] >= ROLE_RANK[required];
+`}>
+  <AnnotatedStep meta={`"export type Role = 'owner' | 'admin' | 'member'"`} color="blue">
+    The one place a role's name is written down. Rename a role here and TypeScript flags every site that now refers to a role that no longer exists.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"const ROLE_RANK = { member: 0, admin: 1, owner: 2 } as const satisfies Record<Role, number>"`} color="green">
+    The order, as numbers. `as const` keeps the values as the literals `0 | 1 | 2`; `satisfies Record<Role, number>` forces every role to have a rank. Add a fourth role and forget to rank it, and this line stops compiling.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"ROLE_RANK[role] >= ROLE_RANK[required]"`} color="green">
+    The whole authority gradient in one operator. `roleAtLeast('owner', 'admin')` checks `2 >= 1` and returns `true`: the owner is at least an admin, provably.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+There's no `import 'server-only'` here, and there shouldn't be.
+`Role` is three strings and `roleAtLeast` is pure arithmetic, so a Client Component can import it to hide a button for non-admins; the real security boundary lives where the server reads the role and gates the action.
+
+Small as it is, `roleAtLeast` changes how you write every authorization check.
+
+<CodeVariants>
+  <CodeVariant label="Scattered">
+    <div data-mark-color="red">
+
+    ```ts {2,8}
+    export const removeMember = async (targetId: string) => {
+      if (role === 'admin' || role === 'owner') {
+        // remove the member
+      }
+    };
+
+    export const editSettings = async (input: Settings) => {
+      if (role === 'admin' || role === 'owner') {
+        // save the settings
+      }
+    };
+    ```
+
+    </div>
+    **Breaks on a rename, silently.** The "admin or owner" rule is copied into every privileged action. Rename `admin` or add a `superadmin`, and the copy you miss doesn't error; it quietly lets the wrong people through.
+  </CodeVariant>
+
+  <CodeVariant label="Ordered">
+    <div data-mark-color="green">
+
+    ```ts {2,8}
+    export const removeMember = async (targetId: string) => {
+      if (roleAtLeast(role, 'admin')) {
+        // remove the member
+      }
+    };
+
+    export const editSettings = async (input: Settings) => {
+      if (roleAtLeast(role, 'admin')) {
+        // save the settings
+      }
+    };
+    ```
+
+    </div>
+    **One source of truth.** Every check states its requirement, "at least an admin," and leaves the meaning to `ROLE_RANK`. Edit one map and every call site stays correct.
+  </CodeVariant>
+</CodeVariants>
+
+The scattered version is right today but fragile: it spreads one decision across many edits. Designing out that fragility is the job.
+
+Now make the type system catch the exact bug `satisfies` exists to prevent.
+The `Role` union below has three members but the rank map is missing one.
+Add the missing entry so the map is complete and the type stays narrow.
+
+<TypeCoding
+  instructions="The `satisfies Record<Role, number>` line errors because one role has no rank. Add the missing entry to `ROLE_RANK` so every role is ranked and the error clears. When the map is complete, the `^?` query resolves to the full union of role names."
+  starter={`type Role = 'owner' | 'admin' | 'member';
+
+const ROLE_RANK = {
+  admin: 1,
+  owner: 2,
+} as const satisfies Record<Role, number>;
+
+type RankedRole = keyof typeof ROLE_RANK;
+//   ^?
+
+export const roleAtLeast = (role: Role, required: Role): boolean =>
+  ROLE_RANK[role] >= ROLE_RANK[required];
+`}
+  expectedQueries={[
+    { line: 9, contains: '"member"' },
+  ]}
+/>
+
+This missing-rank bug is the likeliest mistake when someone adds a role months from now, and it can't reach production because it can't even compile.
+
+## Reading the role fresh: extending `requireOrgUser`
+
+You need the current user's role in the current org, on this request.
+The previous chapter's `requireOrgUser()` already returns `{ user, orgId, role }`, but typed `role` as `Role | null` and never used it.
+Now every gate compares against it, so tighten the return to a definite `Role`.
+
+One discipline matters more than the code: **read the role exactly once per request, inside the helper.**
+Every check reads `role` off what `requireOrgUser()` returned; none re-queries on its own.
+
+Why so strict? A role can change mid-session.
+An owner can demote an admin to member while that admin is still working.
+If your code trusted a role baked into the session cookie at sign-in, the demoted admin would keep their powers until the cookie refreshed, minutes or hours later.
+That is **stale authority**, a real security hole, and reading the role fresh per request closes it.
+It is also why you can't pluck the role off the session object: Better Auth doesn't put the active org's role on the session payload, so you must query it.
+
+```ts title="src/lib/auth.ts"
+export const requireOrgUser = cache(async (): Promise<{
+  user: User;
+  orgId: string;
+  role: Role;
+}> => {
+  const session = await getSession();
+  if (!session?.user) redirect('/sign-in');
+  if (!session.session.activeOrganizationId) redirect('/onboarding/create-org');
+
+  const activeMember = await auth.api.getActiveMember({ headers: await headers() });
+  if (!activeMember) redirect('/onboarding/create-org');
+
+  return {
+    user: session.user,
+    orgId: session.session.activeOrganizationId,
+    role: activeMember.role as Role,
+  };
+});
+```
+
+Two details earn their place.
+First, to guarantee a `Role`, a session with an active org but *no* membership row redirects to `/onboarding/create-org` instead of casting with `as Role`: an active org you aren't a member of is a broken state, not a role to invent.
+Second, the helper is wrapped in `cache(...)`, so calling it from five components in one render reads the role once, not five times.
+
+With the role in hand, the two common gates write themselves.
+Put them in `lib/auth/guards.ts`:
+
+```ts
+import 'server-only';
+import { redirect } from 'next/navigation';
+import { requireOrgUser } from '@/lib/auth';
+import { roleAtLeast } from '@/lib/auth/roles';
+
+export const requireAdmin = async () => {
+  const ctx = await requireOrgUser();
+  if (!roleAtLeast(ctx.role, 'admin')) redirect('/');
+  return ctx;
+};
+
+export const requireOwner = async () => {
+  const ctx = await requireOrgUser();
+  if (!roleAtLeast(ctx.role, 'owner')) redirect('/');
+  return ctx;
+};
+```
+
+Each guard wraps `requireOrgUser` rather than duplicating it: get the context, check the floor with `roleAtLeast`, redirect if the user doesn't clear it, otherwise return the same `{ user, orgId, role }`.
+`requireAdmin` requires *at least* an admin, which by the gradient includes owners.
+
+These guards are the **page-protection seam**.
+A Server Component at the top of an admin-only route calls `requireAdmin()` on its first line, and a plain member is redirected before any admin UI renders.
+But the guard protects what gets *displayed*, not what gets *fired*: a crafted request can invoke an admin-only mutation without ever loading the page.
+
+:::caution
+A protected page is not a protected action.
+`requireAdmin` keeps a member off the admin screen, but a Server Action can run without that screen ever loading.
+The next lesson takes this discipline to the mutation boundary with `authedAction`, the rendering-side guard's action-side twin.
+Gate the page *and* the action.
+:::
+
+## Roles you don't assign by hand
+
+Most of the time you don't assign a role at all. The system does, so your job is to know when.
+
+**The first member is the owner.** When someone creates an organization, Better Auth's `organization.create` writes their `member` row with `role: 'owner'`. You build nothing here; after creating an org with the flow from the previous chapter, open the `member` table and confirm the row reads `owner`.
+
+**Accepting an invitation copies the invited role.** You pick the invitee's role when you invite them, and it is stored on the `invitation` row. When they accept, that `invitation.role` is copied verbatim onto their new `member` row. The contract: the inviter chooses, acceptance copies. You build this flow in the next chapter.
+
+:::note
+This is why the `Role` union stays small and exact. Every value was either written by the plugin or copied from an invitation you controlled, so each one is something `roleAtLeast` knows how to rank.
+:::
+
+## When three roles aren't enough
+
+The honest trigger for outgrowing three roles is a paying customer.
+One day someone says, in effect, *"we need a seat that can do X but not Y, and none of owner, admin, or member fits"*: an "approver" who can sign off on invoices but not edit them.
+A named seat the gradient can't express is the signal.
+The machinery is real: fine-grained <Term definition="ABAC — Attribute-Based Access Control: access decided by attributes of the user, resource, and context, not a fixed role.">attribute-based access control</Term>, where every action maps to a permission and customers author their own roles.
+Better Auth ships the escape hatch as `createAccessControl` plus a `roles` map.
+
+Until that customer arrives, three roles ship the product and a permissions matrix is weight you carry for no one.
+
+<VideoCallout videoId="rvZ35YW4t5k" videoTitle="Role-based access control (RBAC) vs. Attribute-based access control (ABAC)">
+  IBM's Jeff Crume contrasts RBAC and ABAC in under 8 minutes: the two models behind this lesson's "three roles" default and the access-control door you open later.
+</VideoCallout>
+
+One trap nearby catches people who do understand RBAC.
+A product eventually wants a "view as member" feature so an admin can see what a member sees.
+The tempting shortcut is to swap the admin's role for `member` in the session and let the app react.
+Don't: faking a role in the authorization layer is a way for the real role to be wrong, and authorization you can't trust is no authorization at all.
+**View-as is a UI mode, not an authz mode.**
+Make `viewAs` a rendering flag that hides admin chrome and previews the member's screen, while every server-side check still reads the real role from `requireOrgUser`.
+
+Test yourself on the two ideas people get wrong most often.
+
+<TrueFalse instructions="Each claim is about where a role lives and when it's safe to trust.">
+  <Statement answer="false">
+    A user's role should live on their `user` record (for example, `isAdmin: true`) so it travels with them wherever they go.
+    <TfWhy>**False.** A role belongs on the `member` row, keyed by `(orgId, userId)`. The same person can be an owner in Acme and a plain member in Beta; a flag on `user` couples the role to the human across every org and can't express that. The role is per-membership, not per-person.</TfWhy>
+  </Statement>
+
+  <Statement answer="false">
+    Once a user signs in, the role baked into their session is safe to trust until they sign out.
+    <TfWhy>**False.** A role can change mid-session: an owner can demote an admin at any moment. Trusting the role baked into the session cookie is *stale authority*, the demoted admin keeps their powers until the cookie refreshes. That's why `requireOrgUser` reads the role fresh per request via `getActiveMember`, so a demotion takes effect within seconds.</TfWhy>
+  </Statement>
+</TrueFalse>
+
+The next lesson takes this discipline to the mutation boundary, where "I forgot the role check" won't compile.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Organization plugin"
+    href="https://www.better-auth.com/docs/plugins/organization"
+    icon="simple-icons:betterauth"
+    iconColor="#000000"
+    description="The owner/admin/member defaults, getActiveMember, and the createAccessControl door — straight from the library you're using."
+  />
+  <ExternalResource
+    title="RBAC vs ABAC"
+    href="https://www.osohq.com/learn/rbac-vs-abac"
+    icon="lucide:scale"
+    iconColor="#00C2A8"
+    description="Oso's engineering write-up on when roles are enough and when attribute-based control earns its complexity."
+  />
+  <ExternalResource
+    title="How To Handle Permissions Like A Senior Dev"
+    href="https://www.youtube.com/watch?v=5GG-VUvruzE"
+    icon="simple-icons:youtube"
+    iconColor="#FF0000"
+    description="Web Dev Simplified walks the full arc from a single role check up to a fine-grained permission system."
+  />
+</CardGrid>

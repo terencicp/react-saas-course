@@ -1,0 +1,517 @@
+---
+title: The authedRoute twin
+tagline: Port the authedAction discipline to Next.js route handlers, keeping the same role and schema checks but answering in HTTP status codes and RFC 9457 Problem Details.
+chapter-id: 57
+course-progress: 0.5528
+rewrites: 3
+sidebar:
+  order: 3
+  label: The authedRoute twin
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import TwoDoorsOneRoom from '../../../components/lessons/057/3/TwoDoorsOneRoom.astro';
+import SharedFnTrace from '../../../components/lessons/057/3/shared-fn-trace/SharedFnTrace.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson, `authedAction` closed the missing-role-check bug by making the role an argument the compiler counts, not a line you could forget. But a Server Action is only the React door: it opens for callers that submit a form or fire `useActionState`, and plenty of callers do neither.
+
+A Stripe webhook POSTs JSON when a payment clears, a partner's nightly job pushes records to your API, a mobile client hits the same backend without rendering React. None submit a form; they speak raw HTTP to a `route.ts`. They carry the same untrusted input a form does, so they need the same three checks before it reaches your database. This lesson ports the wrapper to that door, `authedRoute`. The discipline is identical, with one new idea: a form reads a `Result`, but an HTTP client reads a status code on the wire. Both doors call one shared business function, so the mutation is written once.
+
+## Two doors, one discipline
+
+Your app has two server seams that accept an outside request and run a mutation. The **Server Action** is the React caller's door: a same-origin form submission, a `useActionState` call, anything inside your own React app. The <Term definition={"A route.ts file that exports GET/POST/... functions and responds to raw HTTP.\nNext's non-React server seam."}>route handler</Term> is everybody else's door: a <Term definition="An HTTP callback a third-party service POSTs to your URL when an event happens.">webhook</Term>, a partner's server, a mobile client, anything speaking HTTP without a form.
+
+A React form arrives through `authedAction`, a partner's JSON POST through `authedRoute`; both run the same checks at the threshold and call the same `/lib` function.
+
+<Figure caption="The caller picks the door; both lead to the same business function, and only the return type differs.">
+  <TwoDoorsOneRoom />
+</Figure>
+
+The caller's shape decides which door, not taste. Open the route handler only when the caller forces it, and exactly five things do: the caller is a non-browser client, the response needs to be cacheable HTTP, the response is a stream, a third party requires a specific URL or status code, or the framework names the file (an OG image, a sitemap). Server Actions are the default; route handlers are the exception.
+
+This refuses a common junior instinct: exposing `/api/whatever` for an *internal* React mutation "so we have an API." A dashboard button that removes a member should be a Server Action; wrapping it in a route handler buys you only a public URL you now have to defend. Reach for the route handler when something outside your React app needs in.
+
+Both doors run the same discipline: resolve the session, authorize the role, parse the input, then do the work. Same four gates, same order, same `ctx`. Only what comes back on the wire changes.
+
+<VideoCallout videoId="27Uj6BeIDV0" videoTitle="Next.js Route Handlers">
+  Codevolution's 6-minute primer on the `route.ts` mechanics this lesson builds on: the file convention, verb exports, and how a handler differs from a page route.
+</VideoCallout>
+
+## `authedRoute(role, schema, fn)`: the same signature, a `Response` body
+
+The signature twins `authedAction`. `role` and `schema` are unchanged; only the third argument differs. Instead of `fn: (input, ctx) => Promise<Result<T>>`, you write `fn: (input, ctx) => Promise<Response>`: the business function returns a `Response`, not a `Result`.
+
+The `ctx` is identical to last lesson, `{ user, orgId, role, db }` with `db` already bound to `tenantDb(orgId)`, and the wrapper authorizes the role through the same `requireOrgUser`. Only the session source changes: an action reads it from `await headers()`, but a route handler already holds the request, so it reads `request.headers`.
+
+The call site lives in a `route.ts`, assigned to a verb export. The two wrappers side by side:
+
+<CodeVariants>
+  <CodeVariant label="authedAction — the React door">
+    <div data-mark-color="blue">
+
+    ```ts {10}
+    // app/(app)/invoices/actions.ts
+    'use server';
+
+    export const createInvoice = authedAction(
+      'admin',
+      createInvoiceSchema,
+      async (input, ctx) => {
+        const [row] = await ctx.db.insert(invoices).values(input).returning();
+        revalidatePath('/invoices');
+        return ok(row);
+      },
+    );
+    ```
+
+    </div>
+    **Returns a `Result` the form reads inline.** The caller is your own React: `useActionState` reads `state.data` on success or `state.error.userMessage` on failure, and the page never navigates.
+  </CodeVariant>
+
+  <CodeVariant label="authedRoute — the HTTP door">
+    <div data-mark-color="orange">
+
+    ```ts {7}
+    // app/api/invoices/route.ts
+    export const POST = authedRoute(
+      'admin',
+      createInvoiceSchema,
+      async (input, ctx) => {
+        const [row] = await ctx.db.insert(invoices).values(input).returning();
+        return Response.json(row, { status: 201 });
+      },
+    );
+    ```
+
+    </div>
+    **Returns a `Response` the HTTP client reads as a status code plus a body.** `201 Created` speaks the vocabulary every HTTP client already knows, with no envelope to teach a partner.
+  </CodeVariant>
+</CodeVariants>
+
+Same `'admin'`, same `createInvoiceSchema`, same `ctx.db` insert. Exactly two things differ: the return type (`Result` versus `Response`), and `revalidatePath`, which belongs to the React door alone because an HTTP client has no Next.js cache to revalidate.
+
+The export name carries the HTTP method. A `route.ts` names one export per method (`export const GET`, `export const POST`, `export const DELETE`), where `page.tsx` and `layout.tsx` default-export; one file can hold a `GET` to read and a `POST` to create side by side, each its own `authedRoute` call.
+
+Naming carries over from last lesson: the wrapper is named for what it is (`authedRoute`), the business function for what it does (`createInvoice`), no `Route` suffix.
+
+## Parsing three input sources, cheapest first
+
+The input side holds the one real difference. An action sees a flat `FormData` and parses it in one step. A route handler's input arrives from up to three places at once, which the wrapper gathers itself:
+
+- **Path params**: the typed URL segments, like the `id` in `/api/invoices/[id]`. In Next 16 the handler's second argument carries them, typed by `RouteContext<'/api/invoices/[id]'>`, with `params` a Promise you `await`.
+- **Query string**: everything after the `?`, like a `?status=paid` filter, read with `new URL(request.url).searchParams`.
+- **Request body**: the JSON payload, via `await request.json()`.
+
+The schema is one object with a sub-schema per source, `{ params, query, body }`. The wrapper parses each piece from its own place, then hands the assembled, typed input to `fn`.
+
+The four gates are the ones you know: resolve the session, authorize the role, parse, then call. Order them cheapest disqualifier first. Reading the body off the request stream is the expensive step, so the cheap rejections come before it: the role check turns away a forbidden caller, and the JSON parse rejects a malformed body, both before your schema ever runs.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import 'server-only';
+import { z } from 'zod';
+import { requireOrgUser } from '@/lib/auth';
+import { roleAtLeast, type Role } from '@/lib/auth/roles';
+import { problem } from '@/lib/http/problem';
+import { tenantDb } from '@/lib/tenant-db';
+
+export const authedRoute =
+  <Schema extends z.ZodType>(
+    role: Role,
+    schema: Schema,
+    fn: (input: z.infer<Schema>, ctx: Ctx) => Promise<Response>,
+  ) =>
+  async (request: Request, route: { params: Promise<unknown> }): Promise<Response> => {
+    const { user, orgId, role: actorRole } = await requireOrgUser({
+      headers: request.headers,
+    });
+
+    if (!roleAtLeast(actorRole, role)) {
+      return problem(403, 'You do not have permission to do this.');
+    }
+
+    const url = new URL(request.url);
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return problem(400, 'Request body is not valid JSON.');
+    }
+
+    const parsed = schema.safeParse({
+      params: await route.params,
+      query: Object.fromEntries(url.searchParams),
+      body,
+    });
+    if (!parsed.success) {
+      return problem(422, 'Validation failed.', {
+        fieldErrors: z.flattenError(parsed.error).fieldErrors,
+      });
+    }
+
+    const db = tenantDb(orgId);
+    return fn(parsed.data, { user, orgId, role: actorRole, db });
+  };
+`}>
+  <AnnotatedStep meta={`{15-17}`} color="blue">
+    **Resolve.** `requireOrgUser` now reads `request.headers` instead of `await headers()`, since the handler already holds the request. No session means the resolve raises and the wrapper lets it through.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{19-21}`} color="green">
+    **Authorize.** The same `roleAtLeast` check, only the failure differs: below the floor, return `problem(403, …)`, a `403 Forbidden` `Response`, rather than an `err('forbidden')` value.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{23-40}`} color="orange">
+    **Parse, and the 400/422 split.** Read the body first, in a `try`: unparseable JSON never reaches the schema, so it's a `400`. Then `safeParse` the assembled `{ params, query, body }`; input that's well-formed but wrong is a `422` carrying Zod's `fieldErrors`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{42-43}`} color="violet">
+    **Call.** Build the business `ctx`, `{ user, orgId, role, db }` with `db = tenantDb(orgId)`, the same payload the action wrapper hands down, and pass it with the parsed input to `fn`. Whatever `Response` it returns passes straight back to the client.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+A read-only `GET` has no body, so its wrapper skips that read and parses only `params` and `query`; the gates and their order are otherwise identical.
+
+## The status-code map: 400, 401, 403, 404, 422
+
+A failing action returns an `err(code, …)` like `'forbidden'` or `'validation'`, and the React form reads that code. A route has no form: its caller is a program that keys off the **HTTP status**. Mapping each failure category to the right status is the core skill of this lesson.
+
+Five statuses cover everything `authedRoute` and the functions behind it emit:
+
+| Failure | HTTP status | Action-seam analog |
+| --- | --- | --- |
+| No valid session | **401 Unauthorized** | action `redirect`s to `/sign-in` |
+| Valid session, role too low | **403 Forbidden** | `err('forbidden')` |
+| Input malformed / unparseable | **400 Bad Request** | (n/a; `FormData` rarely malformed) |
+| Input well-formed but fails the schema | **422 Unprocessable Entity** | `err('validation')` |
+| Entity doesn't exist *in this org* | **404 Not Found** | the action's own not-found |
+
+Every status has a counterpart you already know from the action seam, so porting the wrapper is mostly porting this third column. Three rows reward a closer look.
+
+**400 versus 422** is the pair people blur. **400** is *malformed* input the server can't parse, so it never reaches your schema: the body isn't valid JSON, or a path segment that must be a UUID is the string `"banana"`. **422** is input that parses fine but *fails the schema*: valid JSON with a required field missing, or a string where a number belongs. The action seam barely sees 400, since a `FormData` payload is hard to malform; but on the wire, where a partner hand-builds a JSON body, malformed input is a real and distinct case.
+
+**401 versus the action's redirect** is the same discipline with a different exit. Both wrappers call the same `requireOrgUser`. In an action, no session makes that helper throw a Next.js redirect, and the wrapper lets it fly: the browser navigates to `/sign-in`, which is right, because a human should go sign in. A route handler has no browser and its caller is a program, so the wrapper turns "no session" into a **401 Response** for the program to act on.
+
+**404** is where cross-tenant leaks hide, so prefer it over 403. When a valid, sufficiently privileged session asks for an invoice that belongs to *another org*, 403 ("you're not allowed") confirms the row exists, just out of reach. The secure answer is 404: because `ctx.db` is tenant-scoped, the read comes back empty, and "doesn't exist for you" reveals nothing.
+
+:::caution
+A tenant-scoped read that finds nothing for a *named* entity must return **404**, not an empty **200**. It's tempting to `Response.json(null)` and call it a success, since the query didn't error, but `GET /api/invoices/:id` returning `200 {}` for a row outside your org tells the caller "this exists and is empty," leaking the shape of your data. This is exactly where one tenant quietly probes another's.
+:::
+
+<VideoCallout videoId="7ijBiXddB7w" videoTitle="Authentication vs Authorization Explained — xplodivity">
+  xplodivity's 4-minute bouncer analogy for *who you are* (authentication, the 401) versus *what you're allowed to do* (authorization, the 403): the exact split this section's status map turns on.
+</VideoCallout>
+
+Match each failure to the status it produces.
+
+<Matching instructions="Match each failure cause to the HTTP status authedRoute returns for it.">
+  <Pair>
+    <Fragment slot="left">No valid session on the request</Fragment>
+    <Fragment slot="right">`401 Unauthorized`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">Valid session, but role below the floor</Fragment>
+    <Fragment slot="right">`403 Forbidden`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">Request body isn't valid JSON</Fragment>
+    <Fragment slot="right">`400 Bad Request`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">Valid JSON, but a required field is missing</Fragment>
+    <Fragment slot="right">`422 Unprocessable Entity`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">Named row not found in this org</Fragment>
+    <Fragment slot="right">`404 Not Found`</Fragment>
+  </Pair>
+</Matching>
+
+One last posture rule: don't call `redirect()` inside a route handler. It works (Next serves a 307), but a redirect throws a *navigation*, and your partner's job server asked for a result, not to be sent somewhere. An API handler returns an explicit status `Response`; reach for `Response.redirect(url, 303)` only on the rare occasion a redirect is genuinely the intent.
+
+## Response bodies: Problem Details for errors, JSON for success
+
+The status code is half the error; the body is the other half. Give every error body the same shape and a partner integrating your API writes one error renderer instead of one per endpoint.
+
+That shape is RFC 9457 <Term definition="A standard JSON shape for HTTP error responses. One body format every error reuses.">Problem Details</Term>: errors carry `Content-Type: application/problem+json` and a fixed set of fields, plus a `fieldErrors` extension for validation failures. A 422 from a failed parse:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Unprocessable Entity",
+  "status": 422,
+  "detail": "Validation failed.",
+  "fieldErrors": {
+    "amount": ["Expected a positive number."]
+  }
+}
+```
+
+`fieldErrors` is the *same* `Record<string, string[]>` shape `z.flattenError` produced for the form last lesson. Only the envelope changed, so the client still renders the message under the `amount` field exactly as before.
+
+You don't hand-build this object. The `problem(...)` helper does, living once in `src/lib/http/problem.ts`. The schema was authored earlier; here you *consume* it.
+
+<VideoCallout videoId="zm2_xFyFAHI" videoTitle="Building APIs with Next.js — leerob">
+  Lee Robinson's 16-minute guide to building HTTP APIs with Next.js route handlers: the request/response model, status codes, and headers that the `authedRoute` twin in this lesson sits on top of.
+</VideoCallout>
+
+Success responses are plain `application/json` via `Response.json(data, { status })`, the status chosen by verb: `200` for a read, `201` for a create, `204` (no body) for a delete, `200` for an update.
+
+:::danger
+Never return a `200` with a `{ ok: false, error }` body from a route handler: that's the `Result` shape leaking through the wrong door. HTTP clients key off the status code, not the body. A `fetch` caller checks `response.ok`, which is true for any 2xx, so a `200` carrying an error reads as "success," then chokes when the body isn't the success shape. The `Result` shape is the action door's language; the HTTP door speaks status codes.
+:::
+
+## One business function, both doors
+
+The two wrappers had near-identical bodies, both running the same insert. That duplication is the smell: a mutation reachable from *both* doors shouldn't have its logic written twice. Write it once, in `/lib`, and let each door wrap it.
+
+Lift the work into one pure function in `src/lib/invoices/`: `createInvoice(input, ctx): Promise<Result<Invoice>>`. It has no notion of HTTP or FormData. It takes validated input and a `ctx` (with `ctx.db` already tenant-bound), does the database work, and returns a `Result`. The Server Action wraps it via `authedAction` and returns the `Result` straight to the form. The route handler wraps it via `authedRoute` and *translates* the `Result` into a `Response`.
+
+This is **Architectural Principle #3**: pure logic lives in `/lib`, side effects (HTTP shapes, form shapes) live at the named boundaries. The boundary translates; the core doesn't know which boundary called it.
+
+The route handler gets a `Result` back and maps it to a status:
+
+```ts
+export const POST = authedRoute('admin', createInvoiceSchema, async (input, ctx) => {
+  const result = await createInvoice(input, ctx);
+  return result.ok
+    ? Response.json(result.data, { status: 201 })
+    : problemFrom(result.error);
+});
+```
+
+`problemFrom` is a tiny mapper: it reads the `Result` error's `code` and returns the matching status — `'forbidden'` → 403, `'validation'` → 422, `'conflict'` → 409, `'not-found'` → 404.
+
+The part juniors get wrong is *where authorization lives*: at each door, in the wrapper, never in the shared function. Both `authedAction` and `authedRoute` run the role check at the threshold, so `createInvoice` assumes it's authorized and tenant-scoped — it received `ctx.db` already bound. Checking the role inside would run it twice, and the function doesn't know which rule applies. Don't call one door from the other either: a route handler invoking an `authedAction` is the wrong execution context. The meeting point is the `/lib` function, never one wrapper reaching into another.
+
+One logical request, traced through the pattern whichever door it entered:
+
+<SharedFnTrace />
+
+Now write the other door. The exercise hands you a working `deleteCustomer(input, ctx)` in `/lib` returning a `Result`, already wrapped as a Server Action; your job is the `authedRoute`-wrapped `DELETE` export that calls the *same* function and translates its `Result` into a `Response`.
+
+<ScriptCoding
+  runner="sandpack"
+  instructions="The shared deleteCustomer(input, ctx) below lives in /lib and returns a Result — it's already wrapped as a Server Action (the React door, deleteCustomerAction). Write the route-handler twin: an authedRoute-wrapped DELETE that calls the SAME deleteCustomer and translates its Result into a Response. On result.ok return a 204 (no body); otherwise return problemFrom(result.error). The tests feed the handler an admin context and a member context."
+  maxHeight={520}
+  starter={`// ── Shims so this runs in the sandbox (Next/Drizzle/Zod stand-ins) ──
+// roleAtLeast(have, need): is 'have' at or above 'need' on the gradient?
+const ROLE_RANK = { member: 0, admin: 1, owner: 2 };
+const roleAtLeast = (have, need) => ROLE_RANK[have] >= ROLE_RANK[need];
+
+// Result helpers — ok(data) and err(code, message).
+const ok = (data) => ({ ok: true, data });
+const err = (code, userMessage) => ({ ok: false, error: { code, userMessage } });
+
+// Minimal Response stand-in: a { status, body } object. Response.json(data, init)
+// mirrors the real static; status defaults to 200.
+class Response {
+  constructor(body, init = {}) {
+    this.body = body;
+    this.status = init.status || 200;
+  }
+  static json(data, init = {}) {
+    return new Response(data, init);
+  }
+}
+
+// Problem Details builder + the Result-error -> HTTP-status mapper.
+const problem = (status, detail, extras = {}) =>
+  Response.json({ status, detail, ...extras }, { status });
+const STATUS_BY_CODE = { forbidden: 403, validation: 422, 'not-found': 404, conflict: 409 };
+const problemFrom = (error) =>
+  problem(STATUS_BY_CODE[error.code] || 500, error.userMessage);
+
+// Fake tenant-scoped db over an in-memory customers store the tests assert against.
+let customers = [{ id: 'cus_1' }, { id: 'cus_2' }];
+const resetStore = () => { customers = [{ id: 'cus_1' }, { id: 'cus_2' }]; };
+const db = {
+  findCustomer: (id) => customers.find((c) => c.id === id),
+  deleteCustomer: (id) => { customers = customers.filter((c) => c.id !== id); },
+};
+
+// Zod-free schema double for the route: input is { body: { id } }; id must be non-empty.
+const deleteCustomerSchema = {
+  safeParse: (obj) => {
+    const id = obj.body && obj.body.id;
+    if (typeof id !== 'string' || id.length === 0) {
+      return { success: false, error: { fieldErrors: { id: ['Required.'] } } };
+    }
+    return { success: true, data: { body: { id } } };
+  },
+};
+
+// The session each wrapper would resolve. Tests set this before each call.
+let currentCtx = { orgId: 'org_1', role: 'member', db };
+const setCtx = (role) => { currentCtx = { orgId: 'org_1', role, db }; };
+
+// ── Both wrappers — already built for you, same gate order. Don't change them. ──
+// authedAction(role, schema, fn): the React door. Resolve -> authorize -> parse -> call.
+const authedAction = (role, schema, fn) => async (formData) => {
+  const ctx = currentCtx;
+  if (!roleAtLeast(ctx.role, role)) {
+    return err('forbidden', 'You do not have permission to do this.');
+  }
+  const parsed = schema.safeParse(formData);
+  if (!parsed.success) return err('validation', 'Check the highlighted fields.');
+  return fn(parsed.data, ctx);
+};
+
+// authedRoute(role, schema, fn): the HTTP door. Same gates — but failures and the
+// success exit are HTTP Responses, and fn must return a Response. The real wrapper
+// assembles { params, query, body } before parsing; here the request already carries
+// { body }, so we parse it whole — same shape, just pre-assembled for the sandbox.
+const authedRoute = (role, schema, fn) => async (request) => {
+  const ctx = currentCtx; // resolve (the real one: requireOrgUser({ headers: request.headers }))
+  if (!roleAtLeast(ctx.role, role)) {
+    return problem(403, 'You do not have permission to do this.');
+  }
+  const parsed = schema.safeParse(request);
+  if (!parsed.success) return problem(422, 'Validation failed.');
+  return fn(parsed.data, ctx);
+};
+
+// ── GIVEN: the shared business function in /lib. Speaks Result. Knows nothing
+//    about HTTP or FormData. Authz already ran at whichever door called it. ──
+const deleteCustomer = async (input, ctx) => {
+  if (!ctx.db.findCustomer(input.body.id)) return err('not-found', 'No such customer.');
+  ctx.db.deleteCustomer(input.body.id);
+  return ok(null);
+};
+
+// ── GIVEN: the React door. It returns the Result straight to the form. ──
+export const deleteCustomerAction = authedAction(
+  'admin',
+  { safeParse: (fd) => deleteCustomerSchema.safeParse({ body: { id: fd.id } }) },
+  async (input, ctx) => deleteCustomer(input, ctx),
+);
+
+// ── Your task: write the HTTP door. Wrap the SAME deleteCustomer in authedRoute,
+//    then translate its Result into a Response:
+//      result.ok      -> a 204 (no body): new Response(null, { status: 204 })
+//      otherwise      -> problemFrom(result.error)
+//    The wrapper already handled 403 (role) and 422 (parse); your job is the
+//    success/Result translation that comes after the shared fn returns. ──
+
+export const DELETE = authedRoute(
+  'admin',
+  deleteCustomerSchema,
+  async (input, ctx) => {
+    // call deleteCustomer, then translate its Result to a Response
+    return new Response('replace me', { status: 200 });
+  },
+);
+`}
+  tests={`
+test('a member is refused — 403, and the customer survives', async () => {
+  resetStore();
+  setCtx('member');
+  const res = await DELETE({ body: { id: 'cus_1' } });
+  expect(res.status).toBe(403);
+  expect(customers.some((c) => c.id === 'cus_1')).toBe(true);
+});
+
+test('an admin with valid input gets 204 and the customer is gone', async () => {
+  resetStore();
+  setCtx('admin');
+  const res = await DELETE({ body: { id: 'cus_1' } });
+  expect(res.status).toBe(204);
+  expect(customers.some((c) => c.id === 'cus_1')).toBe(false);
+});
+
+test('an admin with invalid input gets 422, no delete', async () => {
+  resetStore();
+  setCtx('admin');
+  const res = await DELETE({ body: { id: '' } });
+  expect(res.status).toBe(422);
+  expect(customers.length).toBe(2);
+});
+
+test('both doors run the SAME business function — identical store mutation', async () => {
+  // The route door removes cus_1...
+  resetStore();
+  setCtx('admin');
+  await DELETE({ body: { id: 'cus_1' } });
+  const afterRoute = customers.map((c) => c.id);
+
+  // ...and the React door removes cus_1 the same way.
+  resetStore();
+  setCtx('admin');
+  await deleteCustomerAction({ id: 'cus_1' });
+  const afterAction = customers.map((c) => c.id);
+
+  expect(afterRoute).toEqual(afterAction);
+  expect(afterRoute).toEqual(['cus_2']);
+});
+`}
+/>
+
+<details>
+<summary>Reveal solution</summary>
+
+```ts
+export const DELETE = authedRoute(
+  'admin',
+  deleteCustomerSchema,
+  async (input, ctx) => {
+    const result = await deleteCustomer(input, ctx);
+    return result.ok
+      ? new Response(null, { status: 204 })
+      : problemFrom(result.error);
+  },
+);
+```
+
+The wrapper already ran the first three gates — resolve, authorize (the `403` a member gets), and parse (the `422` for bad input). All your body does is call the *same* `deleteCustomer` the Server Action calls, then translate the `Result` it returns into an HTTP exit: `result.ok` becomes a `204 No Content` (the right status for a delete with nothing to return), and any error routes through `problemFrom`, which maps the `Result` code to its status — `'not-found'` → `404`, and so on. That's the whole port: same business function, same authz at the door, only the return type changed from a `Result` the form reads to a `Response` the HTTP client reads. The last test proves the point — both doors leave the store in the identical state, because both call one function in `/lib`.
+
+</details>
+
+## What `authedRoute` leaves out
+
+Like `authedAction`, `authedRoute` stays small: session, role, schema, nothing else. Four route-specific concerns look like they belong in the wrapper but live elsewhere.
+
+- **CORS.** A same-origin handler needs none; a public API handler's `Access-Control-Allow-Origin` belongs in `next.config.ts` or middleware, set once per route group rather than per call.
+- **Idempotency.** A handler that accepts retried writes, like a webhook that fires twice, honors the `Idempotency-Key` header so the second delivery is a no-op. The full dedup pattern comes in a later lesson.
+- **Bearer-token auth.** The session cookie reaches a route handler just as it reaches an action, so `requireOrgUser` works unchanged. `Authorization: Bearer <token>` is a different identity model, for machine callers with no cookie, built later this chapter in [API keys for machine callers](/057-roles-action-wrappers-audit-trail/6-api-keys-for-machine-callers/).
+- **Streaming.** Have `fn` return a `Response` whose body is a `ReadableStream`, for a CSV export or SSE feed. Authz still runs at entry, so the role check passes before the first byte.
+
+You don't reach for `force-dynamic` here. Reading `request.headers` or cookies makes a handler dynamic, and `authedRoute` always reads the session from `request.headers`, so under Cache Components every wrapped handler is dynamic by construction.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Next.js — route.js file convention"
+    href="https://nextjs.org/docs/app/api-reference/file-conventions/route"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The authoritative reference for the HTTP door: verb exports, the params Promise, and the RouteContext helper this lesson leans on."
+  />
+  <ExternalResource
+    title="RFC 9457 — Problem Details for HTTP APIs"
+    href="https://www.rfc-editor.org/rfc/rfc9457.html"
+    icon="lucide:scroll-text"
+    iconColor="#005EA2"
+    description="The standard itself — the type/title/status/detail shape your problem() helper builds, straight from the spec."
+  />
+  <ExternalResource
+    title="MDN — HTTP response status codes"
+    href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The canonical reference for every status in the map, including the 401-vs-403 and 400-vs-422 distinctions the lesson turns on."
+  />
+</CardGrid>

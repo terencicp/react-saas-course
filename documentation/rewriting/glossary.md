@@ -1943,3 +1943,31 @@ set_config | - | Function form of SET; third arg true makes it transaction-local
 current_setting | - | Postgres function reading a config value; second arg true returns NULL instead of erroring when unset. | first defined: Chapter 056 L4
 withTenant | withTenant(orgId, fn) | Helper opening a transaction and setting app.org_id transaction-local before running the caller's work. | first defined: Chapter 056 L4
 PHI | Protected Health Information | Health data regulated under HIPAA; canonical example of data whose leak is a legal event, not just an embarrassment. | first defined: Chapter 056 L3
+authority gradient | cumulative roles | Roles ordered so each is a strict superset of the one below (member < admin < owner); every check is one comparison against the order. | first defined: Chapter 057 L1
+stale authority | - | Trusting a role baked into the session instead of read fresh, so a demoted user keeps powers until the cookie refreshes. | first defined: Chapter 057 L1
+ABAC | attribute-based access control | Access decided by attributes of the user, resource, and context, not a fixed role; the fine-grained step past RBAC. | first defined: Chapter 057 L1
+roleAtLeast | roleAtLeast(have, need) | Predicate comparing a caller's role against a required floor on the authority gradient; true if at or above. | first defined: Chapter 057 L1
+Role union | Role | The string-literal union of org roles ('member' | 'admin' | 'owner'). | first defined: Chapter 057 L1
+privilege escalation | - | A user performing an action above their permission level (a member running an admin-only mutation). | first defined: Chapter 057 L2
+factory (function) | function factory | A function that builds and returns another function; authedAction builds a Server Action. | first defined: Chapter 057 L2
+authedAction | authedAction(role, schema, fn) | The one sanctioned Server Action factory folding session, role, and schema checks into one boundary; body receives parsed input plus a ctx. | first defined: Chapter 057 L2
+transport code | - | A Result error's fixed-vocabulary code (forbidden, validation, conflict) naming the category of failure for the caller. | first defined: Chapter 057 L2
+domain reason | - | A code carried inside an err explaining why a specific business rule said no (e.g. 'last-owner'); produced by the body, not the wrapper. | first defined: Chapter 057 L2
+authedRoute | authedRoute(role, schema, fn) | Route-handler twin of authedAction; same session/role/schema gates, but fn returns a Response and failures are HTTP statuses. | first defined: Chapter 057 L3
+400 Bad Request | 400 | HTTP status for input the server can't parse (malformed JSON, a non-UUID where a UUID is required); never reaches the schema. | first defined: Chapter 057 L3
+problem() helper | problem(status, detail, extras) | Project helper in lib/http/problem.ts building an RFC 9457 Problem Details Response. | first defined: Chapter 057 L3
+problemFrom | problemFrom(error) | Mapper turning a Result error's code into the matching HTTP status (forbidden→403, validation→422, conflict→409, not-found→404). | first defined: Chapter 057 L3
+UI gate | - | Hiding a control the caller can't use; cosmetic UX, never security. | first defined: Chapter 057 L4
+security gate | - | The server-side role re-check inside the action wrapper; the gate that actually holds. | first defined: Chapter 057 L4
+last-write-wins | - | Concurrent writes to one row both apply; the later one silently overwrites the earlier. | first defined: Chapter 057 L4
+audit log | audit trail, audit_logs | Append-only table recording privileged actions: who did what to whom, when, from where. | first defined: Chapter 057 L5
+forensic | - | After-the-fact reconstruction of what happened, who did it, and when. | first defined: Chapter 057 L5
+SOC 2 | - | Security compliance attestation enterprise buyers ask vendors to pass; an audit trail is table stakes. | first defined: Chapter 057 L5
+owner role | DB owner role | Privileged Postgres role exempt from forced RLS policies; runs retention/legal-retraction jobs, never request handlers. | first defined: Chapter 057 L5
+iff guarantee | iff | The audit row exists if and only if the work committed; both ride one transaction. | first defined: Chapter 057 L5
+logAudit | logAudit(tx, event) | Writer inserting an audit row on a Transaction handle; won't compile outside a transaction. | first defined: Chapter 057 L5
+API key | api key | Opaque revocable secret an app mints for a machine caller; stored as prefix.hash, sent as Authorization: Bearer. | first defined: Chapter 057 L6
+show-once | hash-and-show-once | Posture where the raw secret is returned to the minter exactly once; the DB keeps only its hash, never the secret. | first defined: Chapter 057 L6
+key prefix | prefix | The public, plaintext lookup half of an API key (rsk_live_...); safe to log and list, used to find the row. | first defined: Chapter 057 L6
+api-key scope | scope | Per-key capability grant (invoices:read) checked after the role gate; can only narrow a key's role, never widen it. | first defined: Chapter 057 L6
+personal access token | PAT | API-key mechanism owned by a user instead of an org; acts as that user and is hard-deleted with their account. | first defined: Chapter 057 L6
