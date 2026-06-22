@@ -2025,3 +2025,5 @@ version column | version precondition, version | Integer counter bumped on every
 pessimistic locking | SELECT FOR UPDATE | Locking a row at read time and holding it until write; wrong for web traffic since the lock spans human think-time. | first defined: Chapter 061 L3
 conflict() helper | conflict(current) | Project helper spreading err('conflict', ...) and adding a current field carrying the fresh server row for recovery. | first defined: Chapter 061 L3
 CRDTs and operational transforms | CRDT, operational transform, OT | Algorithms merging concurrent edits so all writers' changes survive; basis of real-time collaborative editors; out of scope here. | first defined: Chapter 061 L3
+fluent builder | fluent interface, chainable builder | A builder whose methods each return the builder, so calls chain into one readable sentence. | first defined: Chapter 062 L3
+resolveView | read-layer view gate | Pure RBAC step collapsing the all view to active for non-admins, so a hand-typed ?view=all is refused at the read, not the hidden tab. | first defined: Chapter 062 L3

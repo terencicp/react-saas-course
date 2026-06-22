@@ -1,0 +1,165 @@
+---
+title: Project overview
+chapter-id: 62
+course-progress: 0.5997
+rewrites: 2
+sidebar:
+  order: 1
+  label: Project overview
+---
+
+import { Card, CardGrid, FileTree, Steps } from '@astrojs/starlight/components';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The invoice CRUD surface you built earlier works, but it is the day-one version. The production version behaves differently: paste a teammate's URL and you land on the exact filtered, sorted page they saw; deleting an invoice hides it instead of destroying it; archived rows live in their own tab and return with one click; and when two people edit the same invoice at once, the second save is refused instead of silently overwriting the first. This chapter builds that view by combining the URL-state filter, sort, search, and pagination from chapter 060 with the soft delete, archive, restore, and optimistic concurrency from chapter 061.
+
+The database is the one piece that is deliberately not production. Instead of Postgres, the data layer is an in-memory store that seeds itself on import, so the project boots on `pnpm dev` with no Docker and no migrations. The patterns are the same ones a SQL-backed app uses, run against arrays so they stay the focus.
+
+<Figure caption="The finished /invoices page: view tabs, toolbar, table, and cursor pagination, all driven by the URL.">
+  <TabbedContent syncKey="invoices-surface-viewport">
+    <TabbedItem label="Desktop · 1280" caption="The full surface at desktop width.">
+      <Screenshot viewport="desktop">
+        <img
+          src="/screenshots/062/l2-desktop-1280.png"
+          alt="The finished /invoices page at 1280px: a top nav reading Invoices · List · Inspector; an 'Invoices' heading above the Active, Archived, and All view tabs with Active selected; a toolbar with an 'All statuses' status select, a 'Newest first' sort select, and a 'Search…' box; the invoice table with Number, Customer, Status, and Total columns listing rows ACME-1001 through ACME-1020 each ending in a '⋯' row-action menu; an empty 'Select an invoice to see its detail.' panel on the right; and a 'First page / Next' pagination row at the bottom."
+        />
+      </Screenshot>
+    </TabbedItem>
+
+    <TabbedItem label="Mobile · 360" caption="At phone width, the controls stack and the detail panel falls below the list.">
+      <Screenshot viewport="mobile">
+        <img
+          src="/screenshots/062/l1-mobile-360.png"
+          alt="The finished /invoices page at 360px: the Invoices · List · Inspector nav, the 'Invoices' heading, the Active / Archived / All view tabs with Active selected, the status select, sort select, and search box stacked vertically, then the invoice table listing ACME-1001 through ACME-1020 by Number, Customer, and Status, with the 'Select an invoice to see its detail.' panel below the list."
+        />
+      </Screenshot>
+    </TabbedItem>
+  </TabbedContent>
+</Figure>
+
+## What we'll practice
+
+- Moving view-state — filter, sort, search, cursor, and visibility — into the URL, so a view is shareable and survives a refresh.
+- Routing every read through one tenant-scoped, lifecycle-aware helper, so no query can forget the org filter or the `deletedAt` / `archivedAt` filter.
+- Guarding every write with tenancy, lifecycle, and `version` preconditions, so a stale write surfaces as a conflict instead of a silent overwrite.
+- Wiring `useActionState` to carry both the success path and the conflict banner, and layering `useOptimistic` on archive so a row leaves the table on click and returns if the write is rejected.
+
+## Architecture
+
+The project hangs off one round-trip. The URL is the source of truth; a Server Component reads it, the client writes back to it, and every read flows through a single helper.
+
+- The **`/invoices` page** is a Server Component that parses the URL, reads the session, and calls `listInvoices` with the parsed slice plus the session's `orgId` and `role`.
+- The **toolbar and view tabs** are Client Components that write filter, sort, search, view, and cursor back to the URL, resetting `cursor` whenever a change re-orders or shrinks the results.
+- **`listInvoices`** reads only through `scopedInvoices(orgId)`, routing on the `view` param and collapsing `all` to `active` for non-admins at the read itself, not just in the UI.
+- The **lifecycle and update actions** apply their store mutation only when the tenancy, lifecycle, and `version` precondition holds, and write the audit entry in the same step.
+- The **edit form** carries a hidden `version` field, and on a conflict renders a banner from the `current` payload the action returns — no second fetch.
+- The **`/inspector` page** is the verification surface the later lessons lean on: row counts, an identity switcher, reset-and-reseed, version-drift, and the audit-log tail.
+
+## Starting file tree
+
+The starter renders but is unfinished. Each bolded file holds a `TODO` you complete across the four build lessons; everything else works as-is. Labels below mark only the files the lessons touch.
+
+<FileTree>
+- package.json provided — `dev`, `build`, `verify`, `test:lesson` scripts (no database, so no `db:migrate` / `db:seed`)
+- src/
+  - server/
+    - types.ts `Invoice` with `deletedAt` / `archivedAt` / `version`, plus `Role` and `roleAtLeast`
+    - store.ts in-memory "database" — seeds invoices and audit logs on import; `findInvoice` / `pushAudit` / `reseed`
+    - session.ts cookie-driven dev session; `getSession` reads the acting identity
+  - lib/
+    - result.ts `Result<T>` union with `ok` / `err` / `conflict`
+    - authed-action.ts `authedAction(role, schema, fn)` wrapper — session, RBAC, parse, call
+    - utils.ts `cn()`
+    - invoices/
+      - **search-params.ts** add the `nuqs` parsers and `searchParamsCache`
+      - **queries.ts** route `listInvoices` / `getInvoiceDetail` on `view`; gate `all` to admin
+      - **scoped-query.ts** make `scopedInvoices(orgId)`'s three views honest
+      - **actions.ts** the update + lifecycle Server Actions
+  - app/
+    - layout.tsx provided — `<NuqsAdapter>` and theme provider
+    - page.tsx provided — redirect to `/invoices`
+    - _components/ provided — `providers.tsx`, `submit-button.tsx`
+    - (app)/
+      - invoices/
+        - page.tsx provided — reads `searchParamsCache`, calls `listInvoices`, renders the surface
+        - loading.tsx provided — list skeleton
+        - **toolbar.tsx** lift status / sort / search into the URL
+        - **view-tabs.tsx** write `view` to the URL; hide All from non-admins
+        - **active-filter-chips.tsx** render a chip per non-default filter
+        - **clear-chip.tsx** new file — the "×" that clears one filter
+        - **pagination.tsx** wire cursor next / first
+        - **table.tsx** lifecycle badges, row actions, optimistic archive
+        - [id]/edit/
+          - page.tsx provided — loads the invoice, renders the form
+          - loading.tsx provided — edit-form skeleton
+          - **edit-form.tsx** render the conflict banner on the conflict branch
+          - **conflict-banner.tsx** current values + Use latest / admin Overwrite
+      - inspector/
+        - page.tsx provided — row counts, identity switcher, reseed, force-version-drift, audit tail, index panel
+        - loading.tsx provided — inspector skeleton
+        - actions.ts provided — `resetAndReseed`, `switchIdentity`, `forceVersionDrift`
+  - components/ui/ provided — shadcn/ui primitives
+</FileTree>
+
+The `lesson-verification/` folder isn't in the starter; each lesson's test file arrives with that lesson.
+
+## The four build lessons
+
+Each build lesson ends on a runnable, verifiable state.
+
+<CardGrid>
+  <Card title="Lesson 2 — Move every control to the URL">
+    Puts filter, sort, search, view, and page in the URL via the `nuqs` parsers, `searchParamsCache`, toolbar, view-tabs, filter chips, `ClearChip`, and cursor pagination.
+  </Card>
+  <Card title="Lesson 3 — Scoped reads and the view tabs">
+    Routes the reads on the `view` param with RBAC gating so the Active, Archived, and All tabs each return the right rows.
+  </Card>
+  <Card title="Lesson 4 — Archive, restore, and delete">
+    Implements the three lifecycle actions with audit writes and wires them into the row menu, with optimistic archive in the table.
+  </Card>
+  <Card title="Lesson 5 — Two tabs, one winner">
+    Adds the `version` precondition to the update action and renders a conflict banner with "Use latest" and an admin-gated "Overwrite anyway".
+  </Card>
+</CardGrid>
+
+## Setup
+
+Nothing to provision: the store seeds itself on first import, and your identity is the `acting-identity` cookie, defaulting to `org-acme:admin`.
+
+<Steps>
+1. Get the starter codebase from the [project repository](https://github.com/terencicp/react-saas-course-projects), under `Chapter 062/start/`.
+
+2. Install dependencies.
+
+   ```bash
+   pnpm install
+   ```
+
+3. Start the dev server.
+
+   ```bash
+   pnpm dev
+   ```
+</Steps>
+
+`pnpm dev` serves the list view at `/invoices` and the edit form at `/invoices/[id]/edit`, both unfinished. Toolbar filters live in component state, so a refresh wipes them; the view tabs and pagination do nothing, and every tab shows the same rows; there are no archive or restore actions; and the update path silently overwrites on a two-tab race. Each build lesson closes one gap.
+
+Your second URL is the verification surface. Open `/inspector` and keep it in a tab as you work:
+
+:::tip
+`/inspector` lets you check your work instead of guessing. It shows:
+
+- A **row-counts banner**: total, active, archived, deleted for the current org.
+- An **acting-identity switcher** to flip between the four seeded identities.
+- A **reset-and-reseed** button to return to the deterministic seed.
+- A **"Force version drift"** tool, with an "open in two tabs" link, to reproduce a conflict.
+- The **audit-log tail**, to watch each action record itself.
+:::
+
+Every build lesson also ships an automated check. After attempting lesson `<n>`, run `pnpm test:lesson <n>` (for example `pnpm test:lesson 2`) to grade it against `lesson-verification/Lesson <n>.ts`. Once `/invoices` and `/inspector` render, head to the first build lesson.

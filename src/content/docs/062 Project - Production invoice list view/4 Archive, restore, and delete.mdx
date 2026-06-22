@@ -1,0 +1,422 @@
+---
+title: Archive, restore, and delete
+chapter-id: 62
+course-progress: 0.6034
+rewrites: 2
+sidebar:
+  order: 4
+  label: Archive, restore, delete
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The reads route on lifecycle state, but every row is frozen — there's no way to move one between states.
+This lesson ships the writes: archive a row, restore it, and (as an admin) soft-delete it.
+
+Archive a row from the Active tab and it vanishes the instant you click, then reappears under Archived with an "Archived on …" label and a Restore button.
+Restore returns it to Active.
+An admin's soft-delete drops the row from the default list and surfaces it under All with a "Deleted" badge.
+Open the inspector as you work and watch its row-counts banner and audit tail move together after every action.
+
+<Screenshot viewport="desktop">
+  <img
+    src="/screenshots/062/l4-desktop-1280-row-menu-open.png"
+    alt="The Active invoices tab in the admin view with one row's action (⋯) menu open, showing Edit, Archive, and the destructive-red Delete item. Columns read Number (ACME-1001), Customer (Globex Holdings), Status (Sent), and Total (USD 133.50)."
+  />
+</Screenshot>
+
+## Your mission
+
+You ship three actions — `archiveInvoice`, `restoreInvoice`, `softDeleteInvoice` — that move a row between the lifecycle states you routed reads onto last lesson.
+Each is a precondition-checked, audited transition, not a bare field set.
+
+Each is wrapped with [`authedAction`](/057-roles-action-wrappers-audit-trail/2-the-authedaction-wrapper/), so role enforcement and Zod parsing run at the boundary before your code does.
+Archive and restore are open to a `member`; soft-delete is gated to `admin` **at the action**, not just in the menu — hiding the Delete item is cosmetic, since a member who forges the request still hits the wrapper.
+Tenancy comes from the session `ctx`, never the request: a row loaded with `findInvoice(ctx.orgId, id)` from another org is simply not found.
+
+Before any field changes, each action checks an `id`+`version` precondition.
+The `version` bumps on every write; if the version the client sent no longer matches the row, a stale tab lost the race, and the action returns an honest conflict instead of clobbering.
+The audit write rides in the **same atomic step** as the mutation — two statements back to back here, one `db.transaction` in real Postgres.
+A state change without its audit row, or an audit row without its state change, is a bug; a refused action writes neither.
+
+Archive uses `useOptimistic` so the row leaves the table the moment it's clicked rather than after the round-trip.
+The optimistic value **expires** when the transition ends — it is never committed.
+On success the revalidated rows no longer carry it, so it stays gone; on `{ ok: false }` the rows are unchanged and it reappears.
+The conflict surfaces here only as a toast; the richer "Use latest / Overwrite anyway" banner is the next lesson's job.
+
+One payoff to watch for once it runs: the seed ships a live `ACME-1001` and a soft-deleted `ACME-1001`.
+Two invoices, same number, both legal, because the partial unique index is scoped `(orgId, number) WHERE deleted_at IS NULL` — soft-deleting a number frees it for reuse.
+The inspector's index panel spells out the constraint.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Archiving a row from the Active tab removes it from the default list and surfaces it under Archived with an "Archived on …" label, a Restore button, and an audit-tail entry.</ChecklistItem>
+  <ChecklistItem chip="tested">Restoring from the Archived tab returns the row to Active and writes an audit entry.</ChecklistItem>
+  <ChecklistItem chip="tested">As an admin, soft-deleting a row removes it from the default list and surfaces it under All with a "Deleted" badge plus an audit entry; restoring that deleted row returns it to active.</ChecklistItem>
+  <ChecklistItem chip="tested">A member cannot soft-delete: the action refuses an admin-only call, and the Delete control is absent in the member UI.</ChecklistItem>
+  <ChecklistItem chip="tested">A lifecycle action against a stale `version`, or a row already in the target state, returns a conflict instead of a silent state change.</ChecklistItem>
+  <ChecklistItem chip="tested">Each lifecycle action writes its audit entry in the same atomic step as the store mutation, so the inspector's row counts and audit tail move together after every action.</ChecklistItem>
+  <ChecklistItem chip="untested">Archiving removes the row from the table optimistically — instantly — and the row reappears if the action returns `{ ok: false }`.</ChecklistItem>
+  <ChecklistItem chip="untested">The seeded colliding pair — a live and a soft-deleted invoice sharing `ACME-1001` — confirms the number reuse the partial unique index permits.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement the three lifecycle actions in `src/lib/invoices/actions.ts` and wire the row-action menu in `table.tsx` against the brief and the tests.
+Try it before you open the solution: the precondition and the audit write are the reflex this lesson builds.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### The three actions
+
+All three live in `src/lib/invoices/actions.ts`, alongside `updateInvoice`, sharing one input schema and one shape: load, check, mutate, audit, revalidate.
+
+The schema only needs to identify the row and carry the version the client last saw:
+
+```ts
+const lifecycle = z.strictObject({
+  id: z.string(),
+  version: z.coerce.number().int(),
+});
+```
+
+`z.coerce` because the row menu submits FormData, whose values are always strings: the version arrives as `"3"`, not `3`.
+This is the same boundary coercion from [Coercing FormData strings](/042-zod-4-schema-validation/6-coercing-formdata-strings/).
+
+Here is `archive`, in its four parts:
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const archive = async (
+  input: z.infer<typeof lifecycle>,
+  ctx: AuthedCtx,
+): Promise<Result<Invoice>> => {
+  const row = findInvoice(ctx.orgId, input.id);
+  if (!row) {
+    return err('not_found', 'Invoice not found.');
+  }
+  if (
+    row.version !== input.version ||
+    row.archivedAt !== null ||
+    row.deletedAt !== null
+  ) {
+    return conflict(CONFLICT_MESSAGE, row);
+  }
+
+  row.archivedAt = new Date().toISOString();
+  row.version += 1;
+  pushAudit({
+    orgId: ctx.orgId,
+    actorUserId: ctx.userId,
+    action: 'invoice.archive',
+    subjectId: row.id,
+  });
+
+  revalidatePath('/invoices');
+  return ok(row);
+};
+`}>
+  <AnnotatedStep meta={`{5-8} "findInvoice(ctx.orgId, input.id)"`} color="blue">
+    Load the row, scoped to the session's org.
+    The `orgId` comes from `ctx`, so a row from another tenant is not found, as is a missing one.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{9-15}`} color="orange">
+    The precondition, checked before any mutation.
+    Refuse if the version drifted or the row is already archived or deleted: only an active row archives.
+    A lost race returns `conflict(...)` carrying the row the server holds now, so the client reacts in one round trip.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{17-18} "row.version += 1"`} color="green">
+    Set `archivedAt` and bump `version`.
+    The bump makes the next precondition check honest: a tab still holding the old number is now stale by one.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{19-24} "pushAudit"`} color="violet">
+    Write the audit row in the same step as the mutation.
+    `'invoice.archive'` names the event and `subjectId` ties it to the row.
+    `revalidatePath` then refreshes the server-rendered list, and `ok(row)` returns the new state.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+`restore` and `softDelete` are the same skeleton with different preconditions and field writes.
+Restore is the interesting one: it clears whichever flag is set.
+
+```ts
+const restore = async (
+  input: z.infer<typeof lifecycle>,
+  ctx: AuthedCtx,
+): Promise<Result<Invoice>> => {
+  const row = findInvoice(ctx.orgId, input.id);
+  if (!row) {
+    return err('not_found', 'Invoice not found.');
+  }
+  if (
+    row.version !== input.version ||
+    (row.archivedAt === null && row.deletedAt === null)
+  ) {
+    return conflict(CONFLICT_MESSAGE, row);
+  }
+
+  row.archivedAt = null;
+  row.deletedAt = null;
+  row.version += 1;
+  pushAudit({
+    orgId: ctx.orgId,
+    actorUserId: ctx.userId,
+    action: 'invoice.restore',
+    subjectId: row.id,
+  });
+
+  revalidatePath('/invoices');
+  return ok(row);
+};
+```
+
+One action handles both an archived row and a soft-deleted one by branching on state instead of splitting in two.
+The precondition refuses an already-live row; on success it clears both flags unconditionally.
+That is why the admin's "Restore deleted" menu item reuses the same dispatcher as Archived's "Restore".
+
+`softDelete` sets `deletedAt`, refuses an already-deleted row, and writes `'invoice.delete'`:
+
+```ts
+const softDelete = async (
+  input: z.infer<typeof lifecycle>,
+  ctx: AuthedCtx,
+): Promise<Result<Invoice>> => {
+  const row = findInvoice(ctx.orgId, input.id);
+  if (!row) {
+    return err('not_found', 'Invoice not found.');
+  }
+  if (row.version !== input.version || row.deletedAt !== null) {
+    return conflict(CONFLICT_MESSAGE, row);
+  }
+
+  row.deletedAt = new Date().toISOString();
+  row.version += 1;
+  pushAudit({
+    orgId: ctx.orgId,
+    actorUserId: ctx.userId,
+    action: 'invoice.delete',
+    subjectId: row.id,
+  });
+
+  revalidatePath('/invoices');
+  return ok(row);
+};
+```
+
+There is no role check inside `softDelete`'s body. The admin gate is on the wrapper:
+
+```ts
+export const archiveInvoice = authedAction('member', lifecycle, archive);
+export const restoreInvoice = authedAction('member', lifecycle, restore);
+// Soft-delete is admin-gated at the action — the RBAC gate lives here, not only
+// in the UI (hiding the menu item is cosmetic on top of this).
+export const softDeleteInvoice = authedAction('admin', lifecycle, softDelete);
+```
+
+The wrapper runs `roleAtLeast` before it ever calls the function, so a member's forged soft-delete is refused at the boundary and the body never sees it.
+
+### Wiring the row menu
+
+`table.tsx` is a Client Component.
+Its row-action menu already renders an Edit link; you add Archive, Restore, Restore deleted, and Delete, each dispatching the right action and gated on the row's state plus the viewer's role.
+
+The order of the wiring matters, so here it is part by part.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+const [visibleRows, archiveOptimistic] = useOptimistic(
+  rows,
+  (current: Invoice[], removedId: string) =>
+    current.filter((row) => row.id !== removedId),
+);
+
+const [archiveState, archiveDispatch] = useActionState(archiveInvoice, null);
+const [restoreState, restoreDispatch] = useActionState(restoreInvoice, null);
+const [deleteState, deleteDispatch] = useActionState(softDeleteInvoice, null);
+
+const [, startArchive] = useTransition();
+
+useResultToast(archiveState, 'Invoice archived.');
+useResultToast(restoreState, 'Invoice restored.');
+useResultToast(deleteState, 'Invoice deleted.');
+
+const onArchive = (row: Invoice) => {
+  startArchive(() => {
+    archiveOptimistic(row.id);
+    archiveDispatch(lifecycleFormData(row));
+  });
+};
+`}>
+  <AnnotatedStep meta={`{1-5} "useOptimistic"`} color="green">
+    `useOptimistic` derives `visibleRows` from `rows`, dropping the archived id.
+    Render `visibleRows` in the table, not `rows`.
+    The optimistic value expires when the transition ends, leaving the revalidated `rows` as the truth.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7-9}`} color="blue">
+    One `useActionState` per action, lifted to the table, not the row.
+    The archived row is about to leave `visibleRows`; if its action state lived on the row, the result and its toast would unmount with it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{11} "startArchive"`} color="orange">
+    An explicit `useTransition`.
+    The menu's `onSelect` is a plain event handler, not a form action, and React rejects an optimistic update applied outside a transition, so archive's optimistic write and its dispatch share this one.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{13-15} "useResultToast"`} color="violet">
+    One toast per resolved Result.
+    `useResultToast` fires the success line on `ok`, the conflict line on a stale precondition, and the server's `userMessage` on any other refusal.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{17-22} "archiveOptimistic(row.id)" "archiveDispatch"`} color="green">
+    The two calls fire together inside `startArchive`: drop the row optimistically, then dispatch the real action.
+    When it settles, the revalidated rows confirm the removal, or on `{ ok: false }` the unchanged rows bring the row back.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+`useResultToast` and `lifecycleFormData` are small helpers in the same file.
+The toast hook reads each settled Result and picks the line:
+
+```tsx
+const useResultToast = (
+  state: Result<Invoice> | null,
+  successMessage: string,
+) => {
+  useEffect(() => {
+    if (!state) {
+      return;
+    }
+    if (state.ok) {
+      toast.success(successMessage);
+      return;
+    }
+    toast.error(
+      state.error.code === 'conflict'
+        ? 'This invoice changed elsewhere — refresh to retry.'
+        : state.error.userMessage,
+    );
+  }, [state, successMessage]);
+};
+```
+
+`lifecycleFormData` builds the `id`+`version` FormData each dispatcher expects:
+
+```tsx
+const lifecycleFormData = (row: Invoice) => {
+  const formData = new FormData();
+  formData.set('id', row.id);
+  formData.set('version', String(row.version));
+  return formData;
+};
+```
+
+The menu items gate on the row's state and the viewer's role, computed once per row:
+
+```tsx
+const isActive = row.deletedAt === null && row.archivedAt === null;
+const canDelete = isActive && role === 'admin';
+const canRestore = row.archivedAt !== null && row.deletedAt === null;
+const canUndelete = row.deletedAt !== null && role === 'admin';
+```
+
+Archive shows on an active row, Restore on an archived one; Restore deleted and Delete show only for an admin, on a deleted and an active row respectively.
+Restore and Restore deleted both call `restoreDispatch`, the one action that clears whichever flag is set.
+
+:::caution
+Each `DropdownMenuItem`'s `onSelect` must call its dispatcher directly, not submit a form.
+The instinct is to drop a `<button type="submit" form="…">` inside the item, but Radix unmounts its portaled items the instant one is selected, so the native submit never runs: the menu closes, the button is gone, nothing happens.
+Dispatching from `onSelect` is the same call the form would have made, minus the doomed submit.
+:::
+
+Here is the optimistic Archive item, alongside the dispatch-only Restore and Delete that share its `onSelect` shape:
+
+```tsx
+{isActive ? (
+  <>
+    <DropdownMenuSeparator />
+    <DropdownMenuItem
+      data-testid="row-action-archive"
+      onSelect={() => onArchive(row)}
+    >
+      Archive
+    </DropdownMenuItem>
+  </>
+) : null}
+{canRestore ? (
+  <>
+    <DropdownMenuSeparator />
+    <DropdownMenuItem
+      data-testid="row-action-restore"
+      onSelect={() => restoreDispatch(lifecycleFormData(row))}
+    >
+      Restore
+    </DropdownMenuItem>
+  </>
+) : null}
+{canDelete ? (
+  <>
+    <DropdownMenuSeparator />
+    <DropdownMenuItem
+      variant="destructive"
+      data-testid="row-action-delete"
+      onSelect={() => deleteDispatch(lifecycleFormData(row))}
+    >
+      Delete
+    </DropdownMenuItem>
+  </>
+) : null}
+```
+
+Archive routes through `onArchive` for the optimistic removal; Restore and Delete dispatch straight away, since revalidation is what pulls their rows out of the view.
+Every item carries a `data-testid` so the tests and the inspector can find it.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="React reference — useOptimistic"
+    href="https://react.dev/reference/react/useOptimistic"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The official hook reference, including the optimistic-delete-with-error-recovery example that mirrors this Archive wiring."
+  />
+  <ExternalResource
+    title="React reference — useActionState"
+    href="https://react.dev/reference/react/useActionState"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="The per-action state hook you lift to the table, with its pairing-with-useOptimistic and error-handling sections."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite.
+
+```bash
+pnpm test:lesson 4
+```
+
+A green Vitest run proves the three actions hold their preconditions, write the right audit rows, enforce the admin gate, and reject a stale `version` with a `conflict`.
+
+The tests check observable Result and store outcomes, so they miss the optimistic flicker, the menu gating, and the seed's colliding pair: confirm those by hand, using the inspector's identity switcher and its row-counts and audit-tail panels.
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Archive a row from Active: it vanishes instantly (optimistic), then reappears under Archived with the date and a Restore button. The inspector's audit tail shows the `invoice.archive` event.</ChecklistItem>
+  <ChecklistItem chip="untested">Click Restore from Archived: the row returns to Active, and the audit tail shows the `invoice.restore` event.</ChecklistItem>
+  <ChecklistItem chip="untested">As an admin, soft-delete a row: it drops from the default list and appears under All with a "Deleted" badge. Switch to `org-acme:member` in the inspector and confirm the Delete control is absent.</ChecklistItem>
+  <ChecklistItem chip="untested">Under All, find the seeded colliding pair — a live and a soft-deleted invoice both numbered `ACME-1001` — and read the inspector's index panel for why the partial unique index permits the reuse.</ChecklistItem>
+  <ChecklistItem chip="untested">Watch the inspector's row-counts banner and audit tail move together after each action: the audit entry rides with the mutation, never lagging behind it.</ChecklistItem>
+</Checklist>
+
+A lifecycle conflict surfaces only as a toast here; the richer resolve-it banner comes next, on the edit path.

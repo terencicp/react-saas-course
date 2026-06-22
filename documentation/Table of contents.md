@@ -536,12 +536,12 @@
 - 3 Version columns and the honest 409 (Teaches version-based optimistic concurrency, the Drizzle UPDATE precondition that turns a race into a typed 409 Result, and the React 19 refresh-and-retry surface built on `useActionState` and `useOptimistic`.)
 - 4 Quiz
 
-### Chapter 062 — Project: The production list view
-- 1 Project Overview
+### Chapter 062 — Project: Production invoice list view
+- 1 Project overview
 - 2 Move every control to the URL
 - 3 Scoped reads and the view tabs
 - 4 Archive, restore, and delete
-- 5 Two tabs, one winner
+- 5 Version conflicts on the edit form
 
 ---
 
