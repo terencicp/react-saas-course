@@ -2017,3 +2017,11 @@ shallow (nuqs) | shallow write | A nuqs write that updates the URL on the client
 throttle (rate-limit) | throttle(ms) | Act at most once per N-ms window regardless of event count; fits a continuous stream like a dragged slider. | first defined: Chapter 060 L3
 limitUrlUpdates | - | nuqs option, set on the parser, that bounds how often the URL may change via a debounce or throttle limiter; replaced throttleMs. | first defined: Chapter 060 L3
 typed vs committed | typed, committed | Typed is the per-keystroke box value in component state; committed is the settled value written to the URL and queried by the server. | first defined: Chapter 060 L3
+archive | archivedAt | A visible lifecycle state the user moves a row into via a stamped timestamp and can browse and restore from; distinct from soft delete's invisible admin recovery. | first defined: Chapter 061 L1
+$dynamic() | dynamic builder | Drizzle method lifting the single-invocation lock on .where()/.limit()/.orderBy() so a pre-scoped builder can be chained further. | first defined: Chapter 061 L2
+scoped query helper | scopedInvoices, lifecycle query helper | Per-entity factory closing over orgId; exposes active()/archived()/includingDeleted() returning a builder pre-filtered by org and lifecycle. | first defined: Chapter 061 L2
+includingDeleted() | - | The lifecycle helper's escape hatch: drops the lifecycle filter (org scope stays), returning deleted rows; admin-gated, loudly named for grep. | first defined: Chapter 061 L2
+version column | version precondition, version | Integer counter bumped on every UPDATE; the WHERE checks the read-time value, zero rows affected means a conflict. | first defined: Chapter 061 L3
+pessimistic locking | SELECT FOR UPDATE | Locking a row at read time and holding it until write; wrong for web traffic since the lock spans human think-time. | first defined: Chapter 061 L3
+conflict() helper | conflict(current) | Project helper spreading err('conflict', ...) and adding a current field carrying the fresh server row for recovery. | first defined: Chapter 061 L3
+CRDTs and operational transforms | CRDT, operational transform, OT | Algorithms merging concurrent edits so all writers' changes survive; basis of real-time collaborative editors; out of scope here. | first defined: Chapter 061 L3

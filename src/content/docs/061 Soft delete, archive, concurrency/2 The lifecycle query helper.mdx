@@ -1,0 +1,384 @@
+---
+title: The lifecycle query helper
+tagline: Build a Drizzle query helper that bakes the soft-delete and archive filter into every read, so a forgotten filter can't silently leak deleted rows.
+chapter-id: 61
+course-progress: 0.5956
+sidebar:
+  order: 2
+  label: The lifecycle query helper
+rewrites: 2
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import DrizzleCoding from '../../../components/live-coding/DrizzleCoding/DrizzleCoding.astro';
+import CodeReview from '../../../components/exercises/code-review/CodeReview.astro';
+import ReviewFile from '../../../components/exercises/code-review/ReviewFile.astro';
+import ReviewIssue from '../../../components/exercises/code-review/ReviewIssue.astro';
+import ReviewWhy from '../../../components/exercises/code-review/ReviewWhy.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import FilterStack from '../../../components/lessons/061/2/FilterStack.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A teammate ships a new route. They write `db.query.invoices.findMany({ where: eq(invoices.status, 'open') })` through the org-scoped client, so the tenant filter is there and the page works in dev. Two weeks later a customer files a ticket: an invoice they deleted is back, sitting in a report. The query never filtered `deletedAt IS NULL`, and review missed it because dev had no <Term definition="A row whose deletedAt timestamp is set instead of being removed from the table. It stays in the database but is filtered out of normal reads.">soft-deleted</Term> rows to leak.
+
+This is the org-filter bug again: a missing line that compiles, passes review, and stays invisible. The fix is the same move, supply the filter by construction instead of trusting the author to type it. By the end of this lesson you'll have a small per-entity helper exposing `active()`, `archived()`, and `includingDeleted()`, stacking the lifecycle filter on top of the org filter. A read that forgets either one becomes a grep-able shape instead of a silent leak.
+
+## Composing the lifecycle filter with the org filter
+
+`tenantDb(orgId)` baked the org filter into the call shape, so an unscoped read is a visibly different client, not a missing `where` to catch in review.
+A filter you can forget will be forgotten, so the defense is the call shape, not your diligence.
+
+`deleted_at IS NULL` is a second such filter: omit it and the query still compiles, still passes review, and still leaks.
+Reach for the same tool, with two differences.
+The predicate is `isNull(deletedAt)`, not `eq(organizationId, orgId)`.
+And the lifecycle has three intents, not one: live rows for a normal list, archived rows for the Archived tab, deleted rows for an admin recovery screen.
+So the surface is three named methods.
+
+The filters compose.
+`tenantDb(orgId)` pins the org; the helper sits on top and pins the lifecycle state.
+One call produces a single `WHERE` with both predicates `and`-ed together, and the caller typed neither.
+
+<Figure caption="Two filters stack into one WHERE. The lifecycle and tenancy layers each fold in a predicate, the caller adds only ordering, and the three collapse into the single clause the database runs.">
+  <FilterStack />
+</Figure>
+
+## The helper's three methods
+
+| Method | Resulting predicate | When you reach for it |
+| --- | --- | --- |
+| `active()` | `deleted_at IS NULL AND archived_at IS NULL` | The default. Every everyday list and detail read. |
+| `archived()` | `deleted_at IS NULL AND archived_at IS NOT NULL` | The Archived tab. Live rows the user set aside. |
+| `includingDeleted()` | *(no lifecycle predicate; org scope still applies)* | The escape hatch: admin recovery, exports, audit views. Never the default. |
+
+The first two cover the everyday surface. `includingDeleted()` is deliberately heavier: it hands back exactly the deleted rows the other two exist to keep out of normal views, so reaching for it is a privileged act, not a convenience.
+
+These three states map one-to-one onto the `?status=active|archived|all` filter from the previous chapter, so there is no fourth product state for an `onlyDeleted()` or a `trashed` boolean to serve. The escape hatch is named loudly on purpose: `grep includingDeleted` lists every unscoped lifecycle read, so the name is the audit trail.
+
+The <Term definition="A deliberately-named, gated way out of a discipline, kept visible rather than hidden — like the bare db client for cross-org reads in the tenancy chapter.">escape hatch</Term> is part of the API, not a workaround around it.
+
+## Building the scoped query helper
+
+Two passes: the shared filter predicates, then the per-entity helper that uses them.
+
+The shared predicates are tiny SQL-fragment builders that take a table and return a predicate. They live in `db/queries/lifecycle.ts`, so "active" and "archived" have one definition that flows into the helper methods below and into the hand-written queries you'll meet in a moment.
+
+<CodeTooltips tooltips={{
+  LifecycleTable: 'Any table carrying the deletedAt/archivedAt columns from the previous lesson, so one predicate builder works for every entity.',
+  archivedFilter: "Archived means set-aside-but-live: archivedAt is set, deletedAt is still null. A deleted row is never archived, even if both timestamps are set.",
+}}>
+```ts title="src/db/queries/lifecycle.ts"
+export const activeFilter = (table: LifecycleTable) =>
+  and(isNull(table.deletedAt), isNull(table.archivedAt));
+
+export const archivedFilter = (table: LifecycleTable) =>
+  and(isNull(table.deletedAt), isNotNull(table.archivedAt));
+```
+</CodeTooltips>
+
+Now the per-entity helper, in `db/queries/invoices.ts`: a factory that closes over the org id and exposes three methods. Each returns a chainable Drizzle builder, already filtered by org and lifecycle, ready for the caller to add `.orderBy(...)`, `.limit(...)`, or whatever the page needs.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import 'server-only';
+import { and, eq, type SQL } from 'drizzle-orm';
+import { db } from '@/db';
+import { activeFilter, archivedFilter } from '@/db/queries/lifecycle';
+import { invoices } from '@/db/schema';
+
+export const scopedInvoices = (orgId: string) => {
+  const inOrg = eq(invoices.organizationId, orgId);
+  return {
+    active: (extra?: SQL) =>
+      db.select().from(invoices)
+        .where(and(inOrg, activeFilter(invoices), extra)).$dynamic(),
+    archived: (extra?: SQL) =>
+      db.select().from(invoices)
+        .where(and(inOrg, archivedFilter(invoices), extra)).$dynamic(),
+    includingDeleted: (extra?: SQL) =>
+      db.select().from(invoices).where(and(inOrg, extra)).$dynamic(),
+  };
+};
+`}>
+  <AnnotatedStep meta="{1-5}" color="blue">
+    The header. `import 'server-only'` because this reaches the DB client; `activeFilter` and `archivedFilter` come from the shared `lifecycle` module.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7-8} "orgId" "inOrg"`} color="violet">
+    The factory closes over `orgId` and builds the org predicate once. The tenancy chapter's `tenantDb` bakes the same `eq(organizationId, orgId)` into `findMany`; here we spell it inline because list reads need a chainable builder, which `findMany` isn't.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{10-12} "activeFilter(invoices)"`} color="green">
+    `active()` `and`s three things into one `where`: the org predicate, the lifecycle predicate, and the caller's optional `extra`. The stacking figure in code.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{12} ".$dynamic()"`} color="orange">
+    The one load-bearing decision: return a builder, not a finished query. Without `.$dynamic()`, Drizzle locks `.where()`, `.limit()`, and `.orderBy()` to a single call, so chaining a clause onto a pre-filtered query is a compile-time type error. `.$dynamic()` lifts that, the documented idiom for a reusable, pre-scoped builder the caller keeps extending.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two things about this module. The methods take an `extra` predicate instead of letting the caller add a second `.where()`, because a second `.where()` replaces the first rather than merging; passing `extra` `and`s it into the single `where`. And note what's missing: no `onlyDeleted()`, no raw passthrough to the unscoped shape. That's the no-`allOrgs`-flag rule from the tenancy chapter again, the moment you add a way to drop the filter, you've reintroduced the bug.
+
+Before you make this structural, write the filter by hand once, so the helper hides something you understand rather than something you trust.
+
+<DrizzleCoding
+  instructions="Return the active invoices for org 1 — not deleted, not archived. You supply both the org filter and the lifecycle filters by hand. This is the read you're about to make structural; feel the filter first."
+  schema={`export const invoices = pgTable('invoices', {
+  id: integer('id').primaryKey(),
+  organizationId: integer('organization_id').notNull(),
+  status: text('status').notNull(),
+  deletedAt: timestamp('deleted_at'),
+  archivedAt: timestamp('archived_at'),
+});`}
+  seed={`INSERT INTO invoices (id, organization_id, status, deleted_at, archived_at) VALUES
+  (1, 1, 'open',     NULL,                 NULL),
+  (2, 1, 'paid',     NULL,                 NULL),
+  (3, 1, 'void',     '2026-05-12 09:00Z',  NULL),
+  (4, 1, 'sent',     NULL,                 '2026-05-20 16:00Z'),
+  (5, 2, 'open',     NULL,                 NULL),
+  (6, 2, 'draft',    NULL,                 NULL);`}
+  starter={`return await db
+  .select()
+  .from(invoices)
+  .where(and(eq(invoices.organizationId, 1), /* finish: only active rows */));`}
+  expectedRows={[
+    { id: 1, status: 'open' },
+    { id: 2, status: 'paid' },
+  ]}
+  ordered={false}
+/>
+
+The editor schema uses plain integer ids and snake_case column names to fit the in-browser database, a teaching cut. The production table carries the UUIDv7 ids and shared `lifecycleColumns` from the previous lesson, but the predicates are identical.
+
+That `and(eq(...), isNull(...), isNull(...))` you just typed is exactly what `active()` produces, except you write it once and never again at a call site. That call site is next.
+
+## The call site: review the shape, not each predicate
+
+The canonical list read is three lines that mirror the action opener from the previous lesson: resolve the org user, build the scoped helper, ask for active rows.
+
+<CodeTooltips tooltips={{
+  scopedInvoices: 'The per-entity lifecycle helper. Shares the org predicate with tenantDb, adds the lifecycle predicate, returns a chainable builder for ordering and paging.',
+  active: 'Returns a $dynamic() builder already filtered to deleted_at IS NULL AND archived_at IS NULL plus the org scope. Chain ordering and pagination onto it.',
+}}>
+```ts
+const { orgId } = await requireOrgUser();
+const scoped = scopedInvoices(orgId);
+const rows = await scoped.active().orderBy(desc(invoices.createdAt)).limit(20);
+```
+</CodeTooltips>
+
+The handler has no `isNull(deletedAt)` and no `eq(organizationId, …)`. Both filters come from `scoped.active()`; the caller adds only ordering and a page size. For an extra condition, pass one into the method, `scoped.active(eq(invoices.status, 'open'))`, and the helper `and`s it in.
+
+Set the wrong shape next to the right one.
+
+<CodeVariants>
+  <CodeVariant label="Hand-written (leaks)">
+    <div data-mark-color="orange">
+
+    ```ts {4} "db"
+    const rows = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.status, 'open'));
+    ```
+
+    </div>
+    **Returns this org's open invoices and last week's soft-deleted ones.** The lifecycle filter is missing, and because it reaches for bare `db`, so is the org filter.
+  </CodeVariant>
+
+  <CodeVariant label="Through the helper (scoped)">
+    <div data-mark-color="green">
+
+    ```ts "scoped.active()"
+    const scoped = scopedInvoices(orgId);
+    const rows = await scoped.active().orderBy(desc(invoices.createdAt)).limit(20);
+    ```
+
+    </div>
+    **Org and lifecycle filters both supplied upstream.** The caller adds only ordering and a page size.
+  </CodeVariant>
+</CodeVariants>
+
+You no longer scan the `where` for a missing `isNull`. You check one thing: did this read go through the entity helper, or touch bare `db` or `from(invoices)` directly? It's the same mechanical check you run for tenancy, and lifecycle rides the same signal because both filters live in one layer.
+
+## Joins and raw SQL: where the helper stops
+
+The helper covers single-table reads cleanly. Two cases need discipline on top of it, and a helper that leaks silently is the exact bug this lesson exists to prevent.
+
+**Joins are the trickier case.** A query joining `invoices` to `invoice_lines` must apply the lifecycle filter to both tables, or you return live invoices stapled to soft-deleted line items. The helper filters only the table it's built around, so the joined child rows leak through.
+
+You could add join methods like `scoped.active().withLines()`, but every join shape needs its own method and the helper sprawls. Instead, **any join goes through a named function in `db/queries/<entity>.ts`** that applies the shared filter to each joined table, reusing the same exported predicate builders.
+
+<div data-mark-color="green">
+
+<CodeTooltips tooltips={{
+  activeFilter: "The same shared predicate builder the helper methods use, applied to each joined table. One definition of 'active', so a change to the lifecycle shape still touches one file.",
+}}>
+```ts title="src/db/queries/invoices.ts" {8-9}
+export const listInvoicesWithLines = (orgId: string) =>
+  db.select()
+    .from(invoices)
+    .innerJoin(invoiceLines, eq(invoiceLines.invoiceId, invoices.id))
+    .where(
+      and(
+        eq(invoices.organizationId, orgId),
+        activeFilter(invoices),
+        activeFilter(invoiceLines),
+      ),
+    );
+```
+</CodeTooltips>
+
+</div>
+
+The join now lives in a known place, is reviewed once, and reuses the single definition of "active" instead of ad-hoc chains scattered through route handlers.
+
+**Raw and hand-tuned queries are the other carve-out.** A reporting query tuned with `EXPLAIN ANALYZE` may not fit through the helper, and a raw ``db.execute(sql`…`)`` bypasses it entirely. A performance escape is fine; escaping the discipline silently is the bug. So these queries live in one location, `db/queries/reports/*.ts`, each with a comment naming the performance reason and the `WHERE` clauses that replace the helper's filters, and each unit-tested for both the lifecycle and tenancy predicates.
+
+One gap stays open that types can't close. Types make the helper shape easy and the bypass shape obvious, but they can't stop someone writing `db.select().from(invoices)` in a fresh file. A lint rule that flags direct `db.select().from(<entityTable>)` or `db.query.<entity>` outside the helper module catches that; you build it later in this unit, so for now, name it in review.
+
+The review below is the highest-value exercise in this lesson: a short pull request with three planted bugs, the three shapes this lesson exists to stop. Comment on each line where you'd block the merge.
+
+<CodeReview instructions="Review this PR for a teammate. Three issues would leak data in production — block the merge on each.">
+  <ReviewFile name="src/app/(app)/reports/route.ts">
+    ```ts ins={1-2} ins={4-9}
+    import { db } from '@/db';
+    import { invoices } from '@/db/schema';
+
+    export async function GET() {
+      const open = await db.query.invoices.findMany({
+        where: eq(invoices.status, 'open'),
+      });
+      return Response.json(open);
+    }
+    ```
+  </ReviewFile>
+
+  <ReviewFile name="src/app/(app)/invoices/actions.ts">
+    ```ts ins={4} ins={6-11}
+    import { db } from '@/db';
+    import { scopedInvoices } from '@/db/queries/invoices';
+    import { invoices } from '@/db/schema';
+    import { requireOrgUser } from '@/auth';
+
+    export async function exportAllInvoices() {
+      const { orgId } = await requireOrgUser();
+      const scoped = scopedInvoices(orgId);
+      const rows = await scoped.includingDeleted().orderBy(desc(invoices.createdAt));
+      return rows;
+    }
+    ```
+  </ReviewFile>
+
+  <ReviewFile name="src/db/queries/invoices.ts">
+    ```ts ins={1-10}
+    export const listInvoicesWithLines = (orgId: string) =>
+      db.select()
+        .from(invoices)
+        .innerJoin(invoiceLines, eq(invoiceLines.invoiceId, invoices.id))
+        .where(
+          and(
+            eq(invoices.organizationId, orgId),
+            activeFilter(invoices),
+          ),
+        );
+    ```
+  </ReviewFile>
+
+  <ReviewIssue file="src/app/(app)/reports/route.ts" line={5} kernel="tenant-entity read bypasses the lifecycle helper — leaks soft-deleted rows (and is unscoped for tenancy)">
+    This is the leak in its native habitat. `db.query.invoices.findMany({ where: eq(invoices.status, 'open') })` reaches for the bare `db` client and an entity table directly — so it carries *neither* filter: no `deleted_at IS NULL` (last week's deleted invoices come back) and no org predicate (every org's rows come back). You don't audit the `where` for a missing `isNull`; you flag the shape. A tenant read should go through `scopedInvoices(orgId).active()`, which supplies both filters by construction.
+
+    ```ts
+    const { orgId } = await requireOrgUser();
+    const open = await scopedInvoices(orgId).active(eq(invoices.status, 'open'));
+    ```
+  </ReviewIssue>
+
+  <ReviewIssue file="src/app/(app)/invoices/actions.ts" line={9} kernel="includingDeleted() used without the admin/RBAC gate — exposes deleted rows to non-admins">
+    `includingDeleted()` drops the lifecycle filter and hands back deleted rows — that is the helper's most dangerous surface, and here it sits in a plain handler any signed-in user can call. The escape hatch is named loud precisely so this is a finding on sight: `includingDeleted` outside an admin-gated action is wrong by its shape. Wrap it in `authedAction('admin', …)` so only the role that owns recovery and exports can run it.
+  </ReviewIssue>
+
+  <ReviewIssue file="src/db/queries/invoices.ts" line={8} kernel="join filters only the driving table — soft-deleted child rows leak through">
+    The join filters `invoices` with `activeFilter(invoices)` but never filters `invoiceLines` — so live invoices come back stapled to soft-deleted line items. A join touches two tables, and the discipline is to apply the shared predicate to *each* of them. Add `activeFilter(invoiceLines)` inside the same `and(...)`.
+
+    ```ts
+    .where(
+      and(
+        eq(invoices.organizationId, orgId),
+        activeFilter(invoices),
+        activeFilter(invoiceLines),
+      ),
+    );
+    ```
+  </ReviewIssue>
+
+  <ReviewWhy>
+    The skill isn't auditing each `where` predicate for a missing `isNull` — it's recognizing three *shapes* on sight: a tenant read on bare `db`, an `includingDeleted()` outside an admin gate, and a join that filters only its driving table. Each is wrong by its shape, before you trace a single query.
+  </ReviewWhy>
+</CodeReview>
+
+## Gate `includingDeleted()` behind an admin check
+
+`includingDeleted()` is the helper's most dangerous surface. The org scope still applies, but deleted and archived rows come back, which is exactly the data the helper exists to keep out of normal views.
+
+So gate every `includingDeleted()` call at the action or route layer with the `authedAction(role, …)` wrapper from the roles and RBAC chapter, restricted to the role that owns recovery and admin tooling. The helper makes the data reachable; the wrapper decides who reaches it.
+
+<div data-mark-color="green">
+
+<CodeTooltips tooltips={{
+  authedAction: 'The RBAC wrapper from the roles chapter: lifts session, role check, and Zod parse out of the action body. Here it restricts the escape hatch to admins.',
+  includingDeleted: "Drops the lifecycle filter so a deleted row is reachable for recovery. The id predicate is passed in, so it's and-ed into the single where.",
+}}>
+```ts title="src/app/(app)/invoices/actions.ts" {2}
+export const restoreInvoice = authedAction(
+  'admin',
+  restoreInvoiceSchema,
+  async ({ id }, { orgId }) => {
+    const scoped = scopedInvoices(orgId);
+    const [invoice] = await scoped.includingDeleted(eq(invoices.id, id));
+    if (!invoice) return err('not-found', 'Invoice not found');
+    // clear deletedAt, return ok(...)
+  },
+);
+```
+</CodeTooltips>
+
+</div>
+
+An ungated `includingDeleted()` re-introduces, through the back door, the exact leak the helper was built to prevent, which is why the name is loud enough to spot in review.
+
+:::note
+The audit-log entries around the escape hatch, recording who pulled deleted data and when, come later in the security and audit-log chapter. The gated escape hatch is where they will hang.
+:::
+
+## Reads and writes are scoped by the same layer
+
+The lifecycle writes from the previous lesson, `softDelete`, `archive`, and `restore`, go through the same scoped client, so tenancy sits on the `WHERE` of every `UPDATE` just as it does on every read. A request that forges a different `orgId`, or targets an already-deleted row, affects zero rows. No gap opens where reads are careful and writes are trusting.
+
+That "zero rows affected" is the seam into the next lesson. Right now it's a silent success: the row you weren't allowed to touch stays untouched. Optimistic concurrency adds a third predicate to that same `UPDATE` `WHERE`, a `version` precondition, so two tabs editing one row can't clobber each other. When the version doesn't match, zero rows affected becomes an honest 409 the user can act on.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Dynamic query building"
+    href="https://orm.drizzle.team/docs/dynamic-query-building"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The official reference for $dynamic() — the load-bearing call behind the chainable, pre-scoped helper you built."
+  />
+  <ExternalResource
+    title="PostgreSQL soft-delete strategies"
+    href="https://dev.to/oddcoder/postgresql-soft-delete-strategies-balancing-data-retention-50lo"
+    icon="simple-icons:devdotto"
+    iconColor="#0A0A0A"
+    description="A wider survey of the pattern, including using row-level security so the filter is enforced by the database, not by every query author."
+  />
+</CardGrid>

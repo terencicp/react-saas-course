@@ -530,9 +530,9 @@
 - 4 Cursor by default, offset when small (Teaches the cursor-vs-offset decision for list pagination, the opaque base64 cursor shape with sort key plus tiebreaker, the next-extra-row trick for `hasNext`, cursor versioning against sort, the row-inserted-during-pagination failure mode under offset, and the "position not snapshot" contract for shared URLs.)
 - 5 Quiz
 
-### Chapter 061 — Soft delete, archive, and concurrency
+### Chapter 061 — Soft delete, archive, concurrency
 - 1 Two timestamps, three actions (Teaches the soft-delete-vs-archive distinction, the `deletedAt`/`archivedAt` schema with partial unique and composite indexes, and the `softDelete`/`archive`/`restore` Server Actions that drive the lifecycle.)
-- 2 Making the missing filter impossible (Teaches the base-query helper that composes on top of `tenantDb` to expose `active()`, `archived()`, and `includingDeleted()` so every read carries the lifecycle and tenancy filters by construction.)
+- 2 The lifecycle query helper (Teaches the per-entity scoped query helper that composes on top of the org filter to expose `active()`, `archived()`, and `includingDeleted()` so every read carries the lifecycle and tenancy filters by construction.)
 - 3 Version columns and the honest 409 (Teaches version-based optimistic concurrency, the Drizzle UPDATE precondition that turns a race into a typed 409 Result, and the React 19 refresh-and-retry surface built on `useActionState` and `useOptimistic`.)
 - 4 Quiz
 
