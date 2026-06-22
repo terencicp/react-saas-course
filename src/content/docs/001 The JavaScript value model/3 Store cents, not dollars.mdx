@@ -1,0 +1,321 @@
+---
+title: Store cents, not dollars
+tagline: How JavaScript represents money safely, from floating-point numbers to BigInt and boundary validation.
+chapter-id: 1
+course-progress: 0.0033
+rewrites: 2
+sidebar:
+  order: 3
+  label: Store cents, not dollars
+---
+
+import PredictOutput from '../../../components/exercises/predict-output/PredictOutput.astro';
+import PredictWhy from '../../../components/exercises/predict-output/PredictWhy.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Type `0.1 + 0.2` into a browser console and you get `0.30000000000000004`.
+Every JavaScript `number` is a 64-bit floating-point value, and most decimal fractions have no exact binary form, so most decimal arithmetic comes back slightly wrong.
+That error is behind real billing bugs: an invoice total that drifts by a cent after summing a dozen line items.
+Two practices close the gap: store integer cents, never dollars (`399`, not `3.99`), and validate that a value is a real number before it lands in the database.
+
+## Why `0.1 + 0.2` doesn't equal `0.3`
+
+Predict what these three lines print. The first two show the classic surprise; the third points to the fix.
+
+<PredictOutput expected={`0.30000000000000004
+0.30000000000000004
+19.95`}>
+
+```ts
+console.log(0.1 + 0.2);
+console.log(0.1 * 3);
+console.log(1995 / 100);
+```
+
+<PredictWhy>
+
+Every JavaScript `number` is a 64-bit double-precision float per the <Term definition="The IEEE 754 standard defines binary floating-point representation. JavaScript's `number` type is the 64-bit double-precision variant — 53 bits of mantissa, 11 bits of exponent. Most decimal fractions can't be represented exactly in binary.">IEEE 754</Term> standard, exact for integers but only approximate for fractions whose binary expansion never terminates, which is most of them.
+So the engine stores the closest 64-bit binary fraction to `0.1` and to `0.2`; adding those two approximations gives a value whose closest decimal printout is `0.30000000000000004`.
+
+The third line is the flip side. `1995 / 100` prints exactly `19.95` because `1995` is an integer, exact in binary, and dividing it lands on a value the engine prints cleanly.
+
+</PredictWhy>
+
+</PredictOutput>
+
+The bit counts don't matter here; the consequence does.
+Fractional arithmetic in `number` is approximate, integer arithmetic is exact, and every decision about handling money in this stack follows from that one fact.
+
+<VideoCallout videoId="2gIxbTn7GSc" videoTitle="Floating Point Approximation explained">
+  A 6-minute visual walkthrough by b001 of how a decimal like `1.3` runs out of bits when converted to binary, the mechanical reason the results come out slightly off.
+</VideoCallout>
+
+## The integer-cents rule
+
+The rule that closes the bug class: **store money as the integer count of the currency's smallest unit** — cents for USD, pence for GBP, and the minor unit defined per <Term definition="ISO 4217 codes every currency and its minor unit: USD has 2 decimals (cents), JPY has 0, BHD has 3 (fils). That count is how many integer units make one major unit.">ISO 4217</Term> for any other. Convert between that integer and a human-readable string only at the boundaries — accepting input and rendering for display. Never store, sum, multiply, or compare dollars-as-floats in between.
+
+Your whole stack already agrees on this. Stripe's API takes `amount` as an integer in the currency's minor units: `1000` charges ten dollars, `10` charges ten yen. Unit 5 stores it the same way, in an integer cents column, so a value round-trips from JS to Postgres and back without touching a float.
+
+A string comes in from the user, an integer sits in storage, and a string goes back out for display:
+
+```ts
+const userInput = '19.95';
+const dollars = Number(userInput);                  // 19.95
+const cents = Math.round(dollars * 100);            // 1995
+
+// store `cents` as an integer; pass `cents` to Stripe; sum cents in SQL.
+
+const displayDollars = (cents / 100).toFixed(2);    // '19.95'
+const displayString = `$${displayDollars}`;         // '$19.95'
+```
+
+`Number(userInput)` parses the string into the same inexact `19.95`. `Math.round(dollars * 100)` then does two jobs: multiplying moves the value into the cents domain, where it may land on `1995.0000000000002`, and rounding erases that noise to leave the exact integer `1995`. As an integer it now sums, multiplies, and compares exactly; on the way out, dividing by 100 and `toFixed(2)` recover the dollars.
+
+:::caution
+Use `Math.round`, not `Math.floor` or `Math.trunc`. `Math.round` goes to the nearest integer; `Math.floor` always rounds down and `Math.trunc` chops toward zero, so both lose a cent whenever floating-point noise lands just below the integer. (Multi-currency accounting may need banker's rounding and a decimal library, but the cent boundary covers most web apps.)
+:::
+
+<VideoCallout videoId="fhwEFZ34c7g" videoTitle="Storing money in MySQL (the right way)">
+  An 8-minute PlanetScale demo of the same rule at the database boundary: float columns drift on summation while integer cents stay exact.
+</VideoCallout>
+
+## The `Number.is*` boundary checks
+
+Before a number lands in the database, confirm it is a finite integer, whether it came from a form, a JSON payload, or a calculation.
+JavaScript ships three <Term definition="A predicate is a function that returns a boolean, testing whether its argument satisfies some condition.">predicates</Term> for that.
+
+```ts
+Number.isFinite(parsed);       // not NaN, not ±Infinity
+Number.isInteger(parsed);      // a whole number, no fractional part
+Number.isSafeInteger(parsed);  // a whole number under 2^53
+```
+
+**`Number.isFinite(x)`** rejects `NaN`, `Infinity`, and `-Infinity`, the three values that otherwise propagate silently and surface days later as `$NaN` on an invoice.
+Follow every `Number(input)` with this guard.
+
+**`Number.isInteger(x)`** confirms a whole number with no fractional part, and returns `false` for `NaN` and the infinities too.
+Use it when a value should already be an integer on arrival, like a cents amount or quantity from another service.
+
+**`Number.isSafeInteger(x)`** checks against `Number.MAX_SAFE_INTEGER` (`2^53 − 1`), the ceiling past which a `number` can no longer represent integers exactly.
+Cents amounts stay under it until about $90 trillion, so this mainly guards values from 64-bit external systems.
+When it fails, reach for `BigInt`, covered next.
+
+One footgun before you trust `Number()` as a parser:
+
+```ts
+console.log(Number(''));      // 0
+console.log(Number('   '));   // 0
+```
+
+Both return `0`, not `NaN`, so an empty form field passes `Number.isFinite` and charges $0.00 silently.
+Reject empty input by checking the trimmed string before converting:
+
+```ts
+const parseCentsInput = (input: string): number => {
+  if (input.trim() === '') throw new Error('Empty input');
+  const dollars = Number(input);
+  if (!Number.isFinite(dollars)) throw new Error('Not a number');
+  const cents = Math.round(dollars * 100);
+  if (!Number.isSafeInteger(cents)) throw new Error('Amount too large');
+  return cents;
+};
+```
+
+The previous lesson's `Number.isNaN` answers only "is this exactly `NaN`?"; at a boundary, `Number.isFinite` is usually what you want, since it covers `NaN` and both infinities in one call.
+
+## When to reach for `BigInt`
+
+Money never triggers `BigInt`. Integer cents stay under 2^53 up to about $90 trillion per transaction, far past any single charge, so `number` already covers it and `BigInt` would be friction with no payoff.
+
+Three situations are the genuine reach for `BigInt`:
+
+- **64-bit external IDs.** Twitter Snowflake IDs and some database `BIGINT` columns exceed `Number.MAX_SAFE_INTEGER`, so parsing them as a `number` rounds the low bits away and can collapse two distinct IDs into one. Read them as `BigInt`, or as a string if you never do arithmetic on them.
+- **Counters that cross 2^53.** Nanosecond timestamps over decades, or cumulative counters in high-volume telemetry.
+- **Crypto and hash arithmetic.** Modular exponentiation, large-prime work, and hash construction, where values are deliberately huge and overflow is silently disastrous.
+
+Write a `BigInt` as a numeric literal with an `n` suffix:
+
+```ts
+const snowflake = 1234567890123456789n;   // `n` suffix is the BigInt literal
+const next = snowflake + 1n;              // BigInt arithmetic — works
+// const broken = snowflake + 1;          // TypeError: cannot mix BigInt and number
+```
+
+:::caution
+`BigInt` carries real friction:
+
+- **It does not mix with `number`.** `1n + 1` throws `TypeError`; conversion is explicit, with `Number(bigint)` (lossy for large values) and `BigInt(number)`.
+- **`Math.*` rejects it.** The whole `Math` namespace works on `number` only.
+- **`JSON.stringify` throws on it.** Sending it across the wire needs a custom replacer, usually converting to a string.
+- **TypeScript's `bigint` is a distinct type,** and the compiler enforces the no-mixing rule, so the friction surfaces before you ship.
+:::
+
+Stay on `number` until a real overflow forces the switch.
+
+## Converting strings to numbers
+
+Every entry point that takes a string as a number (form input, query param, JSON field) gets the same shape: `Number(input)` to parse, then `Number.isFinite(result)` to validate, plus the empty-string guard from the section above.
+
+JavaScript ships four ways to turn a string into a number. Compare them on a clean `'19.95'` and a `'12px'` with trailing garbage:
+
+<CodeVariants>
+  <CodeVariant label="Number(input)">
+    <div data-mark-color="green">
+
+    ```ts {1,2}
+    Number('19.95');   // 19.95
+    Number('12px');    // NaN
+    ```
+
+    </div>
+    **The default.** Strict: it returns `NaN` unless the whole string is a number, exactly what the `Number.isFinite` guard expects. Reach for it unless one of the other three has a specific trigger.
+  </CodeVariant>
+
+  <CodeVariant label="parseInt(input, 10)">
+    <div data-mark-color="orange">
+
+    ```ts {1,2}
+    parseInt('19.95', 10);   // 19 — lossy on fractions!
+    parseInt('12px', 10);    // 12
+    ```
+
+    </div>
+    **The dimension-string reach.** Reads the leading digits and ignores trailing garbage: right for CSS strings like `'12px'`, wrong for user input, since it silently drops the `.95` of `19.95`. Always pass the <Term definition="The radix (or base) is the number of digits a numeral system uses: base 10 (decimal) for everyday numbers, base 16 (hex), base 2 (binary). It tells parseInt how to read the string.">radix</Term> `10`.
+  </CodeVariant>
+
+  <CodeVariant label="parseFloat(input)">
+    <div data-mark-color="orange">
+
+    ```ts {1,2}
+    parseFloat('19.95');   // 19.95
+    parseFloat('12px');    // 12
+    ```
+
+    </div>
+    **Rarely the right answer.** Same "ignore trailing garbage" behavior as `parseInt`, but it returns a float. `Number()` with validation reads more clearly every time.
+  </CodeVariant>
+
+  <CodeVariant label="+input">
+    <div data-mark-color="blue">
+
+    ```ts {1,2}
+    +'19.95';   // 19.95
+    +'12px';    // NaN
+    ```
+
+    </div>
+    **The shortcut.** Unary plus runs the same conversion as `Number(input)`. Fine in a one-line callback, but `Number(input)` reads better in shared code, so that is the form this course writes.
+  </CodeVariant>
+</CodeVariants>
+
+Picking the right function is only half of it, because `NaN` propagates: every operation that touches it yields `NaN`, so `Math.round(NaN)` is still `NaN`. One bad input spreads silently and surfaces later as `$NaN` on an invoice or a `null` in a database column. Catch it at the boundary, where the string enters, and the rest of your code never has to.
+
+## Sort each value into its storage type
+
+<Buckets instructions="Drag each value into the storage type a senior would pick for it.">
+  <Bucket name="number" label="number" description="Fits in a regular number, no special handling" />
+  <Bucket name="cents" label="Integer cents" description="A count of the smallest currency unit, stored as a number integer" />
+  <Bucket name="bigint" label="BigInt" description="Needs BigInt to avoid overflow or precision loss" />
+
+  <Item bucket="cents">A user's shopping cart total in USD</Item>
+  <Item bucket="bigint">A Twitter Snowflake ID from an external API</Item>
+  <Item bucket="number">A product's quantity in stock</Item>
+  <Item bucket="cents">A price in EUR shown on a checkout page</Item>
+  <Item bucket="number">An exponential backoff delay in milliseconds</Item>
+  <Item bucket="number">A database row count returned from `SELECT COUNT(*)`</Item>
+</Buckets>
+
+Money goes to integer cents, since floating point can't store most decimals exactly. Counts and durations fit in a regular `number`. `BigInt` is for values past `Number.MAX_SAFE_INTEGER`.
+
+## Write the boundary function
+
+Implement `dollarsToCents(input)`: convert a dollar string to integer cents, and reject every invalid input with a clear error.
+
+<ScriptCoding
+  instructions="Implement dollarsToCents(input) using input.trim() to check for emptiness, Number() to parse, Number.isFinite to reject NaN/Infinity, Math.round to land on integer cents, and Number.isSafeInteger to guard the upper bound. Throw 'Invalid amount' for non-numeric or empty inputs; throw 'Amount too large' for values past Number.MAX_SAFE_INTEGER."
+  starter={`function dollarsToCents(input) {
+  // 1. Reject empty/whitespace input by throwing 'Invalid amount'.
+  // 2. Parse the input string into a number using Number().
+  // 3. Reject NaN and Infinity by throwing 'Invalid amount'.
+  // 4. Multiply by 100 and round to the nearest integer.
+  // 5. Reject unsafe integers by throwing 'Amount too large'.
+  // 6. Return the integer cents.
+}`}
+  tests={`
+test('converts a typical dollar amount', () => {
+  expect(dollarsToCents('19.95')).toBe(1995);
+});
+test('handles whole dollars', () => {
+  expect(dollarsToCents('20')).toBe(2000);
+});
+test('handles zero', () => {
+  expect(dollarsToCents('0')).toBe(0);
+});
+test('rounds away floating-point noise', () => {
+  // 19.95 * 100 in floats is 1995.0000000000002 — Math.round saves us.
+  expect(dollarsToCents('19.95')).toBe(1995);
+});
+test('throws on non-numeric input', () => {
+  expect(() => dollarsToCents('twenty')).toThrow('Invalid amount');
+});
+test('throws on empty input', () => {
+  // Number('') === 0 — without an explicit empty-string guard, this would
+  // silently return 0 and the user gets a $0.00 charge in their database.
+  expect(() => dollarsToCents('')).toThrow('Invalid amount');
+});
+test('throws on whitespace input', () => {
+  // Number('   ') === 0 too. Same footgun.
+  expect(() => dollarsToCents('   ')).toThrow('Invalid amount');
+});
+test('throws on Infinity', () => {
+  expect(() => dollarsToCents('Infinity')).toThrow('Invalid amount');
+});
+`}
+/>
+
+The empty-string and whitespace tests are load-bearing: `Number('')` is `0`, so without an explicit `input.trim() === ''` guard they sail through as a zero-cent charge. That hole is also why the check uses `input.trim()` plus `Number.isFinite` instead of `!isNaN(Number(input))`.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="0.30000000000000004.com"
+    href="https://0.30000000000000004.com/"
+    icon="lucide:calculator"
+    iconColor="#F59E0B"
+    description="A one-page reference for the IEEE 754 surprise in every mainstream language. Bookmark for the inevitable conversation with a teammate who hasn't seen it before."
+  />
+  <ExternalResource
+    title="Stripe API — Amounts"
+    href="https://docs.stripe.com/currencies"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="The full table of supported currencies with their minor-unit decimal counts. This is the integer-cents rule in production: Stripe enforces it at the API boundary."
+  />
+  <ExternalResource
+    title="Number — MDN"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The exhaustive Number reference, including the full Number.is* family and the MAX_SAFE_INTEGER / EPSILON constants."
+  />
+  <ExternalResource
+    title="BigInt — MDN"
+    href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/BigInt"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The BigInt surface along with its friction: the no-mixing rule, the JSON serialization caveat, and the conversion helpers. Worth reading once before you reach for it the first time."
+  />
+</CardGrid>

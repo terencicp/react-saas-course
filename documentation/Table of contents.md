@@ -8,9 +8,9 @@
 - 1 Bindings, not boxes (Teaches what assignment actually does: primitive copy vs. shared object references, function-call pass-by-value-vs-reference, and shallow vs. deep copy with `structuredClone`.)
 - 2 What === actually compares (Teaches value vs. reference equality, `Object.is` for `NaN` and signed zero, `Number.isNaN` over the coercing global, and why the course never writes `==`.)
 - 3 Store cents, not dollars (Teaches IEEE 754 at the depth that bites, the integer-cents money rule, the `Number.is*` family, when `BigInt` earns its weight, and the `parseInt` vs. `Number` conversion choice.)
-- 4 Why .length lies (Teaches code units vs. code points vs. grapheme clusters, `Intl.Segmenter` for user-perceived counts, `normalize` for visually-identical inputs, and the senior string-method surface.)
+- 4 What .length actually counts (Teaches code units vs. code points vs. grapheme clusters, `Intl.Segmenter` for user-perceived counts, `normalize` for visually-identical inputs, and the senior string-method surface.)
 - 5 Backticks and tagged templates (Teaches template literals as the default for interpolation and multi-line strings, the tag-function mechanics, and `sql` and `dedent` as the canonical tagged-template cases.)
-- 6 const binds, it doesn't freeze (Teaches `const` vs. `let` and when each earns its weight, block scope, the Temporal Dead Zone, hoisting demystified, and why `const` alone doesn't narrow types.)
+- 6 const, let, scope, and the TDZ (Teaches `const` vs. `let` and when each earns its weight, block scope, the Temporal Dead Zone, hoisting demystified, and why `const` alone doesn't narrow types.)
 - 7 Quiz
 
 ### Chapter 002 — Functions, naming, and control flow
