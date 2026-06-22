@@ -588,8 +588,8 @@
 - 8 Quiz
 
 ### Chapter 067 — Project: Durable CSV export with Trigger.dev
-- 1 Project Overview
-- 2 The task boundary: schemaTask and the per-org queue
+- 1 Project overview
+- 2 The task boundary: schemaTask and per-org queue
 - 3 One checkpoint per page
 - 4 Send the email, write the audit log
 

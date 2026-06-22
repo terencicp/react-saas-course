@@ -2142,3 +2142,8 @@ batchTriggerAndWait | - | Triggers many children at once and parks the parent on
 predicate-idempotent | - | A job whose own first run invalidates its WHERE clause, so re-running changes nothing and it needs no dedup key. | first defined: Chapter 066 L7
 caller / callee | caller, callee | The caller is the code that triggers a task (the app); the callee is the triggered task; deploy the callee first. | first defined: Chapter 066 L7
 concurrency seat | - | A unit of paid concurrency: one slot for a run to execute in at the same time as others. | first defined: Chapter 066 L7
+tasks.trigger | - | Fire-and-return enqueue from request code; returns a handle the moment the run is queued, never blocking, unlike triggerAndWait. | first defined: Chapter 067 L2
+.unwrap (triggerAndWait) | unwrap | Unwraps a triggerAndWait result to the child's return value, rethrowing if the child failed so the failure propagates to the parent. | first defined: Chapter 067 L3
+RFC-4180 | RFC 4180 | The standard defining CSV: comma-separated fields, CRLF line breaks, quoting rules for fields with commas/quotes/newlines. | first defined: Chapter 067 L3
+multipart upload | - | Upload protocol sending a large object as independently-PUT parts assembled server-side; streams a file without holding it whole in memory. | first defined: Chapter 067 L3
+system actor | actorUserId: null, system-actor | An audit row written by a task with no session; the null actor records that no human did it, not a missing value. | first defined: Chapter 067 L4
