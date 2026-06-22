@@ -1884,3 +1884,21 @@ allowUnlinkingAll | - | accountLinking knob (defaults false) that disables last-
 canonical email | user.email | The single address on the user row used for outbound mail, profile display, and audit identity; distinct from per-account emails. | first defined: Chapter 053 L9
 domain takeover | - | Attacker gains control of an email domain and stands up provider accounts on its addresses, faking 'this provider owns ada@acme.com'. | first defined: Chapter 053 L9
 pre-account takeover | - | Account-takeover class where email-password and OAuth share an email identifier and the link goes through on an unverified email. | first defined: Chapter 053 L9
+optimistic check | - | A cheap, possibly-stale check traded for speed, backed by an authoritative check later; here the proxy's cookie-presence read. | first defined: Chapter 054 L1
+matchall-minus-public | matchall-minus | Matcher strategy running on every route then carving out public paths, so a forgotten route fails closed (locked, not leaked). | first defined: Chapter 054 L1
+protected route | - | Route a signed-out user is bounced away from; the proxy redirects and a validating session read confirms a real session behind the cookie. | first defined: Chapter 054 L2
+revokeOtherSessions | - | changePassword option (defaults false) deleting every session except the one making the request; the flag that makes a password change a real rotation. | first defined: Chapter 054 L2
+session rotation | rotate the session | Minting a brand-new session on every real sign-in so the post-sign-in session is unknown to any attacker; what defeats session fixation. | first defined: Chapter 054 L2
+setPassword | - | Server-only Better Auth call that adds a missing 'credential' account row (vs changePassword which rotates an existing one); for OAuth-only users. | first defined: Chapter 054 L2
+user agent | userAgent | The browser's self-reported identity string; client-controlled, so display-only, never a security input. | first defined: Chapter 054 L3
+GeoIP | geo-IP, IP geolocation | Approximate city-level geographic lookup from an IP address, never a precise point. | first defined: Chapter 054 L3
+eventually consistent | eventual consistency | A change that is guaranteed to take effect, but after a propagation window, not instantly. | first defined: Chapter 054 L3
+database hooks | database hook | Better Auth callbacks firing around its own DB writes (e.g. after a new session row is created). | first defined: Chapter 054 L3
+server-trusted read | - | A read whose value rests on the server being the source of truth; must run server-side, never rebuilt from tamperable client state. | first defined: Chapter 054 L3
+revokeSession | - | Better Auth call deleting one named session keyed on its token; the device signs out, you stay. | first defined: Chapter 054 L3
+revokeSessions | - | Better Auth call deleting every session including the current one; clears this cookie too, so you sign out here. | first defined: Chapter 054 L3
+multiSession | multiSession() | Better Auth plugin letting one browser hold sessions for several accounts at once (the account-switcher); opposite axis to per-device sessions. | first defined: Chapter 054 L3
+React auto-escaping | auto-escaping, JSX escaping | React converts HTML-significant chars in every {value} to inert entities, so interpolated input renders as text not markup; the default XSS defense. | first defined: Chapter 054 L4
+dangerouslySetInnerHTML | - | React prop injecting a string into the DOM as raw HTML, bypassing auto-escaping; an XSS hole unless the input is sanitized server-side first. | first defined: Chapter 054 L4
+DOMPurify | isomorphic-dompurify | HTML sanitizer stripping executable content via an allowlist; the 2026 standard, run server-side before dangerouslySetInnerHTML. | first defined: Chapter 054 L4
+synchronizer token | - | Classic CSRF defense: server plants a secret in the page, the form echoes it back, the server checks the match; unneeded under SameSite=Lax. | first defined: Chapter 054 L4

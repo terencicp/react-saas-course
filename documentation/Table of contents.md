@@ -469,7 +469,7 @@
 - 9 Account linking (Teaches `account.accountLinking` config, the `trustedProviders` allowlist as a security decision, link-on-sign-in versus link-from-settings, the `allowDifferentEmails` knob, and the unlink guard that prevents leaving a user with no sign-in method.)
 - 10 Quiz
 
-### Chapter 054 — The signed-in session
+### Chapter 054 — Securing the signed-in session
 - 1 The two-layer gate in proxy.ts (Teaches the production-shaped protected-routes proxy — cookie-presence-only checks with `getSessionCookie`, matcher design (allowlist vs matchall-minus-public), the `?next=` round-trip with open-redirect closure, the inverse gate that bounces signed-in users off `/sign-in`, and the rule that keeps authorization decisions at the action boundary rather than the proxy.)
 - 2 Changing the password and the email (Teaches the `/settings/security` credential-mutation surface — `changePassword` with `revokeOtherSessions: true` as the senior default, `changeEmail` verified on the current address with notices to both, the current-password prompt vs `freshAge` elevation distinction, the `'requires-re-authentication'` Result branch, and the OAuth-only-user edge with no `'credential'` row.)
 - 3 Active sessions and revoke-across-devices (Teaches the `/settings/security/sessions` audit surface — `listSessions` with per-row device/location parsing and current-session detection, the `revokeSession` / `revokeOtherSessions` / `revokeSessions` trio with the right copy for each button, the cookie-cache staleness window on revoke, and the "new device signed in" notification that turns the list into real takeover detection.)

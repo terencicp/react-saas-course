@@ -1,0 +1,421 @@
+---
+title: Listing and revoking active sessions
+chapter-id: 54
+tagline: Build the active-sessions surface with Better Auth, where a user sees and revokes every device they are signed in on and gets a new-device alert email.
+course-progress: 0.5285
+rewrites: 1
+sidebar:
+  order: 3
+  label: Active sessions
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import SessionRowAnatomy from '../../../components/lessons/054/3/session-row-anatomy.astro';
+import RevokeComparison from '../../../components/lessons/054/3/revoke-comparison.astro';
+import RevokeStalenessFrame from '../../../components/lessons/054/3/revoke-staleness-frame.astro';
+import NewDeviceLoop from '../../../components/lessons/054/3/new-device-loop.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid, FileTree } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+In [Changing the password and the email](/054-the-signed-in-session/2-changing-the-password-and-the-email/) you set `revokeOtherSessions: true` on `changePassword`, and every other device the user was signed in on went dark, without the user ever seeing it.
+
+This lesson builds the page where they can see it.
+You'll stand up `/settings/security/sessions`: a server-trusted list of every device the user is signed in on, with a per-row "sign out", a "sign out other devices" button, a "sign out everywhere" button, and a "new device signed in" email that turns the page into account-takeover detection.
+
+Almost none of this is a new primitive.
+The `session` table has existed since you wired Better Auth's schema, and revoking a session still means deleting its row.
+What's new is the judgment behind a handful of decisions:
+
+- A user signed in on a phone, a laptop, and a desktop has three `session` rows. How do they see that list, and how does the page keep them from signing out the very session rendering it?
+- There are three revoke calls: one device, all other devices, everywhere including this one. How must the button copy make the difference unmissable?
+- A `delete` ran on the session row. Why might the revoked device keep loading pages for a few minutes?
+- A list nobody opens catches no break-in. What turns this page from a passive read into something that finds the user when a stranger signs in?
+
+This lesson handles only the consequences of the cookie cache, not its configuration.
+It shows current session state, not a history of sign-in and revoke events, and stops at the single email rather than anomaly scoring or an account-switcher UI.
+
+## One row per device: the session list as a server-trusted read
+
+The lesson is "show rows, then delete rows", so start with what a row is and where the list comes from.
+
+Your schema already answers that.
+When you wired Better Auth's Drizzle adapter, it created a `session` table shaped exactly as you'd design it yourself: one row per active session, carrying an `id`, the `userId` it belongs to, an opaque `token`, an `expiresAt`, the two columns that make this lesson possible (`ipAddress` and `userAgent`), plus `createdAt` and `updatedAt`.
+The list a user sees is conceptually just:
+
+```sql
+select * from session where user_id = $1 order by updated_at desc;
+```
+
+Most-recently-active first.
+Every device the user signed in on is one of those rows, and the page turns them into something a human can read.
+
+What matters for security is *where* you run that read.
+This page is a <Term definition={"Renders on the server. The call face is auth.api.*, and the result ships down to client components as serialized props."}>Server Component</Term>, so you read the list through the same server face you've used all chapter, wrapped in the same read ladder as every other protected read:
+
+```ts
+// app/(app)/settings/security/sessions/page.tsx
+const sessions = await auth.api.listSessions({ headers: await headers() });
+```
+
+`auth.api.listSessions`, fed the request headers, throws an `APIError` on failure that the read ladder already catches, and hands back a typed array of session rows to render.
+
+There is also a client face, `authClient.listSessions()`, returning the same typed array, and after a chapter of writing client components it is tempting to fetch and render the list in the browser.
+Resist it.
+"These are your real, active sessions" is a **server-trusted read**: its entire value rests on the server being the source of truth.
+Fetch it from state the user can tamper with and you've built a list that *claims* to show real sessions but shows whatever the client decided to render, which is useless for an audit surface whose only job is to be trustworthy.
+Read it on the server and pass the rows down as plain props.
+
+That read is cheap, and the reason pays off twice more before the lesson ends.
+Each row *is* a session: no token to decode, no signature to verify, no separate record of validity.
+So listing sessions is just selecting rows, and revoking one is just deleting it.
+If sessions were self-contained signed tokens (JWTs), listing would be easy but revocation hard, because a signed token stays valid until it expires no matter what your database thinks; you'd need a denylist consulted on every request just to kill a session early.
+The opaque-row model spends one database read per request to buy revocation that's free and instant to write.
+
+The list hides one thing on purpose.
+Sessions created with "remember me" carry a longer `expiresAt`, but they render as ordinary rows, because users think "the laptop I was on yesterday", not "the session whose cookie has a 30-day lifetime".
+Cookie-lifetime semantics are noise the user can't act on.
+
+Here's the surface you're about to build:
+
+<FileTree>
+- app/
+  - (app)/
+    - settings/
+      - security/
+        - sessions/
+          - **page.tsx** the Server Component, reads the list, renders the rows
+          - actions.ts the revoke Server Actions (one device, other devices, everywhere)
+          - _components/
+            - session-list.tsx
+            - session-row.tsx
+            - sign-out-everywhere.tsx
+- lib/
+  - **parse-user-agent.ts** turns the opaque `userAgent` string into "Chrome on macOS"
+</FileTree>
+
+Two files earn the rest of the lesson: `page.tsx`, where the list becomes a UI and the current session gets marked, and `parse-user-agent.ts`, where two opaque strings become a row a human can audit.
+Those are next.
+
+## From raw columns to a readable, guarded row
+
+A raw row is unreadable: `ipAddress` is `203.0.113.42` and `userAgent` is a 140-character string beginning `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)...`.
+Nobody can audit that.
+Each row has to become a sentence a person reads at a glance, *"Chrome on macOS · San Francisco · last active 2 minutes ago"*, and the one row the user is sitting in front of has to look visibly different.
+
+Better Auth stores the columns but does not interpret them: no user-agent parser, no location lookup.
+You turn the columns into human text in a small **server-side** utility, in three pieces.
+
+- **Device** comes from `userAgent`: *"Chrome on macOS"*, *"Safari on iPhone"*. Parse it on the server with a library built for the job, the `ua-parser-js` family. The <Term definition={"The browser's self-reported identity string. Display-only — it's client-controlled, so never trust it for a security decision."}>user agent</Term> is trivially forgeable, so here it is **display only**: an audit hint that helps a human recognize their own devices, never an input to a security decision.
+- **Location** comes from `ipAddress`, resolved to an approximate *"San Francisco, CA"* through a <Term definition={"Approximate geographic lookup from an IP address — city-level at best, never a precise point on a map."}>GeoIP</Term> lookup. It powers the "wait, I'm in Boston, why does it say Bangalore?" recognition moment, but the data is sensitive, so add it on purpose, weighed against your product's privacy posture, not by default.
+- **Recency** comes from the timestamps: `createdAt` becomes *"signed in 3 days ago"*, `updatedAt` becomes *"last active 5 minutes ago"*. Use relative time, because "the laptop I used this morning" is how people locate a session in memory.
+
+Now the decision that makes this page safe, and the one to make first.
+In a list of near-identical rows, nothing stops the user from clicking "sign out" on the session rendering the page and booting themselves out mid-task.
+So detect it: the row whose `token` matches the current session cookie is the device reading this page.
+Badge it **"This device"** and guard it, either with no per-row "sign out" button or with one that swaps to a distinctly worded "this will sign you out here" confirmation.
+Never let a user revoke the session they're using without an explicit, differently worded confirm.
+
+One more guard, quieter but real.
+`ipAddress` and `userAgent` are sensitive personal data, and when something throws on this page it is easy to dump the whole session object into an error breadcrumb and ship a user's IP and device fingerprint to your observability tool.
+Keep them out of error logs.
+
+<Figure>
+  <SessionRowAnatomy />
+  <Fragment slot="caption">
+    Two opaque columns, `userAgent` and `ipAddress`, plus the cookie's `token`,
+    become a row a human can audit. The session reading this page is badged and
+    guarded so the user can't sign it out by accident.
+  </Fragment>
+</Figure>
+
+From here the work is deleting rows, which is what the three revoke calls do.
+
+## Three ways to revoke: one device, the others, or everywhere
+
+"Kill my sessions" is not one request but three, and they map to three endpoints that look interchangeable but are not.
+What separates them is the one thing the user cares about: which sessions die, and where do I end up?
+Get the call right and the button copy wrong and you've built a trap.
+Take them one at a time, then lock the distinction into a single comparison.
+
+**Kill one device, with `revokeSession`.**
+This deletes a single named session: the selected device is signed out, you stay signed in.
+The call keys on the session **token**.
+The library deletes that one row, and the cookie still holding that token dies on its next request, when the validating read finds no row, returns null, and the proxy gate bounces that device to sign-in.
+The sign-out is immediate and the user can sign in there again, but you don't want to fire it by accident, so confirm first: *"Sign out the session on Chrome / macOS?"*
+Wire it as a per-row Server-Action button.
+
+This per-row revoke carries one caveat that, ignored, ships a broken button. See the caution below before you wire it.
+
+:::caution[Verify the per-row identifier before you ship]
+The token is a credential, the thing that *is* the session, so for safety some Better Auth versions return `token` **empty on every row except the current one**.
+A button that reaches for the row's token then works for "this device" and fails silently for every other device, the exact opposite of what you want.
+Wire the per-row revoke against whatever identifier your installed `revoke-session` endpoint accepts, and treat the two bulk buttons below, which need no per-row token, as the controls you can always rely on.
+:::
+
+**Kill every device but this one, with `revokeOtherSessions`.**
+This deletes every session except the current one: you stay signed in here, everything else goes dark.
+It is the **exact same revocation** that `changePassword({ revokeOtherSessions: true })` fired automatically in lesson 2.
+The flag and this button are two entry points to one endpoint: there the system pulled the trigger after a password change, here the user pulls it.
+This is the **"I think someone got into my account"** button, so it belongs prominent on the page, not buried in a menu.
+
+**Kill everything, including here, with `revokeSessions`.**
+This deletes *every* row, the current session included.
+The library clears the current cookie too, so the user is signed out **on this device as well** and lands back on `/sign-in`.
+It differs from the call above in the only way that matters: the device in your hand goes too.
+One confirm, *"You'll need to sign in again on this device too."*, then the call.
+
+The copy is the safety mechanism, and the reason this section exists.
+"Sign out everywhere" sounds decisive but is dangerously ambiguous: does "everywhere" include *this* device?
+The user can't know, and the two endpoints land them in completely different places.
+Conflating them in the button text is the field mistake on this page.
+So force the distinction into the words:
+
+- **"Sign out other devices"** maps to `revokeOtherSessions`, and you stay.
+- **"Sign out everywhere, including this device"** maps to `revokeSessions`, and you go.
+
+<Figure>
+  <RevokeComparison />
+  <Fragment slot="caption">
+    Three calls that look alike. The load-bearing difference is the column the user
+    feels: does the current session die? Let it drive your button copy.
+  </Fragment>
+</Figure>
+
+What happens on the server when any of these fire is anticlimactic, and that's the payoff of the opaque-row model.
+Every revoke is a single `delete`: `delete from session where token = ?` for one device, `where user_id = ?` for the bulk calls.
+There's no token blacklist to update, no JWT to rotate, no cache to invalidate (beyond one wrinkle in the next section).
+The row's *absence* is the revocation.
+In the signed-token world, killing a session early means writing to a denylist that every request must then check, so you'd pay that lookup on every page load forever, just for the *ability* to revoke.
+The cookie-plus-row default earns its keep here.
+
+Here are the actions behind the three buttons.
+The shape is identical across all three, the Server-Action skeleton you've written a dozen times, and the only line that changes is the Better Auth call in the middle:
+
+<div data-mark-color="violet">
+
+<CodeTooltips tooltips={{
+  revokeSession: 'Deletes this one session — the named device is signed out, you stay.',
+  revokeOtherSessions: 'Deletes every session but the current — you stay signed in here.',
+  revokeSessions: 'Deletes every session, the current one included — you are signed out here too.',
+}}>
+```ts {5, 15, 25} title="app/(app)/settings/security/sessions/actions.ts"
+'use server';
+
+export async function signOutDevice(token: string): Promise<Result<void>> {
+  try {
+    await auth.api.revokeSession({ body: { token }, headers: await headers() });
+  } catch (error) {
+    return mapRevokeError(error);
+  }
+  revalidatePath('/settings/security/sessions');
+  return ok();
+}
+
+export async function signOutOtherDevices(): Promise<Result<void>> {
+  try {
+    await auth.api.revokeOtherSessions({ headers: await headers() });
+  } catch (error) {
+    return mapRevokeError(error);
+  }
+  revalidatePath('/settings/security/sessions');
+  return ok();
+}
+
+export async function signOutEverywhere(): Promise<Result<void>> {
+  try {
+    await auth.api.revokeSessions({ headers: await headers() });
+  } catch (error) {
+    return mapRevokeError(error);
+  }
+  revalidatePath('/settings/security/sessions');
+  // the library clears the current cookie → the UI redirects to /sign-in
+  return ok();
+}
+```
+</CodeTooltips>
+
+</div>
+
+These actions run on the server, so they use the **server face**: `auth.api.revokeSession(...)` with the request headers, not the browser `authClient`.
+The server face *throws* on failure rather than returning an error object, which is why each action wraps the call in a `try`/`catch`.
+The catch hands the thrown error to `mapRevokeError`, which collapses it into your `Result`, keyed on the numeric HTTP `status`, with codes read off Better Auth's error-code map, never hardcoded and never the raw library message.
+The buttons plug into the form wiring you already know: `useActionState` on the form, one of these actions as the handler.
+And you call `revalidatePath` after every revoke so the list re-reads and the just-killed row disappears.
+
+## Revoke isn't instant: the cookie-cache staleness window
+
+Here is the surprising fact of this lesson.
+You click "sign out" on the phone, the `delete` runs, the row is gone, and the phone, sitting on the table with the tab still open, keeps loading pages for the next few minutes as if nothing happened.
+The naive model, where `delete` equals instant sign-out everywhere, is wrong, and the reason is a piece of config you already set up.
+
+To skip a database round-trip on every request, Better Auth's <Term definition={"Better Auth's short-lived in-cookie cache of the decoded session. Skips a DB read per request, at the cost of a revocation-latency window — 5 min by default."}>cookie cache</Term> keeps the *decoded* session in the cookie for a short window, five minutes by default.
+On the cached path, a request reads that decode, not the row.
+
+So after the revoke, the row is gone but the phone still holds a fresh cached decode, and its requests read that cache without ever querying the database.
+The phone stays "signed in" until the window lapses.
+Revocation is therefore <Term definition={"The change is guaranteed to take effect, but not instantly — there's a propagation window before every reader sees it."}>eventually consistent</Term>: it takes effect, but not at the instant you click.
+The moment of truth is the next *un-cached* read, when the window expires or a request lands on a path that bypasses the cache.
+That read queries the row, finds nothing, and lets the proxy bounce the phone to sign-in.
+The gap between "I clicked revoke" and "that device is out" is exactly the cache window.
+
+Walk through why the phone lingers, one step at a time:
+
+<DiagramSequence>
+  <DiagramStep caption="**t = 0 · Revoke clicked.** On the laptop, the user revokes the phone's session. `delete from session` runs and the row is gone from the database immediately.">
+    <RevokeStalenessFrame step={1} />
+  </DiagramStep>
+
+  <DiagramStep caption="**t = 0 · The row is gone, but the cache isn't.** The phone still holds a cached decode of its session, valid until its cookie-cache window lapses. Its open tab keeps making requests.">
+    <RevokeStalenessFrame step={2} />
+  </DiagramStep>
+
+  <DiagramStep caption="**t < 5 min · The phone reads the cache.** Each request takes the cached path, reading the decode rather than the deleted row, so the phone still looks signed in. The database disagrees, but on this path nobody asks it.">
+    <RevokeStalenessFrame step={3} />
+  </DiagramStep>
+
+  <DiagramStep caption="**t = cache expiry · The next read hits the database.** The window lapses, or a path that bypasses the cache fires. The validating read queries the session row and finds nothing.">
+    <RevokeStalenessFrame step={4} />
+  </DiagramStep>
+
+  <DiagramStep caption="**t = cache expiry · The phone is redirected to `/sign-in`.** The null session means the proxy gate bounces the phone out. The lag between click and bounce was the cache window, start to finish.">
+    <RevokeStalenessFrame step={5} />
+  </DiagramStep>
+
+  <DiagramStep caption="**The escape hatch: `disableCookieCache` on the sensitive subtree.** Apply `disableCookieCache: true` to the validating reads under `/settings` and they skip the cached path, so step 3 never happens and revocation enforces immediately. The trade is a database hit on every one of those reads.">
+    <RevokeStalenessFrame step={6} />
+  </DiagramStep>
+</DiagramSequence>
+
+The cache is earning its keep on every other request, so don't fix it, trade it consciously.
+There are three moves, and which you pick depends on the product.
+
+- **Shorten the cache window** where revocation latency is a real risk. A smaller window means fresher reads and more database hits, so the trade is in the open: you pay for freshness in queries.
+- **Bypass the cache on the sensitive subtree.** Apply `disableCookieCache: true` to the validating reads under `/settings` (or the whole authenticated area) so they always hit the database and enforce immediately. It's a config knob you already have; you're just choosing where to spend it.
+- **Tell the user the truth.** The post-revoke toast should set the real expectation: *"Session revoked. It may take a few minutes to take effect on tabs that are currently open."* A toast that says "Signed out" with flat certainty while the window is still open is lying. Honest copy beats confident copy here.
+
+## Send a "new device signed in" email from a database hook
+
+The active-sessions list has a flaw: it shows a break-in only to a user who opens the page and looks.
+A stranger signs in from a city the user has never visited while they're asleep, and the list dutifully renders it as Row 4, "Firefox on Windows · Bangalore · just now", where nobody sees it.
+The list is detection *on demand*, and a sleeping user is demanding nothing.
+
+So add the other half: a signal that goes and *finds* the user.
+When a sign-in lands an `ipAddress` and `userAgent` combination the user hasn't been seen with before, send a **"new device signed in"** email through the same send pipeline you built earlier in the course.
+The email names the device, the approximate location, and the time, and carries a **"This wasn't me"** call to action.
+That link lands the user on `/settings/security/sessions` and triggers the recovery move you already know: revoke all other sessions and force a password reset, the same escape hatch the password-change notice used last lesson.
+
+Where does that logic attach?
+Better Auth ships **no turnkey "new device" hook**, no `onNewDevice` callback waiting to be filled in.
+It gives you a lower-level seam instead: one of its <Term definition={"Better Auth callbacks that fire around its own DB writes — here, after a new session row is created."}>database hooks</Term> fires whenever a new `session` row is written, which is on every fresh sign-in.
+Inside that hook, look up the user's prior sessions, compare the new `ipAddress` and `userAgent` against them, and send the email on a combination you haven't seen before.
+The library gives you the *write* hook; the new-device *logic* is your code.
+Ground the exact hook shape against your installed version and build the comparison yourself.
+
+<Figure>
+  <NewDeviceLoop />
+  <Fragment slot="caption">
+    The list and the email close a loop: a new sign-in pushes a "wasn't you?"
+    signal that pulls the user back to the list to shut the intruder out.
+  </Fragment>
+</Figure>
+
+Pairing them is the point.
+The list is **detection on demand**, there when the user thinks to look; the email is **detection that finds you**, arriving whether or not they're looking.
+Together they deliver the same recognition, *"I never signed in from there"*, two ways: one that waits and one that knocks.
+
+This is *one* email, not an anomaly engine.
+IP-anomaly scoring, velocity checks, and impossible-travel detection are a later chapter.
+A persistent audit log of every sign-in and revoke event is also later, a separate table and concern; this page shows current state, not history.
+You ship the single high-value notification and stop there.
+
+## Two adjacent features: multi-session and the session cap
+
+Two features sit next to this one and sound like it.
+Recognize them so you don't reach for the wrong one later; you won't build either here.
+
+The **`multiSession()` plugin** lets *one browser* hold sessions for *several accounts* at once, the Gmail account-switcher where you flip between work and personal without signing out.
+That is the opposite axis of this lesson: many accounts in one browser, not one account across many devices.
+And this lesson's list needs no plugin, because per-device sessions are built into Better Auth's core.
+Reach for `multiSession()` only if your product needs the account switcher.
+
+A **per-user session cap** limits a user to, say, five active sessions and evicts the oldest when a sixth arrives, usually for compliance or to curb password-sharing.
+The core ships no documented turnkey option for it, so it's a deliberate addition: a plugin or a custom hook, not a config default.
+Most early-stage apps leave sessions uncapped.
+
+## The revoke-scope recap and the footguns
+
+You've built the surface and the signal.
+Before you close, pin down the three revoke calls and the staleness truth, the parts that feel obvious now and blur in a month.
+
+<MultipleChoice>
+  A user is signed in on a phone, a laptop, and a desktop, and they open `/settings/security/sessions` on the laptop. Which of these are true about the surface you just built? Select all that apply.
+
+  <McqChoice correct>Tapping **Sign out other devices** leaves the laptop signed in and drops the phone and desktop — the same revocation a password change can fire for you.</McqChoice>
+  <McqChoice correct>Tapping **Sign out everywhere, including this device** boots the laptop too, so the next thing the user sees is `/sign-in`.</McqChoice>
+  <McqChoice correct>Right after the phone is revoked, the phone's still-open tab can keep loading pages for a few minutes before it's bounced.</McqChoice>
+  <McqChoice>Single-device revoke is keyed on the session's `id`, so reading the `id` off any row is always enough to sign that device out.</McqChoice>
+  <McqChoice>Because the buttons live in client components, the safe design is to fetch the session list in the browser and render it there too.</McqChoice>
+  <McqChoice>The instant the `delete` runs, every revoked device is signed out — there is no lag to design around.</McqChoice>
+
+  <McqWhy>The three true ones are the spine of the page. **`revokeOtherSessions`** spares the current session and drops the rest — the very same endpoint `changePassword({ revokeOtherSessions: true })` triggered for you last lesson, now a button. **`revokeSessions`** deletes *every* row including the current one and clears this cookie, so the laptop lands on `/sign-in` too — and that "does this device go?" difference is exactly why the copy must spell it out. And revocation is **eventually consistent**: with the cookie cache on, the revoked phone keeps reading its cached decode until the window lapses, so it lingers for a few minutes — which is why the toast must say so (or you `disableCookieCache` the sensitive subtree). The three false ones: single-device revoke keys on the **token**, not the `id`, and the token may even come back *empty* on every row but the current one, so per-row revoke is version-dependent. The list is a **server-trusted read** — render it in the browser from tamperable state and it can no longer be trusted to show your *real* sessions, no matter where the buttons live. And `delete` is not instant while the cache is on — that lag is the whole point of the staleness window.</McqWhy>
+</MultipleChoice>
+
+And the footguns, the field mistakes this page invites, each a one-liner you can pattern-match in a review:
+
+:::caution[Active-sessions footguns]
+- **No "This device" badge or current-session guard.** The user revokes the session rendering the page and boots themselves mid-task.
+- **Conflating "sign out other devices" and "sign out everywhere".** The copy must say whether *this* device goes too; that's the safety mechanism.
+- **Rebuilding the session list from client state.** It's a server-trusted read, so render it on the server.
+- **Assuming revoke is instant with the cookie cache on.** It's eventually consistent, so say so in the toast, or `disableCookieCache` the sensitive subtree.
+- **Leaking `ipAddress` or `userAgent` into error breadcrumbs.** They're sensitive personal data; keep them out of logs.
+- **Mutations not behind elevation.** "Signed in" is not "still you", so a borrowed laptop could wipe the real owner's devices; gate the mutations behind the step-up tier from the last lesson.
+- **No "new device" email.** The list only catches a break-in if the user happens to look; the email is the push signal that finds them.
+:::
+
+That elevation footgun is the thread tying this page to the chapter before it: the sessions page sits behind the gate that proves the user is signed in, but revoking another user's sessions is a takeover-grade action, so the *mutations* belong behind the elevation tier from the last lesson, named here rather than rebuilt.
+
+The user can now see and revoke every session across every device they own, and the "new device" email taps them on the shoulder the moment a new one appears, completing the session's lifecycle from minting through a credential change to audit and revoke.
+The next lesson pulls back from sessions to the browser-security defaults, CSRF and XSS, that React, Next.js, and Better Auth ship to protect every session you just learned to manage.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Better Auth — Session Management"
+    href="https://www.better-auth.com/docs/concepts/session-management"
+    icon="simple-icons:betterauth"
+    iconColor="#000000"
+    description="The listSessions / revokeSession / revokeOtherSessions / revokeSessions surface and the disableCookieCache knob — verify the per-row revoke identifier against your installed version."
+  />
+  <ExternalResource
+    title="Better Auth — Database Hooks"
+    href="https://www.better-auth.com/docs/concepts/database#database-hooks"
+    icon="simple-icons:betterauth"
+    iconColor="#000000"
+    description="The session-write hook where the new-device email logic installs. Ground the exact hook shape against your installed version."
+  />
+  <ExternalResource
+    title="UAParser.js"
+    href="https://github.com/faisalman/ua-parser-js"
+    icon="simple-icons:github"
+    iconColor="#181717"
+    description="The server-side, display-only parser that turns the opaque userAgent string into 'Chrome on macOS' for the row."
+  />
+  <ExternalResource
+    title="OWASP — Session Management Cheat Sheet"
+    href="https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html"
+    icon="simple-icons:owasp"
+    iconColor="#2C5C8F"
+    description="The canonical security ground for session inventory, expiration, and revocation as controls."
+  />
+</CardGrid>
