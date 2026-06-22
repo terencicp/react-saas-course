@@ -458,7 +458,7 @@
 - 5 Quiz
 
 ### Chapter 053 — Authentication flows
-- 1 Password sign-up (Teaches how to configure `emailAndPassword` for sign-up with Argon2id hashing, verification-gated sessions, and an enumeration-safe Server Action that wraps `auth.api.signUpEmail`.)
+- 1 Password sign-up (Teaches how to configure `emailAndPassword` for sign-up with scrypt hashing, verification-gated sessions, and an enumeration-safe Server Action that wraps `auth.api.signUpEmail`.)
 - 2 Password sign-in (Teaches the sign-in Server Action, its full `Result` discriminant surface (`'invalid-credentials'`, `'email-not-verified'`, `'too-many-attempts'`, `'requires-second-factor'`, `'ok'`), and how the per-account lockout composes with the per-IP rate limit.)
 - 3 Email verification (Teaches how to wire `sendVerificationEmail` through the Unit 7 Resend pipeline, the hashed-token row in the `verification` table, the click-through endpoint that flips `emailVerified`, and the enumeration discipline that holds across every entry point.)
 - 4 Password reset (Teaches the six-step reset flow with `sendResetPassword`, the 10-minute token expiry, and the non-negotiable session-invalidation-on-success property that defines a secure reset.)

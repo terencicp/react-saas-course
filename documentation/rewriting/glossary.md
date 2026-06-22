@@ -1813,3 +1813,74 @@ getSessionCookie | - | better-auth/cookies helper checking only whether a sessio
 authClient.useSession | useSession | Reactive Better Auth browser hook returning {data, isPending, error}; display only, never for gating. | first defined: Chapter 052 L4
 getCurrentUser | - | Helper returning the session user or null; the safe server read. | first defined: Chapter 052 L4
 requireUser | - | Helper returning the user or redirecting to /sign-in; the assertive server read. | first defined: Chapter 052 L4
+salt | password salt | Per-password random value mixed in before hashing so equal passwords yield different stored hashes; handled by the library. | first defined: Chapter 053 L1
+APIError | - | Better Auth's typed error thrown by auth.api.* calls on genuine failure; carries body.code and status. | first defined: Chapter 053 L1
+user enumeration | account enumeration | Attack abusing differing responses to learn which emails/usernames have accounts. | first defined: Chapter 053 L1
+credential stuffing | - | Replaying leaked username/password pairs from other breaches against a login, betting on password reuse. | first defined: Chapter 053 L1
+k-anonymity | k-anonymity lookup | Range-query technique checking a password against breach lists by sending only a short hash prefix, never the password. | first defined: Chapter 053 L1
+Argon2id | argon2 | Memory-hard password-hashing algorithm, PHC winner; the usual scrypt alternative when a standard mandates it. | first defined: Chapter 053 L1
+
+constant time | constant-time comparison | Comparison taking the same time whether the secret matches or not, so response timing leaks nothing about the password. | first defined: Chapter 053 L2
+two-factor authentication | 2FA, second factor | A second proof of identity demanded after the password, typically a time-based authenticator code; routes sign-in to a 'requires-second-factor' continuation. | first defined: Chapter 053 L2
+per-IP rate limit | rate limiter | Cap on requests per IP per window; Better Auth ships it on auth endpoints (sign-in ~3/10s), on in prod, off in dev. | first defined: Chapter 053 L2
+per-account rate limit | per-email lockout | Failed-attempt cap keyed to the account, not the IP; not in core Better Auth, you add it to catch IP-rotation against one account. | first defined: Chapter 053 L2
+safeNext | - | Helper validating ?next= against an allowlist (same-site /path only) before redirect, closing the open redirect. | first defined: Chapter 053 L2
+
+passwordless | passwordless sign-in | Sign-in with no stored password; proves identity via a delivered secret (magic link, OTP) instead of a remembered one. | first defined: Chapter 053 L5
+OTP | one-time password, emailOTP | Short single-use code, valid only briefly, emailed for the user to type back; magic link's typed twin. | first defined: Chapter 053 L5
+device-pinning | sameBrowser pinning | Hand-rolled restriction making a magic link work only in the browser that requested it, via a paired cookie; not a magicLink() option. | first defined: Chapter 053 L5
+disableSignUp | - | magicLink() option; false (default) lets a first-time email create an account on the click, true restricts to existing users. | first defined: Chapter 053 L5
+storeToken | storeToken: 'hashed' | magicLink() option; defaults to 'plain' (raw token in the verification row), set to 'hashed' so a leaked row holds no working link. | first defined: Chapter 053 L5
+TOTP | time-based one-time password, RFC 6238 | 6-digit code from a shared secret + current 30s time window, recomputed each window; never sent, computed in parallel on both ends. | first defined: Chapter 053 L6
+shared secret | TOTP secret | Random ~160-bit value known to server and authenticator app, fixed at setup; seeds every code and never travels after enrollment. | first defined: Chapter 053 L6
+base32 | - | Encoding using 32 letters/digits, chosen so a value is easy to type by hand and survives a QR scan. | first defined: Chapter 053 L6
+clock skew | clock drift | Small gap between two clocks meant to agree; here, phone vs server, absorbed by a ±1 TOTP window. | first defined: Chapter 053 L6
+KMS | Key Management Service | Managed vault holding encryption keys, performing encrypt/decrypt without exposing the raw key to your app. | first defined: Chapter 053 L6
+elevation (auth) | re-authentication, requires-re-authentication | Re-proving you own the account before a high-stakes change, even with a live session; guards against a stale or borrowed session. | first defined: Chapter 053 L6
+recovery codes | backup codes | One-time fallback codes shown once at enrollment, stored hashed; let a user back in when the authenticator is gone. | first defined: Chapter 053 L6
+single-use | one-time | Usable exactly once; consumed and removed from the set on success so it can never be replayed. | first defined: Chapter 053 L6
+step-up | step-up authentication | Requiring a fresh auth challenge for a specific sensitive action, regardless of how recently the user signed in. | first defined: Chapter 053 L6
+SIM swap | SIM swapping | Attacker convinces a carrier to move a victim's number to their SIM, intercepting calls and SMS one-time codes. | first defined: Chapter 053 L6
+
+WebAuthn | Web Authentication API | W3C standard for public-key auth in the browser; exposes navigator.credentials, the library wraps it. | first defined: Chapter 053 L7
+FIDO2 | - | FIDO Alliance umbrella spec WebAuthn implements; same passkey machinery under another name. | first defined: Chapter 053 L7
+relying party | RP, rpID owner | The site a credential belongs to (your SaaS server); stores public keys, issues challenges, scoped by rpID. | first defined: Chapter 053 L7
+authenticator | platform authenticator, roaming authenticator | Hardware/software holding the private key, unlocked by a local gesture; built in (platform) or separate like a YubiKey (roaming). | first defined: Chapter 053 L7
+secure enclave | - | Isolated hardware region storing private keys and signing without ever exporting them; Apple Secure Enclave, TPM, YubiKey chip. | first defined: Chapter 053 L7
+attestation | - | Signed statement from the authenticator vouching for its device type; library verifies it, most apps don't inspect further. | first defined: Chapter 053 L7
+public-key cryptography | asymmetric crypto, keypair | Keypair where the private key signs and the public key verifies; publish the public key, only the private key produces valid signatures. | first defined: Chapter 053 L7
+rpID | relying party ID | Better Auth/WebAuthn config naming the domain a passkey is bound to; must equal the app's registrable domain or sign-in silently fails. | first defined: Chapter 053 L7
+assertion (WebAuthn) | passkey assertion | The signed sign-in response: the authenticator's signature over the server challenge, verified against the stored public key. | first defined: Chapter 053 L7
+resident key | discoverable credential | Passkey the authenticator stores in full, offered without the site first naming an account; powers one-tap autofill sign-in. | first defined: Chapter 053 L7
+conditional mediation | conditional UI, autoFill | Browser feature surfacing passkeys inside an input's autofill dropdown; navigator.credentials.get with mediation: 'conditional'. | first defined: Chapter 053 L7
+NotAllowedError | - | DOMException thrown when a WebAuthn ceremony is cancelled or no eligible credential exists; usually benign. | first defined: Chapter 053 L7
+phishing-resistant | - | Credential a look-alike site can't capture and replay, because release is gated on the request origin matching the registered one. | first defined: Chapter 053 L7
+synced passkey | multiDevice passkey | Passkey replicated across devices by a cloud keychain (iCloud, Google, 1Password); recovers on device loss, security rides on the cloud account. | first defined: Chapter 053 L7
+device-bound passkey | singleDevice passkey | Passkey pinned to one piece of hardware that never leaves it; uncopyable, but lost with the device, no cloud recovery. | first defined: Chapter 053 L7
+single point of failure | SPOF | Component whose failure takes down the whole system because nothing else can stand in for it. | first defined: Chapter 053 L7
+socialProviders | social provider config | Better Auth block keyed by provider name (google, github…) wiring clientId/clientSecret onto the auth instance; built-in providers need no plugin. | first defined: Chapter 053 L8
+find-or-create lookup | - | The fixed-order decision Better Auth runs at the OAuth callback: match by provider identity, else by email, else create a new user/account. | first defined: Chapter 053 L8
+account-not-linked | - | Refusal returned when an OAuth email matches an existing account but the provider isn't trusted, rather than auto-merging on an unverified claim. | first defined: Chapter 053 L8
+trusted provider | trusted provider list | Provider you explicitly name as allowed to link onto an existing account on an email match; no default, so unconfigured same-email logins refuse. | first defined: Chapter 053 L8
+enterprise SSO | - | A customer's IT pointing its whole company at its own identity provider (Okta, Entra) via SAML or OIDC; a different shape from consumer social sign-in. | first defined: Chapter 053 L8
+identity provider | IdP | The system holding employee accounts that authenticates them for every app a company uses; the IdP in enterprise SSO. | first defined: Chapter 053 L8
+SAML 2.0 | SAML | XML-based enterprise SSO protocol predating OIDC; the IdP asserts identity via a signed XML document instead of OAuth tokens. | first defined: Chapter 053 L8
+encryptOAuthTokens | - | Better Auth account knob (defaults false) that encrypts stored provider tokens at rest; flip it on whenever you persist tokens. | first defined: Chapter 053 L8
+accessType offline | - | Google socialProviders knob that makes Google issue a refresh token; only needed if you call Google's API on the user's behalf. | first defined: Chapter 053 L8
+mapProfileToUser | - | socialProviders seam running before the user row is created, remapping provider profile fields (e.g. name into firstName/lastName). | first defined: Chapter 053 L8
+databaseHooks.user.create.after | - | Global Better Auth hook firing once when a new user row is created; the seam for OAuth-sign-up side-effects like the welcome email. | first defined: Chapter 053 L8
+linkSocial | - | Better Auth client call requesting more scopes from a provider incrementally, after sign-in, when the user opts into a feature. | first defined: Chapter 053 L8
+genericOAuth | genericOAuth plugin | Better Auth plugin for providers it doesn't ship built-in; same config shape but you supply the authorize, token, and userinfo URLs. | first defined: Chapter 053 L8
+account linking | linking | Attaching a second credential (OAuth provider or password) to an existing user by inserting another account row at the same userId. | first defined: Chapter 053 L9
+user table (Better Auth) | user row | The table holding the human: id, name, canonical email, emailVerified; one row per person. | first defined: Chapter 053 L9
+account table (Better Auth) | account row | Better Auth table holding one proof-of-identity per row (password hash or OAuth provider link); many rows can point at one user. | first defined: Chapter 053 L9
+accountId (Better Auth) | provider account id | The provider's stable opaque id for the user (OIDC sub); survives email changes, safe to log. | first defined: Chapter 053 L9
+accountLinking config | - | Better Auth account-key object: enabled, trustedProviders, allowDifferentEmails; controls how credentials attach to a user. | first defined: Chapter 053 L9
+allowDifferentEmails | - | accountLinking knob (defaults false) letting a provider link when its email differs from the account's; loses the email-match trust signal. | first defined: Chapter 053 L9
+linkSocial (link) | - | Better Auth client call starting the OAuth round-trip to attach a provider to the signed-in user from settings. | first defined: Chapter 053 L9
+unlinkAccount | - | Better Auth client call deleting an account row to disconnect a provider; rejects removing the last sign-in method. | first defined: Chapter 053 L9
+UNABLE_TO_UNLINK_LAST_ACCOUNT | last-method guard | Better Auth refusal when unlinking would remove a user's only sign-in method; catch it and route to add-password. | first defined: Chapter 053 L9
+allowUnlinkingAll | - | accountLinking knob (defaults false) that disables last-method protection; leaving it on can ship a lockout generator. | first defined: Chapter 053 L9
+canonical email | user.email | The single address on the user row used for outbound mail, profile display, and audit identity; distinct from per-account emails. | first defined: Chapter 053 L9
+domain takeover | - | Attacker gains control of an email domain and stands up provider accounts on its addresses, faking 'this provider owns ada@acme.com'. | first defined: Chapter 053 L9
+pre-account takeover | - | Account-takeover class where email-password and OAuth share an email identifier and the link goes through on an unverified email. | first defined: Chapter 053 L9
