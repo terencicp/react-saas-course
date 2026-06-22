@@ -1,0 +1,523 @@
+---
+title: The file_metadata table over R2 objects
+tagline: Model the file_metadata table in Postgres and Drizzle as the canonical index over bytes in Cloudflare R2, with a derived object key, no stored URL, and tenant-scoped reads.
+chapter-id: 68
+course-progress: 0.6654
+rewrites: 2
+sidebar:
+  order: 4
+  label: The file_metadata table
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import DrizzleSchemaCoding from '../../../components/live-coding/DrizzleSchemaCoding/DrizzleSchemaCoding.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import OrphanTimeline from '../../../components/lessons/068/4/OrphanTimeline.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The bytes are in R2 now, under a key like `org/${orgId}/files/${fileId}`. But to the bucket they're just a path and a payload: it doesn't know what they are, who owns them, or who may read them. So what does Postgres need to remember *about* those bytes, and how does that record stay in sync with the bucket without ever scanning it? By the end of this lesson you'll have written the `file_metadata` schema, a tenant-scoped helper that reads one row, the rule that no URL is ever stored, and the soft-delete lifecycle that keeps the two stores from drifting apart.
+
+## Identity in Postgres, bytes in R2
+
+The two stores own completely different things, and every decision here follows from that boundary.
+
+Postgres owns *identity*: which file this is, which org it belongs to, who uploaded it, its type, its real size, the human-readable name, and whether it's been deleted. R2 owns the *bytes*, and nothing else: hand it a key, get back a blob. The `file_metadata` row is the canonical record of the file; the object in the bucket is the payload that row points at.
+
+That boundary gives you one load-bearing rule: **every read goes through `file_metadata`. Nothing in the app ever lists the bucket to find out which files exist.** To render an org's files, you query Postgres; to check whether a file exists, you look for its row.
+
+Why so absolute? Because the questions the app asks are Postgres questions. "Show me this org's non-deleted files, newest first" is a single indexed query, with tenancy, filtering, and ordering against a table you control. Asked of the bucket, it's an `O(number of objects)` paginated scan with no tenancy beyond the raw path and no way to filter or order. So R2 isn't the file system; it's a <Term definition="Storage you reach by a key/path rather than by browsing directories. You hand it a key and get back the bytes; there's no querying, listing, or filtering built in.">key-addressed</Term> blob store that Postgres indexes.
+
+For the systems-design case behind this rule, the video below explains why it became the industry standard.
+
+<VideoCallout videoId="RvaMHMxHjp4" videoTitle="Object Storage in System Design Interviews">
+  Hello Interview's ex-Meta staff engineer walks through this lesson's rule, large files in object storage and metadata in the database, in 12 minutes.
+</VideoCallout>
+
+<Figure>
+```d2
+direction: right
+
+**.style.font-size: 26
+
+file_metadata: {
+  shape: sql_table
+  id: uuid { constraint: primary_key }
+  organization_id: uuid
+  object_key: text { constraint: unique }
+  content_type: text
+  byte_size: bigint
+  original_file_name: text
+  soft_deleted_at: timestamptz
+}
+
+bucket: "R2 bucket" {
+  style.fill: "#f1f5f9"
+  object: "org/acme/files/0192f…pdf" {
+    style.border-radius: 8
+    style.fill: "#ffffff"
+  }
+}
+
+file_metadata.object_key -> bucket.object: "the only join" {
+  style: { stroke: "#7c3aed"; stroke-width: 4; font-color: "#7c3aed" }
+}
+```
+  <Fragment slot="caption">
+    Two stores, one key. Everything the app knows *about* a file lives in the Postgres row; the bucket holds only the bytes, reached through the row's `object_key`.
+  </Fragment>
+</Figure>
+
+## Why the obvious four-column schema fails
+
+Start with the schema a beginner reaches for, then watch it break. The obvious shape is four columns, each reasonable on its own:
+
+```ts
+export const fileMetadata = pgTable('file_metadata', {
+  id: uuid().primaryKey().$defaultFn(() => uuidv7()),
+  organizationId: uuid().notNull(),
+  url: text().notNull(),
+  fileName: text().notNull(),
+});
+```
+
+It looks complete, but hides three problems, and each forces a column this version lacks.
+
+The URL you'd store is a *presigned* URL, and presigned URLs expire, so a day later the column points at a dead link and the row lies about how to reach its own bytes. `fileName` does double duty as both the display name and the source of the object key, but user filenames are full of spaces, slashes, and unicode, and two users will both upload `report.pdf`, giving you collisions and unsafe paths. And no verified size exists anywhere: the only number you have is whatever the client claimed, which you can't trust.
+
+## Why `id` is also the object key
+
+The row's primary key, the UUIDv7 you already generate for every entity, *is* the `${fileId}` segment of the object key. The previous lesson built that key as `org/${orgId}/files/${id}.${ext}`, where `id` is exactly this row's `id`, never a freshly minted `nanoid()`.
+
+Deriving the key from the id buys a chain of wins. Going from a row to its object becomes a *pure function*: feed it the org, id, and extension and you get the path back, no lookup table. With no lookup table, listing an org's files is a plain Postgres query against the indexed `organizationId`, never a bucket scan. And the row's lifecycle drives the object's: soft-delete the row, and a later sweep can reconstruct the exact key to delete the object.
+
+A *random* `objectKey` unrelated to the id would break all three. You'd need a lookup in both directions, a sweep couldn't ask "is there a row for this orphan?" without an extra index, and recovery after a bad delete would be guesswork.
+
+UUIDv7 pays off twice here. v7 ids are time-ordered, so they give you index locality on the query you run constantly, "this org's files, newest first," and a key prefix that sorts roughly by upload time, making prefix-scoped bucket diagnostics readable.
+
+The construction lives in a small pure helper, in the verb-led shape the course uses across `lib`:
+
+```ts
+export const buildObjectKey = (input: {
+  orgId: string;
+  fileId: string;
+  ext: string;
+}): string => `org/${input.orgId}/files/${input.fileId}.${input.ext}`;
+```
+
+The extension is sanitized server-side before it reaches this helper. Next: why the original filename still matters even though it never touches the key.
+
+## Why the original filename is a separate column
+
+The user uploaded `Q4 Financials FINAL.pdf`. The object lives at `org/acme/files/0192f…pdf`. The row stores both names, because each does a job the other can't.
+
+The object key is a URL-safe, collision-free path built from the row id plus a sanitized extension. **User-controlled text never goes into the object key.** Spaces, slashes, unicode, and crafted filenames turn into broken URLs, unintended directory structure, and path-confusion attacks.
+
+The original name earns its column at download. The presigned GET you mint sets a `Content-Disposition: attachment; filename="${originalFileName}"` header, so the browser saves the file as `Q4 Financials FINAL.pdf` instead of `0192f…pdf`. Without the stored name, all you could hand back is the UUID.
+
+<CodeVariants maxLines={10}>
+  <CodeVariant label="Filename as key">
+    <div data-mark-color="red">
+
+    ```ts "${fileName}"
+    const objectKey = `org/${orgId}/files/${fileName}`;
+    await db.insert(fileMetadata).values({ id: fileId, objectKey });
+    ```
+
+    </div>
+    **Collisions and unsafe paths.** Two users upload `report.pdf` and the second silently overwrites the first. A slash invents a directory; spaces and unicode break the URL. The key is whatever the client typed.
+  </CodeVariant>
+
+  <CodeVariant label="Id as key, name preserved">
+    <div data-mark-color="green">
+
+    ```ts "fileId" "originalFileName"
+    const objectKey = buildObjectKey({ orgId, fileId, ext: 'pdf' });
+    await db.insert(fileMetadata).values({
+      id: fileId,
+      objectKey,
+      originalFileName: fileName,
+    });
+    ```
+
+    </div>
+    **Deterministic key, human name kept.** The key derives from the row id, so it can never collide or carry unsafe characters. The filename rides in its own column, used only for display and the download `Content-Disposition`.
+  </CodeVariant>
+</CodeVariants>
+
+## The complete `file_metadata` schema, column by column
+
+Now the whole schema. Every column answers a problem you've already seen, so read it as a sequence of decisions, not a list of types.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const fileMetadata = pgTable('file_metadata', {
+  id: uuid().primaryKey().$defaultFn(() => uuidv7()),
+  organizationId: uuid().notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  uploadedBy: uuid()
+    .references(() => users.id, { onDelete: 'set null' }),
+  objectKey: text().notNull().unique(),
+  originalFileName: text().notNull(),
+  contentType: text().notNull(),
+  byteSize: bigint({ mode: 'number' }).notNull(),
+  uploadedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  softDeletedAt: timestamp({ withTimezone: true }),
+}, (t) => [
+  index('idx_file_metadata_org_active')
+    .on(t.organizationId, t.softDeletedAt, t.uploadedAt.desc()),
+]);
+
+export type FileMetadata = typeof fileMetadata.$inferSelect;
+`}>
+  <AnnotatedStep meta="{2}" color="blue">
+    `id` is the UUIDv7 primary key and the `${fileId}` segment of the object key, generated at insert time by `$defaultFn`. Derive the key from this one column and you never need a lookup table.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-4}" color="blue">
+    `organizationId` is the tenant anchor: every file belongs to exactly one org. `onDelete: 'cascade'` means deleting an org takes its file rows with it. Name `onDelete` explicitly, because the default is too easy to get wrong silently.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5-6}" color="blue">
+    `uploadedBy` records who uploaded the file. Its `onDelete` is `'set null'`, not cascade: the file outlives the person, so removing a user blanks the pointer instead of erasing the record.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7} ".unique()"`} color="green">
+    `objectKey` is the join to the bucket. `.unique()` makes the database, not your application code, guarantee that no two rows point at the same blob.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="blue">
+    `originalFileName` is the human label for display and the download `Content-Disposition` header. It is never the object key, and the key is never built from it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9}" color="blue">
+    `contentType` is the MIME type recorded at upload and validated against the previous lesson's allow-list. It's the type the presigned PUT signed and the type a download serves back.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10}" color="orange">
+    `byteSize` is the file's *actual* size, read back from R2 with a HEAD at finalize, not the size the client claimed. It's `bigint({ mode: 'number' })` because files can exceed a 32-bit integer.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11}" color="blue">
+    `uploadedAt` stores the upload instant as `timestamptz`, defaulting to `now()`: UTC, converted at the read boundary, never a wall-clock string.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12}" color="violet">
+    `softDeletedAt` is nullable: `null` means live, a timestamp means deleted. Deletion sets it, reads filter it out. This is the soft-delete pattern from the list-and-archive work, and the file lifecycle hangs off it.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{14-16}" color="violet">
+    The composite index serves the one query the app runs constantly. Its column order is deliberate, and the next section is entirely about why.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The last line never hand-writes the row's type: `typeof fileMetadata.$inferSelect` derives it from the schema, so the two can't drift apart. Two column builders carry quiet weight:
+
+<CodeTooltips tooltips={{
+  "$defaultFn": "Drizzle hook that runs in JS at insert time to generate a default value.",
+  "withTimezone: true": "Emits a Postgres `timestamptz` — stores an instant in UTC, not a wall-clock string.",
+}}>
+```ts
+id: uuid().primaryKey().$defaultFn(() => uuidv7()),
+uploadedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+```
+</CodeTooltips>
+
+## Index the query you run, not the columns that feel important
+
+Index the *query you actually run*, not the columns that seem important. This table has one canonical query: "list this org's non-deleted files, newest first." The index serves exactly that shape:
+
+```ts
+index('idx_file_metadata_org_active')
+  .on(t.organizationId, t.softDeletedAt, t.uploadedAt.desc());
+```
+
+Read the column order left to right, because the order is the point. `organizationId` comes first to narrow to one tenant; on a tenant-scoped table the leading column is always the org. `softDeletedAt` is second so the planner skips deleted rows with no separate filter step. `uploadedAt.desc()` is last so "newest first" comes straight from the index, with no extra sort. The `idx_<table>_<cols>` name stays stable across schema reorderings instead of churning in diffs.
+
+The `objectKey` unique is a plain `.unique()`, global rather than partial. With soft-delete you might reach for a *partial* unique (`unique ... where deleted_at is null`), the right tool when a value like a slug must be unique only among live rows. Don't here. An object key stays unique forever, even after its row is soft-deleted, because the object may still sit in the bucket during its cooling-off window. A partial unique would let a soft-deleted row's key be reused while its bytes are still in R2, leaving two rows pointing at one blob.
+
+## The tenant check lives in the SQL `where`
+
+Every read goes through `tenantDb(orgId)`, which bakes `organizationId` into the `where` before the query runs. The protection is structural, not disciplinary: a fabricated `fileId` from another org simply doesn't resolve, because its row was never in the scoped result set. No row loads, so there is no `if (row.organizationId !== orgId)` branch to forget and no forgotten branch to leak across tenants.
+
+The read helper lives in `db/queries/file-metadata.ts`, the home for tenant-scoped reads: one file per entity, each function verb-led and closing over `tenantDb(orgId)`.
+
+```ts
+export const getFile = async (
+  orgId: string,
+  id: string,
+): Promise<FileMetadata | null> => {
+  const [file] = await tenantDb(orgId)
+    .select()
+    .from(fileMetadata)
+    .where(and(eq(fileMetadata.id, id), isNull(fileMetadata.softDeletedAt)));
+  return file ?? null;
+};
+```
+
+Reading `file_metadata` through a bare `db.select().from(fileMetadata)` is the unqualified-`db` pattern the linter flags: a query with no org in its `where` is the exact shape of a cross-tenant read.
+
+<MultipleChoice>
+  A user in org A pastes a `fileId` that really belongs to org B and hits the download route. The handler calls `getFile('A', thatId)`, which runs through `tenantDb('A')`. What comes back?
+
+  <McqChoice correct>`null` — and the handler turns that into an ordinary 404, indistinguishable from a file that never existed.</McqChoice>
+  <McqChoice>The org B row, so the handler still has to compare `row.organizationId` against `'A'` before trusting it.</McqChoice>
+  <McqChoice>The org B row — the `id` matched, and the cross-org block happens upstream in the action layer.</McqChoice>
+  <McqChoice>Nothing returns; Postgres raises a permission error that the handler must catch.</McqChoice>
+
+  <McqWhy>`tenantDb('A')` welds `organizationId = 'A'` into the `where` before the query runs, so the org B row is never a candidate: the lookup finds zero rows and resolves to `null`. No row loads, so there's no post-load `if` to forget. The other options assume the row loads first and the check happens after, the forgettable branch the scoped query removes. Postgres doesn't raise either; a `where` that matches nothing is a normal empty result, not an error.</McqWhy>
+</MultipleChoice>
+
+## No URL column: download URLs minted per request
+
+The schema has no `url` column, and that absence is deliberate.
+
+The row stores only a file's permanent facts: its org, key, type, size, names, and lifecycle. The one URL it could hold is a presigned one, and a presigned URL expires, so storing it would leave the row stale the moment the signature died. Instead, every read mints a fresh presigned GET on demand, through a helper beside the metadata layer:
+
+```ts
+export const getFileDownloadUrl = async (
+  orgId: string,
+  id: string,
+): Promise<{ url: string; fileName: string } | null> => {
+  const file = await getFile(orgId, id);
+  if (!file) return null;
+  const url = await getSignedUrl(
+    r2,
+    new GetObjectCommand({ Bucket: env.R2_BUCKET_NAME, Key: file.objectKey }),
+    { expiresIn: 600 },
+  );
+  return { url, fileName: file.originalFileName };
+};
+```
+
+It looks the file up in tenant scope, presigns a ten-minute GET against the stored `objectKey`, and returns the URL plus the original filename: everything an `<a href>` or `<img src>` needs, issued for this render and discarded after.
+
+The contrast below is the dead-link failure from the previous lesson, now framed as a schema choice.
+
+<CodeVariants maxLines={12}>
+  <CodeVariant label="Stored URL (lies)">
+    <div data-mark-color="red">
+
+    ```ts "url"
+    const url = await getSignedUrl(r2, putCommand, { expiresIn: 600 });
+    await db.insert(fileMetadata).values({ id, objectKey, url });
+    // 25 hours later, in a list view:
+    // <a href={file.url}> → 403, the signature expired long ago
+    ```
+
+    </div>
+    **The column ages into a lie.** The URL lived ten minutes; the row keeps it forever. Every render after expiry hands back a dead link, and nothing marks the value as stale.
+  </CodeVariant>
+
+  <CodeVariant label="No URL, minted fresh">
+    <div data-mark-color="green">
+
+    ```ts "getFileDownloadUrl"
+    await db.insert(fileMetadata).values({ id, objectKey });
+    // in a list view, per render:
+    const { url } = await getFileDownloadUrl(orgId, file.id);
+    // <a href={url}> → always fresh, valid for the next 10 minutes
+    ```
+
+    </div>
+    **No column, no lie.** The row carries only the permanent `objectKey`; the URL is derived on every read, never older than the request that produced it.
+  </CodeVariant>
+</CodeVariants>
+
+## Soft delete the row, sweep the object later
+
+Deleting a file means deleting two things, a row and an object, and they shouldn't go at the same instant.
+
+Start with the row. Deletion sets `softDeletedAt` to the current time and leaves the row in place. For files this earns its keep three ways: it keeps the audit trail answerable ("did this user have access to this contract two weeks ago"), makes a fat-fingered delete reversible by clearing the column, and records intent without touching R2.
+
+The object gets deleted later, by a background sweep, and only after a cooling window:
+
+```ts
+export const softDeleteFile = async (orgId: string, id: string) => {
+  await tenantDb(orgId)
+    .update(fileMetadata)
+    .set({ softDeletedAt: new Date() })
+    .where(eq(fileMetadata.id, id));
+};
+```
+
+Why wait? Hard-delete the row on the click and you orphan the bytes: with no row pointing at the object, no sweep can find it and it costs money forever. The window avoids that. The row marks intent now, and a job deletes the object only once `softDeletedAt < now() - interval '30 days'`, by which point recovery is off the table.
+
+:::caution
+Avoid deleting the R2 object synchronously, in the same code path as the soft-delete. It feels tidy, but it throws away your recovery window. Soft-delete the row now, and let a cooled-off sweep delete the bytes later.
+:::
+
+That sweep is a deferred, reversible job you won't build here.
+
+## Orphan bytes versus orphan rows
+
+The two stores drift apart two ways: a `file_metadata` row with no object, or an object with no row. Keeping them in sync is reconciliation you run continuously, not a one-time guarantee. You write the row last because the two failures cost wildly different amounts, and writing last biases every failure toward the cheap one.
+
+**Orphan bytes** are an object in R2 with no `file_metadata` row: the PUT succeeded but `finalizeUpload` never ran, killed by a network drop, a function timeout, or a closed tab. This is cheap. Nothing lists the bucket, so the object never reaches a user and it costs only storage. A daily sweep lists the `org/*/files/*` objects, left-joins them against `file_metadata.objectKey`, and deletes the unmatched ones after a grace period. Litter, not a bug.
+
+**Orphan rows** are a `file_metadata` row whose object doesn't exist. This is expensive: the UI lists a file that 404s on download, so the database asserts something false. The two-step write prevents exactly this, writing the row only after the HEAD confirms the object. As defense in depth, a sweep can hard-delete rows older than an hour whose R2 HEAD returns 404.
+
+<DiagramSequence>
+  <DiagramStep caption="Sign and PUT: the bytes land in R2 first. The object exists, no row yet.">
+    <OrphanTimeline step={1} />
+  </DiagramStep>
+
+  <DiagramStep caption="`finalizeUpload` HEAD-verifies the object, then inserts the row. Both stores in sync.">
+    <OrphanTimeline step={2} />
+  </DiagramStep>
+
+  <DiagramStep caption="Branch A: finalize never ran. Object present, row absent: **orphan bytes**. Cheap litter; a daily sweep left-joins the bucket against the table and reclaims it.">
+    <OrphanTimeline step={3} />
+  </DiagramStep>
+
+  <DiagramStep caption="Branch B: a row with no object: an **orphan row**. The row lies and downloads 404, the failure that writing the row *last* prevents.">
+    <OrphanTimeline step={4} />
+  </DiagramStep>
+</DiagramSequence>
+
+## Auditing every file event
+
+"Who downloaded the contract, and when" is a question a B2B SaaS must answer, so every file lifecycle event writes one `audit_logs` row through the same `logAudit` helper the org and billing work used, which takes the transaction handle and an action and resolves the actor and org.
+
+Three events cover the lifecycle: `file.uploaded` (payload `{ byteSize, contentType }`), `file.download_url_issued`, and `file.soft_deleted`. Each row is written inside the same transaction as the change it records, so the audit row and the file change commit together or not at all:
+
+```ts
+await logAudit(tx, {
+  action: 'file.uploaded',
+  subjectType: 'file',
+  subjectId: file.id,
+  payload: { byteSize: file.byteSize, contentType: file.contentType },
+});
+```
+
+## Practice: build the file_metadata table
+
+The schema below already has `id` and `organizationId`; add the rest to meet the spec. A probe inserts a duplicate `objectKey` and expects it to fail, proving the unique constraint holds.
+
+It uses integer ids and a plain `timestamp` rather than the production table's UUIDv7 and `timestamptz`, because the grader's in-browser Postgres can't generate UUIDv7. The shape and constraints are identical.
+
+<DrizzleSchemaCoding
+  instructions="Complete the file_metadata table. Every file needs a tenant, a unique object key, the user's original filename, a content type, a verified byte size, an upload timestamp, and soft-delete support. Declare the object-key uniqueness as a table-level constraint in the callback so the database enforces it."
+  starter={`export const organizations = pgTable('organizations', {
+  id: integer('id').primaryKey(),
+  name: text('name').notNull(),
+});
+
+export const fileMetadata = pgTable('file_metadata', {
+  id: integer('id').primaryKey(),
+  organizationId: integer('organization_id').notNull()
+    .references(() => organizations.id),
+  // add the remaining columns here
+}, (table) => [
+  // declare the object_key unique constraint here, e.g. unique().on(table.____)
+]);`}
+  requirements={[
+    {
+      name: 'file_metadata',
+      columns: [
+        { name: 'id', type: 'integer', primaryKey: true },
+        { name: 'organization_id', type: 'integer', notNull: true,
+          references: { table: 'organizations', column: 'id' } },
+        { name: 'object_key', type: 'text', notNull: true },
+        { name: 'original_file_name', type: 'text', notNull: true },
+        { name: 'content_type', type: 'text', notNull: true },
+        { name: 'byte_size', type: 'bigint', notNull: true },
+        { name: 'uploaded_at', type: 'timestamp', notNull: true, hasDefault: true },
+        { name: 'soft_deleted_at', type: 'timestamp' },
+      ],
+      uniques: [['object_key']],
+    },
+  ]}
+  seedSQL={`INSERT INTO organizations (id, name) VALUES (1, 'Acme');`}
+  probes={[
+    {
+      description: 'Two files with distinct object keys insert fine',
+      sql: `INSERT INTO file_metadata
+          (id, organization_id, object_key, original_file_name, content_type, byte_size)
+        VALUES
+          (1, 1, 'org/acme/files/1.pdf', 'Q4 Financials.pdf', 'application/pdf', 480211),
+          (2, 1, 'org/acme/files/2.pdf', 'Roadmap.pdf', 'application/pdf', 91020);`,
+      mustSucceed: true,
+    },
+    {
+      description: 'Two files cannot share an object key',
+      sql: `INSERT INTO file_metadata
+          (id, organization_id, object_key, original_file_name, content_type, byte_size)
+        VALUES
+          (3, 1, 'org/acme/files/3.pdf', 'Invoice.pdf', 'application/pdf', 12044),
+          (4, 1, 'org/acme/files/3.pdf', 'Invoice copy.pdf', 'application/pdf', 12044);`,
+      mustSucceed: false,
+    },
+  ]}
+/>
+
+## Recap drill: which store owns this fact
+
+Notice how lopsided the split is: almost every fact is identity and lives in Postgres, while R2 owns one thing only, the bytes.
+
+<Buckets twoCol instructions="Sort each fact into the store that owns it.">
+  <Bucket name="pg" label="Postgres (file_metadata)" description="Identity, ownership, lifecycle" />
+  <Bucket name="r2" label="R2 (the bucket)" description="Bytes only" />
+
+  <Item bucket="pg">Which org a file belongs to</Item>
+  <Item bucket="pg">The user's original filename</Item>
+  <Item bucket="pg">Whether the file is soft-deleted</Item>
+  <Item bucket="pg">The verified byte size</Item>
+  <Item bucket="pg">Who uploaded it</Item>
+  <Item bucket="pg">The content type recorded at upload</Item>
+  <Item bucket="r2">The raw PDF bytes</Item>
+  <Item bucket="r2">The stored image data</Item>
+</Buckets>
+
+The chapter's spine: Postgres owns identity, R2 owns bytes, and the object key is the one string that joins them.
+
+## External resources
+
+Keep the Drizzle column-type reference handy while writing schemas. The `HeadObjectCommand` page is the call that turns a *claimed* size into the *verified* `byteSize`. The other two go deeper on the lesson's trickiest decisions: *Use the Index, Luke* on why the composite index column order is `(org, deleted, time)`, and the R2 presigned-URLs page on the storage side of the no-URL-column rule.
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle ORM — PostgreSQL column types"
+    href="https://orm.drizzle.team/docs/column-types/pg"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The canonical reference for uuid, text, bigint, and timestamp column builders used in the schema."
+  />
+  <ExternalResource
+    title="@aws-sdk/client-s3 — HeadObjectCommand"
+    href="https://docs.aws.amazon.com/AWSJavaScriptSDK/v3/latest/Package/-aws-sdk-client-s3/Class/HeadObjectCommand/"
+    icon="simple-icons:amazonwebservices"
+    iconColor="#FF9900"
+    description="The HEAD command whose ContentLength is the verified byteSize the row stores."
+  />
+  <ExternalResource
+    title="Use the Index, Luke — concatenated index column order"
+    href="https://use-the-index-luke.com/sql/where-clause/the-equals-operator/concatenated-keys"
+    icon="lucide:list-ordered"
+    iconColor="#3b82f6"
+    description="Why the leading column of a multi-column index decides which queries it serves — the rule behind idx_file_metadata_org_active."
+  />
+  <ExternalResource
+    title="Cloudflare R2 — Presigned URLs"
+    href="https://developers.cloudflare.com/r2/api/s3/presigned-urls/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="The R2 docs for the temporary, credential-free URLs the getFileDownloadUrl helper mints fresh on every read."
+  />
+</CardGrid>

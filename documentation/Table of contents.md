@@ -593,12 +593,12 @@
 - 3 One checkpoint per page
 - 4 Send the email, write the audit log
 
-### Chapter 068 — Object storage
-- 1 Defending the no — when object storage earns its weight (Names the three trigger conditions (user uploads, generated assets the app serves back, third-party media) that put R2 on the table, the conditions that do not, and why R2 beats S3 and the upload SaaS wrappers on unit economics for any read-heavy product.)
+### Chapter 068 — Object storage with R2
+- 1 When a SaaS needs object storage (Names the three trigger conditions (user uploads, generated assets the app serves back, third-party media) that put R2 on the table, the conditions that do not, and why R2 beats S3 and the upload SaaS wrappers on unit economics for any read-heavy product.)
 - 2 Standing up R2 — buckets, scoped tokens, and CORS (Sets up the minimum R2 surface a SaaS trusts in production: one bucket per environment, bucket-scoped tokens with minimum operations, the S3-compatible client in `lib/r2.ts`, the CORS rule with explicit origins and headers, and the `org/${orgId}/files/${id}` object-key tenancy convention.)
 - 3 Presigned URLs — signing the upload seam (Teaches the presigned PUT and GET mechanics that move bytes from browser to R2 without touching the function: signed `ContentType` and `ContentLength`, 5-10 minute expiries, the layered size defense, and the sign-then-finalize two-step write with post-upload HEAD verification.)
-- 4 Postgres owns identity, R2 owns bytes (Designs the `file_metadata` row as the canonical record (id-as-key-segment, tenant-scoped reads, soft-delete with cooled-off object cleanup, HEAD-verified `byteSize`, no persisted URL) and names the orphan failure modes in both directions.)
-- 5 Wiring R2 into our app — two workloads, one mechanism (Picks the two call sites R2 covers (the 69 user-upload path with `file_metadata` and the 67 CSV export retrofit with a server-side PUT and no metadata row), names the workloads kept off R2, and pre-loads the lib surface and env shape for the 69 project.)
+- 4 The file_metadata table (Designs the `file_metadata` row as the canonical record (id-as-key-segment, tenant-scoped reads, soft-delete with cooled-off object cleanup, HEAD-verified `byteSize`, no persisted URL) and names the orphan failure modes in both directions.)
+- 5 Wiring R2 into the app (Picks the two call sites R2 covers (the 69 user-upload path with `file_metadata` and the 67 CSV export retrofit with a server-side PUT and no metadata row), names the workloads kept off R2, and pre-loads the lib surface and env shape for the 69 project.)
 - 6 Quiz
 
 ### Chapter 069 — Project: presigned R2 upload

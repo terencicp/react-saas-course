@@ -1,0 +1,394 @@
+---
+title: Standing up R2 — buckets, scoped tokens, and CORS
+chapter-id: 68
+course-progress: 0.6617
+tagline: Provision Cloudflare R2 for the SaaS, an environment-scoped bucket, a least-privilege S3 token, the lib/r2.ts client, and a CORS rule for direct browser uploads.
+sidebar:
+  order: 2
+  label: Standing up R2
+rewrites: 2
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import ArrowDiagram from '../../../components/figures/ArrowDiagram.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import ArtifactsEnvMap from '../../../components/lessons/068/2/ArtifactsEnvMap.astro';
+import CorsPreflightHandshake from '../../../components/lessons/068/2/CorsPreflightHandshake.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { Code, Steps, FileTree, CardGrid, Aside } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The previous lesson, [Defending the no](/068-object-storage/1-defending-the-no--when-object-storage-earns-its-weight/), settled *whether*: users are about to start handing the app files, so R2 belongs on the table.
+Now you open the Cloudflare dashboard to stand it up and hit a wall of toggles, location hints, lifecycle rules, public access, custom domains, CORS, token grades, none of it labeled "start here."
+The senior question is not *how do I turn these on*; it's *which are trust boundaries I have to get right, and which are noise I can walk past?*
+
+You'll stand up four artifacts, and the point is to name the failure each one prevents.
+Two of those failures are the expensive ones: an over-powered credential in app code, and a wildcard in your CORS rule.
+Both stay invisible until someone exploits them, so the goal is to catch them in a code review.
+
+## The four artifacts and the failure each prevents
+
+Each artifact pairs with one configuration value your app reads and prevents a specific failure:
+
+- **The bucket**, one per environment, so a staging upload can never land in production.
+- **The scoped token**, one per environment, locked to that environment's single bucket with read-and-write only, so a leaked credential can't reach another bucket or create and delete buckets.
+- **The CORS rule**, naming an explicit origin, method, and header, so the browser can upload directly while a leaked upload URL can't be replayed from an attacker's page.
+- **`lib/r2.ts`**, the configured client, so the whole app reaches R2 through one instance, the way it reaches Postgres through one `db`.
+
+<ArtifactsEnvMap />
+
+Each section below builds one artifact; a short closing section names the knobs you'll walk past.
+
+## Creating the bucket: one per environment
+
+A <Term definition="A namespace inside an R2 account that holds objects. Named once at creation; objects live under it, addressed by their key.">bucket</Term> is the container every object lives in, and creating one is a short click-path in the dashboard.
+
+<Steps>
+1. In the Cloudflare dashboard, open **R2 Object Storage** and enable it on your account if you haven't already. R2 has its own activation, separate from the rest of Cloudflare.
+
+2. Click **Create bucket**.
+
+3. Name it. The name carries the environment: `acme-saas-prod` for production, `acme-saas-staging` for staging, and a shared `acme-saas-dev` for local development.
+
+4. Pick a location, leave every other option at its default, and create it.
+</Steps>
+
+Step 3 is the one that matters, because **buckets do not auto-partition by environment.**
+Point staging and production at one bucket and they share storage, so a teammate's test upload against staging lands in the same namespace as your paying customers' files.
+One bucket per environment, with the environment in the name, makes the name a tripwire: a misconfigured `R2_BUCKET_NAME` fails loudly with "no such bucket" instead of silently writing development bytes into a production tenant's files.
+
+:::note
+The **location hint** is the other knob in that flow.
+It's a hint, not a hard pin: R2 decides where data physically lives and may replicate it, so it's a latency nudge, not a trust boundary.
+Pick the region closest to most of your users and move on.
+:::
+
+<VideoCallout videoId="TIp5sUZO4Uo" videoTitle="Getting started with R2">
+  Cloudflare's 5-minute walkthrough of this dashboard click-path: naming the bucket, picking a location, and creating it.
+</VideoCallout>
+
+One property shapes the next two lessons: **R2 buckets are private by default.**
+There is no public URL; every read requires either a signed URL the server hands out or a Cloudflare Worker route in front of the bucket.
+That is exactly what you want for tenant files, so the course keeps everything private, and the next lesson covers signed reads.
+
+:::caution
+R2 also offers a **public bucket** mode that exposes objects at a public URL with no signing.
+It fits genuinely public assets like marketing images or a logo, but it is the wrong tool for tenant files: anyone who learns or guesses a URL can read the object, with no per-user check.
+:::
+
+So far there's no code, only dashboard configuration.
+The first artifact that touches your codebase is the credential, and it's the one most worth slowing down on.
+
+## Scoped tokens: shrinking the credential blast radius
+
+Creating an R2 token forces two security decisions: *which buckets this token can touch*, and *what it can do to them*.
+Answer too generously and you mint a key with more reach than the app needs, a cost you pay the moment it leaks.
+
+That reach is the credential's <Term definition="The scope of damage a single leaked credential or compromised component can cause. You shrink it by granting the least access the job actually needs.">blast radius</Term>, and shrinking it is the whole job here.
+R2 gives you two levers.
+Scope makes a token either **account-level**, reaching every bucket and able to create and delete them, or **bucket-scoped** to specific buckets.
+Permission comes in three grades:
+
+- **Admin Read & Write**: read and write objects, and create, configure, and delete buckets.
+- **Object Read & Write**: read and write objects in the scoped bucket, with no bucket creation or deletion.
+- **Object Read only**: read objects, nothing else.
+
+The senior default, a rule you apply without re-deriving it: **one token per environment, scoped to that environment's single bucket, granted Object Read & Write.**
+Never Admin, never "all buckets."
+Each narrowing cuts off a blast radius:
+
+- **Why not Admin grade.** The app only reads and writes objects; creating or deleting a bucket is a one-time setup act you do by hand. Admin grade buys the app nothing, and an Admin key leaked from your logs can delete every bucket in the account.
+- **Why not "all buckets."** A token scoped to every bucket reaches production data wherever it leaks. Scope it to one bucket and a compromised staging key can't touch production.
+- **Why one token per environment.** Share one token across staging and production and a leak anywhere exposes both. Separate tokens keep them isolated and enforce the rule that matters most: **production credentials never touch `localhost`.**
+
+Creating the token yields an **Access Key ID** and a **Secret Access Key**.
+That pair, plus the account's S3 endpoint, is what your app authenticates with; they become `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`.
+
+:::caution
+The secret access key is shown **once**, at creation, and never again.
+Copy it straight into your password manager (and your deployment's secrets) the moment it appears.
+If you miss it, you don't recover it; you roll the token and start over.
+:::
+
+Now apply the rule.
+For each choice the token dialog presents, decide whether it's production-safe or never belongs in app code because its blast radius is bigger than the work the app does.
+
+<Buckets instructions="Sort each credential or scope choice by whether it belongs behind your running app.">
+  <Bucket name="safe" label="App code (production-safe)" description="Least access the app actually uses" />
+  <Bucket name="never" label="Never in app code" description="Blast radius bigger than the job" />
+
+  <Item bucket="safe">`Object Read & Write`, scoped to one bucket</Item>
+  <Item bucket="never">`Admin Read & Write`</Item>
+  <Item bucket="never">All buckets, `Object Read & Write`</Item>
+  <Item bucket="never">One token reused for staging and production</Item>
+  <Item bucket="safe">A separate token per environment</Item>
+  <Item bucket="safe">`Object Read only`, for a service that only fetches files</Item>
+</Buckets>
+
+`Object Read only` is the one to think twice about: it's safe precisely *because* it's narrower than the default.
+A part of the system that only reads, say a thumbnail renderer, should get a token that can't write at all.
+Least access isn't one setting; it's the smallest grant that does the job.
+
+## Building the R2 client: `lib/r2.ts`
+
+You've written this shape twice: a single client, built once at module scope, reading validated env, guarded by `import 'server-only'` so it never reaches the browser, the same as `db` and `sendEmail`.
+The only new material is three lines of R2-specific config.
+
+Those three lines work because **R2 speaks the S3 API.**
+Rather than a bespoke SDK, you use the AWS SDK pointed at R2's endpoint: `@aws-sdk/client-s3` for the client and commands, and `@aws-sdk/s3-request-presigner` for signing URLs.
+The next lesson uses the second package, so you install it now but don't call it yet.
+This is the portability R2 buys you: moving to S3, Backblaze B2, or a self-hosted MinIO becomes an endpoint-and-credentials swap, not a rewrite.
+
+<AnnotatedCode lang="ts" code={`
+import 'server-only';
+
+import { S3Client } from '@aws-sdk/client-s3';
+
+import { env } from '@/env';
+
+// One configured S3 client for R2, constructed once at module scope and reused
+// across every request — the same singleton discipline as \`db\` and the Resend
+// client. Helpers in later lessons compose this client; they do not wrap it
+// behind a generic storage interface (Architectural Principle #5).
+const endpoint = \`https://\${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com\`;
+
+export const r2 = new S3Client({
+  region: 'auto',
+  endpoint,
+  credentials: {
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+  },
+});
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    The poison pill. This module holds the secret access key, so importing it into a Client Component fails the build loudly instead of shipping the secret to the browser.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{3-5}" color="blue">
+    `S3Client` comes from `@aws-sdk/client-s3`, the same package that talks to Amazon S3. Config reads from the typed `env`, never `process.env`, so a missing `R2_ACCOUNT_ID` already failed the build, the boundary from Chapter 41's [type-safe env vars](/041-project---the-org-scoped-invoicing-data-layer/2-type-safe-env-vars/).
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{11} "endpoint"`} color="blue">
+    The endpoint is *derived* from `R2_ACCOUNT_ID`, not stored separately. The account id is the only piece that varies; the rest of the URL is fixed, so one value goes in env and the full endpoint is computed once.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{14} "region: 'auto'"`} color="orange">
+    The line to flag. R2 ignores the region, but the AWS signer *requires* a value. Omit it and the SDK throws on the first real call, not at construction. The most common first-run R2 mistake.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{15} "endpoint"`} color="blue">
+    Points the SDK at R2 instead of AWS. The *bucket* is not in this URL: it's named per operation (next lesson), so one client serves every bucket the token can reach.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{13} "export const r2 = new S3Client" {16-19}`} color="green">
+    `credentials` come from env, and the client is built once at module scope and exported. Constructing it per request would churn connections for nothing, the same one-client-per-process rule as `db` and Resend.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7-10}" color="green">
+    The module exports the configured client and stops. Later signing helpers *compose* `r2`; they don't hide it behind a generic `StorageProvider`. A convenience layer, never an abstraction layer, the same do-not-wrap call as the email wrapper.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The four env entries slot into the same `@t3-oss/env-nextjs` boundary you've extended before: the `server` block for the schema, the `runtimeEnv` map for the wiring.
+
+<Code
+  lang="ts"
+  title="src/env.ts"
+  ins={[{ range: '4-7' }, { range: '14-17' }]}
+  code={`export const env = createEnv({
+  server: {
+    // ...existing entries
+    R2_ACCOUNT_ID: z.string().min(1),
+    R2_ACCESS_KEY_ID: z.string().min(1),
+    R2_SECRET_ACCESS_KEY: z.string().min(1),
+    R2_BUCKET_NAME: z.string().min(1),
+  },
+  client: {
+    // ...unchanged
+  },
+  runtimeEnv: {
+    // ...existing entries
+    R2_ACCOUNT_ID: process.env.R2_ACCOUNT_ID,
+    R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
+    R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY,
+    R2_BUCKET_NAME: process.env.R2_BUCKET_NAME,
+  },
+});`}
+/>
+
+All four sit in the `server` block with no `NEXT_PUBLIC_` prefix, because the browser must never see any of them, not the account id, the keys, or the bucket name.
+The rule is blanket: credentials and the addresses they unlock stay server-side.
+
+## CORS: letting the browser upload to the bucket
+
+Most people get this concept wrong, so build the mental model first.
+The function signs a URL and the *browser* sends the file's bytes straight to R2, and that direct browser-to-R2 request is what makes CORS relevant.
+
+When a page on `app.example.com` requests a *different* origin, such as `<your-account>.r2.cloudflarestorage.com`, the browser governs it with <Term definition="Cross-Origin Resource Sharing. The browser rule that a page may only call a different origin if that origin opts in by returning the right response headers.">CORS</Term>: a page may only talk to another origin if that origin explicitly opts in.
+Without a matching rule on the bucket, the browser **blocks the upload before it's sent**, even when the signed URL is perfectly valid.
+
+> CORS is enforced by the **browser**, configured on the **bucket**, and has nothing to do with whether your signature is valid.
+
+This is where people lose an afternoon: signature and credentials are right, but the upload fails because the bucket never told the browser it was allowed.
+The fix is a rule on the bucket, never a change to the signing code.
+
+The browser doesn't fire and hope.
+It first sends a small <Term definition="The automatic OPTIONS request a browser sends before certain cross-origin requests, to check whether the target origin permits the origin, method, and headers it's about to use.">preflight</Term> request and proceeds only if the bucket answers yes.
+
+<CorsPreflightHandshake />
+
+The bucket's CORS rule scripts that answer: which origins may talk to the bucket, which methods they may use, and which request headers it accepts.
+Here's the rule the project ships:
+
+<Code
+  lang="json"
+  title="r2-cors.json (committed to the repo)"
+  code={`[
+  {
+    "AllowedOrigins": ["http://localhost:3000"],
+    "AllowedMethods": ["GET", "PUT"],
+    "AllowedHeaders": ["content-type"],
+    "MaxAgeSeconds": 3600
+  }
+]`}
+/>
+
+Read each field as what it admits:
+
+- **`AllowedOrigins`**: which pages may talk to the bucket. In development it's `http://localhost:3000`; in production, your deployed URL. You already hold that value in env as `NEXT_PUBLIC_APP_URL`, so the rule reuses it rather than minting a new variable.
+- **`AllowedMethods`**: `PUT` to upload and `GET` for a direct browser read, the only two verbs the browser performs against R2.
+- **`AllowedHeaders`**: `content-type`, the one header the signed upload pins (the next lesson sets that pin). The browser names it in the preflight, so the rule must admit it or the upload is blocked.
+- **`MaxAgeSeconds`**: how long the browser may cache this answer, here one hour. Without it the browser re-asks before *every* upload.
+
+Apply the rule per bucket, through the dashboard's CORS section or a `PutBucketCors` API call.
+The repo commits the JSON, so the rule is reviewable in version control like any other config.
+
+Now the most common production hole. Compare the shipped rule against the one people reach for when they just want the upload to work:
+
+<CodeVariants>
+  <CodeVariant label="Public write hole">
+    <div data-mark-color="red">
+
+    ```json del={3,5}
+    [
+      {
+        "AllowedOrigins": ["*"],
+        "AllowedMethods": ["GET", "PUT"],
+        "AllowedHeaders": ["*"],
+        "MaxAgeSeconds": 3600
+      }
+    ]
+    ```
+
+    </div>
+    **Any origin can drive any upload URL that ever leaks.** With `AllowedOrigins` set to `*`, the bucket agrees to talk to every page on the internet, so a signed `PUT` URL that surfaces in a network tab, an error log, or a shared trace can be replayed from an attacker's own page.
+  </CodeVariant>
+
+  <CodeVariant label="Scoped to your origin">
+    <div data-mark-color="green">
+
+    ```json ins={3,5}
+    [
+      {
+        "AllowedOrigins": ["http://localhost:3000"],
+        "AllowedMethods": ["GET", "PUT"],
+        "AllowedHeaders": ["content-type"],
+        "MaxAgeSeconds": 3600
+      }
+    ]
+    ```
+
+    </div>
+    **Only your app's pages can use the bucket; a leaked URL is useless elsewhere.** A browser on any other origin never gets past preflight, so even a valid signed URL can't be replayed from a page you don't control.
+  </CodeVariant>
+</CodeVariants>
+
+The wildcard is wrong for a second reason specific to R2: `AllowedHeaders: ['*']` does **not** reliably admit the `content-type` header your signed upload sends; the working value is the explicit `['content-type']`.
+So `*` fails twice: it's a security hole, and it often silently breaks the upload you were trying to fix.
+On R2, list the headers you actually use.
+
+## Keying objects by tenant: `org/{orgId}/files/{fileId}`
+
+One decision remains, and it isn't a dashboard toggle: a naming convention.
+The path *inside* the bucket that addresses one object is its <Term definition="The unique path string that addresses one object inside a bucket. The join between the Postgres metadata row and the bytes in R2.">object key</Term>, and in a multi-tenant SaaS that key carries tenancy.
+
+<Figure>
+<FileTree>
+- **acme-saas-prod** the bucket, one namespace per environment
+  - org/ tenancy lives in this prefix
+    - `8f3a…/` one organization
+      - files/
+        - `0192….pdf`
+      - exports/
+        - `0192….csv`
+    - `b21c…/` another organization
+      - files/
+        - `0192….png`
+</FileTree>
+<Fragment slot="caption">
+The `org/{orgId}/` prefix isolates each organization's objects; `files/` and `exports/` separate uploads from generated files.
+</Fragment>
+</Figure>
+
+This shape buys two structural wins:
+
+1. **Tenancy isolation by prefix.** Every object an organization owns lives under `org/${organizationId}/`. The server constructs the key, so a client can't fabricate one outside its own prefix. It's the object-storage form of the multi-tenancy rule from earlier: the tenant filter lives in the server's `where` clause, never trusted from the request.
+2. **Prefix-scoped operations.** Because tenancy is a path prefix, bucket-level tooling, diagnostics, lifecycle rules, and retention policies can all target `org/${orgId}/`. Generated files follow the scheme too, under `org/${organizationId}/exports/`.
+
+Carry this rule forward: **the object key is always constructed on the server from validated inputs, never accepted verbatim from the client.**
+That is the tenancy boundary for object storage.
+
+## What you don't configure
+
+Knowing which knobs to walk past matters as much as standing up the four artifacts, so you don't gold-plate a setup the app doesn't need yet.
+Three you'll see in the dashboard and leave alone:
+
+- **Lifecycle rules**: prefix-scoped auto-deletion, like "delete anything under `tmp/` after seven days." None is the right default here; a later lesson adds one to clean up exports and a local-dev prefix.
+- **Local development strategy**: point your dev environment at the shared `acme-saas-dev` bucket under a `local/${developer}/` prefix, with a 24-hour lifecycle rule on `local/`. A bucket per developer is overkill. Run MinIO in Docker only if R2 access is genuinely gated for your team.
+- **Observability**: the R2 dashboard reports per-bucket operation counts and storage bytes. Glance weekly; a sudden spike usually means a leaked signed URL or a client polling something it shouldn't. You watch this, you don't build it.
+
+The next lesson signs short-lived upload and download URLs against this surface, so the browser moves bytes directly while the function only signs.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Cloudflare R2 — Use the S3 API"
+    href="https://developers.cloudflare.com/r2/api/s3/api/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="How R2's S3-compatible endpoint maps to the AWS SDK — the region: 'auto' and endpoint pair lib/r2.ts uses."
+  />
+  <ExternalResource
+    title="Cloudflare R2 — CORS configuration"
+    href="https://developers.cloudflare.com/r2/buckets/cors/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="The AllowedOrigins / AllowedMethods / AllowedHeaders fields and why explicit headers are required for browser uploads."
+  />
+  <ExternalResource
+    title="AWS SDK for JavaScript v3 — S3Client"
+    href="https://docs.aws.amazon.com/AWSJavaScriptSDK/v3/latest/client/s3/"
+    icon="simple-icons:amazon"
+    iconColor="#FF9900"
+    description="The @aws-sdk/client-s3 client and command reference — the same SDK, pointed at R2 instead of AWS."
+  />
+  <ExternalResource
+    title="@aws-sdk/s3-request-presigner"
+    href="https://www.npmjs.com/package/@aws-sdk/s3-request-presigner"
+    icon="simple-icons:npm"
+    iconColor="#CB3837"
+    description="The signing package this lesson installs and the next one uses to mint short-lived upload and download URLs."
+  />
+</CardGrid>

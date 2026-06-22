@@ -2147,3 +2147,21 @@ tasks.trigger | - | Fire-and-return enqueue from request code; returns a handle 
 RFC-4180 | RFC 4180 | The standard defining CSV: comma-separated fields, CRLF line breaks, quoting rules for fields with commas/quotes/newlines. | first defined: Chapter 067 L3
 multipart upload | - | Upload protocol sending a large object as independently-PUT parts assembled server-side; streams a file without holding it whole in memory. | first defined: Chapter 067 L3
 system actor | actorUserId: null, system-actor | An audit row written by a task with no session; the null actor records that no human did it, not a missing value. | first defined: Chapter 067 L4
+Cloudflare R2 | R2 | Object storage speaking the S3 API that charges zero egress; the course default bucket. | first defined: Chapter 068 L1
+binary payload | blob, bytes | Raw bytes (image, PDF, CSV) the app stores and serves whole, not structured rows it can query into. | first defined: Chapter 068 L1
+egress | egress fees | Data transferred out of a storage provider to the internet; the dominant line item on a read-heavy bill, priced at zero by R2. | first defined: Chapter 068 L1
+S3-compatible API | S3 API | The de-facto object-storage HTTP API from AWS S3; one SDK (@aws-sdk/client-s3) talks to S3, R2, or B2 by swapping endpoint and credentials. | first defined: Chapter 068 L1
+bytea | - | Postgres raw-bytes column type storing arbitrary binary data inline in the row; fine only for tiny, short-lived blobs. | first defined: Chapter 068 L1
+pg_dump | - | Postgres logical backup tool serializing schema and every row into one portable file; chokes at blob volume. | first defined: Chapter 068 L1
+object key | key | The unique path string addressing one object in a bucket (e.g. org/42/files/abc.pdf); the join key between the Postgres row and the bytes. | first defined: Chapter 068 L1
+bucket | R2 bucket | A namespace inside an R2 account holding objects; named once at creation, one per environment. | first defined: Chapter 068 L1
+scoped token | R2 token, bucket-scoped token | R2 credential locked to specific buckets with a chosen permission grade; one per environment to shrink blast radius. | first defined: Chapter 068 L2
+public bucket | - | R2 mode exposing objects at an unsigned public URL; right for public assets, wrong for tenant files. | first defined: Chapter 068 L2
+location hint | - | A soft preference for where R2 stores a bucket's data; a latency nudge, not a trust boundary. | first defined: Chapter 068 L2
+HEAD request | HEAD, HeadObjectCommand | HTTP request returning an object's response headers (e.g. ContentLength) without its body; how finalize reads the real stored size. | first defined: Chapter 068 L3
+byte pipe | byte-pipe rule | Routing object bytes through your request handler; the anti-pattern presigned URLs exist to avoid, since it pays timeout and bandwidth costs for nothing. | first defined: Chapter 068 L3
+file_metadata row | metadata row | The Postgres row owning a stored file's identity: queryable, owned, lifecycle-tracked, auditable. | first defined: Chapter 068 L4
+lifecycle rule | - | A prefix-scoped bucket rule auto-deleting objects older than N days; configured once, no app code runs. | first defined: Chapter 068 L3
+Class B operations | Class B | R2's request tier for reads and HEAD requests, billed separately from Class A writes; the cost driver for read-heavy workloads. | first defined: Chapter 068 L5
+Content-Disposition | - | Download response header setting the saved filename (attachment; filename="..."), so the friendly name beats the object key. | first defined: Chapter 068 L4
+orphan bytes | - | An R2 object with no file_metadata row; cheap litter a sweep reclaims, the inverse of an orphan row. | first defined: Chapter 068 L4

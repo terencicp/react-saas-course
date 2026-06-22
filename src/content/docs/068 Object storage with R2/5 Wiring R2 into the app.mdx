@@ -1,0 +1,297 @@
+---
+title: Wiring R2 into the app
+tagline: The architecture sketch for Cloudflare R2 in the app, where user uploads and the CSV export share one client and bucket but diverge on metadata and cleanup.
+chapter-id: 68
+course-progress: 0.6667
+rewrites: 1
+sidebar:
+  order: 5
+  label: Wiring R2 into the app
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import ArrowDiagram from '../../../components/figures/ArrowDiagram.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import TwoWorkloadsFlows from '../../../components/lessons/068/5/TwoWorkloadsFlows.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { Code, FileTree, CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You now hold four R2 primitives, each learned on its own: the threshold that decides whether R2 belongs in a project, a bucket with a scoped token and a CORS rule, the presigned PUT and GET that move bytes without touching your function, and the `file_metadata` row that owns a file's identity.
+This lesson wires them into the course's app, and asks where an engineer would leave R2 out.
+The thesis: two structurally different workloads, user uploads and the CSV export, share one mechanism, but only one earns a metadata row.
+The next chapter builds it; this lesson is the architecture sketch it follows.
+
+There's also a loose thread to tie off.
+Your durable CSV export ended on a fake `downloadUrl`, `https://example.com/exports/${runId}.csv`, with a `// the next chapter wires the real R2 link` comment hanging off it.
+Here that placeholder gets a real home in R2.
+
+## Two workloads, one mechanism
+
+"One mechanism" is meant literally.
+Two consumers in this app reach for object storage, and they reach for the same parts.
+Both import the single `S3Client` you built in [Standing up R2](/068-object-storage/2-standing-up-r2--buckets-scoped-tokens-and-cors/), configured once in `lib/r2.ts`.
+Both key their objects under `org/${organizationId}/...`, the tenancy convention from that lesson.
+Both write into the same bucket.
+One client module, one bucket, one tenancy prefix: that's the mechanism, and it doesn't fork.
+
+Everything around the mechanism does fork.
+The first consumer is the **user-upload path** the next chapter builds: a member picks a file in the browser, it goes straight to R2 over a presigned PUT, a `file_metadata` row records it, and a presigned GET serves it back on every render.
+The second is the **CSV export** you already built: a background worker on Trigger.dev assembles a file server-side, writes it to R2, and emails a link to one person.
+Same client, bucket, and prefix scheme; nearly every other decision lands on the opposite side.
+Read the two side by side.
+
+| Dimension | User uploads (next chapter) | Export output (the CSV retrofit) |
+| --- | --- | --- |
+| Who initiates the PUT | The **browser**, via a presigned PUT | The **Trigger.dev worker**, server-side |
+| Do the bytes touch your code | No; they go browser to R2 | Yes; the worker holds the whole CSV |
+| `file_metadata` row | Yes, one per file | No |
+| Key prefix | `org/${orgId}/files/${id}.${ext}` | `org/${orgId}/exports/${runId}.csv` |
+| How the consumer reads it | Presigned GET, fresh per render | Presigned GET in the email, clicked once |
+| Lifetime and cleanup | Long-lived; soft-delete then a cooled-off sweep | Short-lived; an R2 lifecycle rule reclaims it |
+| Number of consumers | Many: gallery views, downloads | One: the email recipient |
+
+Two rows look like they contradict rules earlier lessons stressed.
+They don't; they mark where each rule stops, which is the point of this lesson.
+Take them one at a time.
+
+### Why the export worker is allowed to be a byte pipe
+
+This chapter's rule is that the function is never a byte pipe: bytes go browser-to-R2 directly, and your function only signs a URL and records metadata.
+The export worker streams the entire CSV through itself, so it looks like an open violation.
+
+Read the rule with its subject restored: a **user-facing request handler** is never a byte pipe.
+The rule exists because of what rides on a synchronous request: a user waiting for the response, a function timeout counting down, and a bandwidth bill that doubles the instant bytes flow in and back out through your function.
+Routing a 40 MB upload through a request handler pays all three for nothing, which is why presigned URLs exist: to get the bytes out of that path.
+
+The export worker carries none of those costs.
+It's a background Trigger.dev run with no waiting user, no request-handler timeout, and the full CSV already in a variable from the page loop you wrote.
+Presigning a PUT here would mean signing a URL and then PUTting to it from the same worker: a network round-trip to grant the worker permission it already has.
+A direct server-side `PutObjectCommand` is the simpler, correct shape.
+The byte-pipe rule protects the synchronous request path; with no request to protect, it has nothing to say.
+
+### Why the export skips the metadata row
+
+The previous lesson made the `file_metadata` row the canonical record of every file, so why does the export skip it?
+
+Because the row is a cost with a purpose, not a reflex.
+It buys four things: queryability ("list this org's files, newest first"), ownership ("who uploaded this"), lifecycle ("is it soft-deleted"), and audit ("who downloaded it, when").
+A user-uploaded contract needs all four: it's listed in a gallery, owned by a member, deletable, and auditable.
+The export output needs none.
+It has one consumer, the person who clicked Export, inside a roughly ten-minute window before the emailed link expires; it's never listed, never managed from a settings screen, never shown to a second user.
+A row recording it would grow the table by one entry per export forever and nothing would ever read it.
+
+So the decision rule: **long-lived, user-managed, multi-consumer files earn a metadata row; short-lived, single-consumer generated outputs don't.**
+The export skips the row and lets a <Term definition="A prefix-scoped rule on the bucket that auto-deletes objects older than N days. Configured once; no app code runs.">lifecycle rule</Term> on its key prefix reclaim the bytes after a few days.
+That's not sloppiness; it's the export not paying for a structure it would never use.
+
+<VideoCallout videoId="ka_WCmNdybE" videoTitle="Design a File Upload Service Like a Senior Engineer">
+  Milan Jovanović sketches this architecture in 8 minutes: why the API can't be a byte pipe, presigned URLs for upload and download, and where metadata and background processing fit.
+</VideoCallout>
+
+The diagrams below make both asymmetries visible.
+Switch between the tabs and watch two things: which arrow carries the file bytes, and whether a `file_metadata` box appears at all.
+
+<TwoWorkloadsFlows />
+
+Now apply the rule past the two examples you've seen.
+The exercise mixes both workloads with cases you haven't met, so you run the decision rule on a file you've never classified.
+
+<Buckets twoCol instructions="Sort each file by the decision rule: long-lived, user-managed, multi-consumer files earn a metadata row; short-lived, single-consumer generated outputs don't.">
+  <Bucket name="row" label="Gets a file_metadata row" description="Long-lived, user-managed, many consumers" />
+  <Bucket name="norow" label="No row (lifecycle cleanup)" description="Short-lived, one consumer, generated" />
+
+  <Item bucket="row">A user-uploaded contract PDF</Item>
+  <Item bucket="row">An org logo a member uploads from settings</Item>
+  <Item bucket="norow">The CSV export emailed to one recipient</Item>
+  <Item bucket="norow">An OG card image regenerated on every deploy</Item>
+  <Item bucket="row">An avatar a user uploads and later replaces</Item>
+  <Item bucket="norow">A nightly report PDF emailed once, then irrelevant</Item>
+</Buckets>
+
+## Retrofitting the export with a real R2 link
+
+Recall where the export landed: the `exportInvoices` task counted the invoices, looped the pages, and accumulated every row into a `csv` string.
+With the finished CSV in memory, it set a placeholder `downloadUrl` on the run's metadata and handed that fake URL to the email step.
+Every line was built except the one that makes the URL real.
+Here it is, before and after.
+
+<CodeVariants maxLines={12}>
+  <CodeVariant label="Before (the placeholder)">
+    <div data-mark-color="orange">
+
+    ```ts {4}
+    console.log('export-invoices csv built', { bytes: csv.length });
+
+    // The placeholder download URL — the next chapter wires the real R2 link.
+    const downloadUrl = `https://example.com/exports/${ctx.run.id}.csv`;
+    metadata.set('downloadUrl', downloadUrl);
+    ```
+
+    </div>
+    **A URL that points nowhere.** The CSV is fully built in the `csv` string, but `downloadUrl` is a fabricated link to a host that doesn't serve the file. The email goes out carrying a dead link; this one line is the stub.
+  </CodeVariant>
+
+  <CodeVariant label="After (real R2 link)">
+    <div data-mark-color="green">
+
+    ```ts {2-9} "presignedGet"
+    const objectKey = `org/${organizationId}/exports/${ctx.run.id}.csv`;
+    await r2.send(
+      new PutObjectCommand({
+        Bucket: env.R2_BUCKET_NAME,
+        Key: objectKey,
+        Body: Buffer.from(csv),
+        ContentType: 'text/csv',
+      }),
+    );
+
+    const { url: downloadUrl } = await presignedGet({ objectKey, expiresIn: 600 });
+    metadata.set('downloadUrl', downloadUrl);
+    ```
+
+    </div>
+    **One server-side PUT, one presigned GET.** The worker writes the finished CSV to R2 under the `exports/` prefix, then mints a ten-minute presigned GET for that key. The `metadata.set` line is unchanged; only the *source* of `downloadUrl` changed, from a fake string to a real signed link.
+  </CodeVariant>
+</CodeVariants>
+
+Three things about that "after" pay off decisions from the earlier lessons.
+
+First, **the worker holds the bytes, and that's correct here.**
+`Buffer.from(csv)` is the whole CSV in memory, and `PutObjectCommand` streams it through the worker to R2.
+That's the byte-pipe exception from the top of this lesson made concrete: there's no request to protect, the bytes are already assembled, and presigning a PUT back to the worker would be pure ceremony.
+The server-side PUT is the simplest shape.
+
+Second, **the PUT is an external call, so it lives outside any database transaction.**
+Same discipline as every email and Stripe send: external IO never goes inside a `db.transaction`, because a transaction holds a connection open and a slow network call turns a quick lock into a long one.
+The PUT sits in the run body, *before* the close-out transaction that flips the exports row to `completed` and writes the audit log.
+The Trigger.dev step is the right boundary: durable, retryable, and separate from the DB write.
+
+Third, **nothing is inserted into `file_metadata`.**
+No row, by the decision rule: the export is single-consumer and short-lived.
+The old objects get cleaned up by a lifecycle rule on the `org/.../exports/` prefix, which deletes objects older than a set number of days.
+Scoped to the `exports/` segment, it reclaims every export a week or so after it's written, across all orgs, with no app code involved.
+
+:::note
+R2 prefix matching is a literal string prefix, not a glob: there's no `org/*/exports/*` wildcard.
+Because the org id varies per tenant, scope the rule by the `exports/` segment of the keying convention rather than a single org's path.
+Cleanup is a bucket-level setting; your code never runs a delete.
+:::
+
+The full end-to-end code, wired against the real export and its tests, lands in the next chapter.
+
+## The lib surface and env for the next chapter
+
+The next chapter doesn't start from a blank slate.
+Most of the object-storage surface already exists from this chapter; the build fills in the rest.
+Here's where everything lives.
+
+<FileTree>
+- src/
+  - lib/
+    - **r2.ts** the `S3Client` singleton, built this chapter
+    - files/
+      - **presigned-put.ts** signs a PUT for one key
+      - **presigned-get.ts** `presignedGet({ objectKey, expiresIn })` → `{ url }`
+      - finalize.ts HEAD-verify, then insert the row *(next chapter)*
+  - db/
+    - queries/
+      - file-metadata.ts tenant-scoped `getFile`, `getFileDownloadUrl` *(next chapter)*
+</FileTree>
+
+Two placement conventions shape that tree, both familiar.
+The reads live in `db/queries/file-metadata.ts`, **not** beside the R2 helpers, because every tenant-scoped read in this codebase lives under `db/queries/`, one file per entity.
+And `lib/r2.ts` exports *only* the client; the helpers in `lib/files/` **compose** it rather than wrapping it behind a generic `StorageProvider` interface.
+This is the do-not-wrap stance you took with the Resend client: thin convenience helpers over an SDK you can still see, not an abstraction that hides it.
+
+The env surface is just as small: four server-only variables, carried straight from [Standing up R2](/068-object-storage/2-standing-up-r2--buckets-scoped-tokens-and-cors/).
+
+<Code
+  lang="bash"
+  title=".env.example"
+  code={`R2_ACCOUNT_ID=your-cloudflare-account-id
+R2_ACCESS_KEY_ID=your-r2-access-key-id
+R2_SECRET_ACCESS_KEY=your-r2-secret-access-key
+R2_BUCKET_NAME=your-bucket-name`}
+/>
+
+None carries a `NEXT_PUBLIC_` prefix, because the browser must never see any of them, not the secret key, the account id, or the bucket name.
+Two things are deliberately absent.
+The S3 endpoint isn't a fifth variable: `lib/r2.ts` derives it from the account id (`https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`).
+And the bucket's CORS rule reuses the `NEXT_PUBLIC_APP_URL` you already have for its `AllowedOrigins`.
+
+## Shipping to production: CORS, credentials, and cost
+
+Both workloads run on your laptop.
+Before either ships, check the operational realities that stay hidden in development and surface in production.
+
+The first is CORS, and it carries a deploy-order trap.
+The rule is environment-specific: your development bucket allows `http://localhost:3000`, your production bucket allows `https://app.example.com`, never `*`.
+The trap is the ordering.
+CORS lives on the *bucket*, not in your app code, so deploying the app does nothing to configure it.
+Ship the app and let a user attempt the first production upload before you've set CORS on the production bucket, and the browser's preflight fails: the upload dies, even though it worked in development against the already-configured dev bucket.
+
+:::caution
+Configure CORS on the **production** bucket *before* the first production upload.
+It's a one-time setting, but it stays invisible until someone hits it, so put it on the deploy checklist rather than discovering it from a support ticket.
+:::
+
+There's no new CI step.
+R2 credentials are environment variables like any other secret, and the bucket, its CORS rule, and its lifecycle rules are one-time setup you do by hand.
+One nuance is worth naming: credential rotation.
+Swapping an R2 key in a single hard cut drops every read in flight at the moment of the swap, so a real rotation needs a staged rollover where both keys are valid for a window.
+"Rotate the R2 key" is not a one-line operation.
+
+The cost story splits the same way the workloads do.
+The export job is negligible: one PUT per export, one GET per email click, pennies per thousand exports.
+The user-upload gallery is where the one real cost mistake hides.
+Uploads are rare (one PUT per file), but a heavily browsed gallery issues a GET per file *per render*, and those reads, R2's <Term definition="R2's request tier for reads and HEAD requests, billed separately from Class A writes. The cost driver for read-heavy workloads like an image gallery.">Class B operations</Term>, dominate the bill for a read-heavy product.
+The rule that keeps it in check: **mint each presigned GET once per page render and reuse it for that render; never re-issue one on every component re-render.**
+Re-signing on a re-render turns one read into dozens for a URL that was already valid.
+
+R2 is a managed service, but its S3-compatible API is your off-ramp: the same four environment variables and derived endpoint point the *same code* at Amazon S3, Backblaze B2, or a self-hosted MinIO.
+
+## External resources
+
+The R2 lifecycle docs are the right reference for the export-cleanup rule this lesson leans on, and the operations-pricing page is where the Class B cost story comes from.
+The AWS presigned-URL guide is the canonical write-up of the mechanism R2 mirrors, and R2's S3-compatibility matrix is the off-ramp the last section promised: the same code, pointed elsewhere.
+
+<CardGrid>
+  <ExternalResource
+    title="Cloudflare R2 — Object lifecycles"
+    href="https://developers.cloudflare.com/r2/buckets/object-lifecycles/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="Prefix-scoped expiration rules — how the exports/ cleanup is configured without any app code."
+  />
+  <ExternalResource
+    title="Cloudflare R2 — Pricing"
+    href="https://developers.cloudflare.com/r2/pricing/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="Class A vs Class B operations and the zero-egress model behind the gallery cost rule."
+  />
+  <ExternalResource
+    title="AWS S3 — Presigned URLs"
+    href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html"
+    icon="simple-icons:amazonwebservices"
+    iconColor="#FF9900"
+    description="The canonical reference for the presigned PUT and GET mechanism R2 implements one-for-one."
+  />
+  <ExternalResource
+    title="Cloudflare R2 — S3 API compatibility"
+    href="https://developers.cloudflare.com/r2/api/s3/api/"
+    icon="simple-icons:cloudflare"
+    iconColor="#F38020"
+    description="Exactly which S3 operations R2 supports — the structural off-ramp to S3, B2, or MinIO."
+  />
+</CardGrid>
