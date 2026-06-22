@@ -1920,3 +1920,26 @@ enumeration oracle | - | A response difference (e.g. distinct sign-in errors) le
 typedRoutes | typedRoutes: true, as Route | Next.js flag typing redirect()/Link against routes that exist; a runtime string needs an `as Route` cast, safe only behind a path guard. | first defined: Chapter 055 L4
 read ladder | session-read ladder | The three-helper session read surface (cache()d getSession, getCurrentUser, requireUser); one deduped DB read per request, many consumers. | first defined: Chapter 055 L2
 revocation | revoke | Killing a session early by deleting its opaque row, so the cookie value resolves to nothing on the next read; instant with server-stored sessions. | first defined: Chapter 054 L3
+active org | activeOrganizationId, active organization | The one org a session is operating inside right now; a nullable column on the session row, rewritten in place on switch. | first defined: Chapter 056 L1
+org slug | organization slug | A URL-safe lowercase identifier for an org (the acme in /o/acme/dashboard); user-chosen, uniqueness-checked. | first defined: Chapter 056 L1
+tenancy model | unit of tenancy | The entity an app's data and ownership are scoped to; here the organization, not the user. | first defined: Chapter 056 L1
+requireOrgUser | - | Third session-read ladder rung returning {user, orgId, role}; redirects null-org users to onboarding, the only trusted source of orgId. | first defined: Chapter 056 L1
+tenant-owned table | - | A table whose every row belongs to exactly one organization, pinned by an organizationId column. | first defined: Chapter 056 L2
+tenantDb | tenantDb(orgId) | Thin org-scoped wrapper around the raw Drizzle client; injects the org filter on every read and write so unscoped tenant queries can't be written. | first defined: Chapter 056 L2
+table registry (tenancy) | tenant table registry, TENANT_TABLES | A single source-of-truth list of org-owned table names the type system reads to constrain the scoped client's surface. | first defined: Chapter 056 L2
+mapped type | - | A TS type built by mapping over a union of keys ([K in Union]) to generate one property per key. | first defined: Chapter 056 L2
+RLS policy | policy (RLS) | Per-row boolean rule Postgres adds to every query against a table; failing rows cease to exist for that query. | first defined: Chapter 056 L3
+USING (RLS) | - | A policy's read filter: rows where it is false are invisible to SELECT/UPDATE/DELETE. | first defined: Chapter 056 L4
+WITH CHECK | - | A policy's write filter: rows an INSERT/UPDATE may produce; a row failing it is refused. | first defined: Chapter 056 L4
+permissive policy | permissive | RLS policy mode OR-combined with other permissive policies; the default. | first defined: Chapter 056 L4
+restrictive policy | restrictive | RLS policy mode AND-combined, for layering extra constraints on top of permissive ones. | first defined: Chapter 056 L4
+pgPolicy | - | Drizzle table modifier declaring an RLS policy in the schema (for/to/using/withCheck). | first defined: Chapter 056 L4
+crudPolicy | - | Neon-only Drizzle helper collapsing the four CRUD policies into one when read and write predicates match. | first defined: Chapter 056 L4
+authenticatedRole | authenticated role | The non-owner DB role request handlers connect as; the role RLS policies apply to. | first defined: Chapter 056 L4
+FORCE ROW LEVEL SECURITY | force RLS | ALTER TABLE statement extending RLS to the table owner, who otherwise bypasses policies. | first defined: Chapter 056 L4
+session variable (Postgres) | app.org_id | Connection-scoped key/value read with current_setting that carries the tenant id into the policy. | first defined: Chapter 056 L3
+SET LOCAL | - | Postgres command setting a config value only until the current transaction ends. | first defined: Chapter 056 L3
+set_config | - | Function form of SET; third arg true makes it transaction-local; parameterizable, unlike raw SET. | first defined: Chapter 056 L4
+current_setting | - | Postgres function reading a config value; second arg true returns NULL instead of erroring when unset. | first defined: Chapter 056 L4
+withTenant | withTenant(orgId, fn) | Helper opening a transaction and setting app.org_id transaction-local before running the caller's work. | first defined: Chapter 056 L4
+PHI | Protected Health Information | Health data regulated under HIPAA; canonical example of data whose leak is a legal event, not just an embarrassment. | first defined: Chapter 056 L3
