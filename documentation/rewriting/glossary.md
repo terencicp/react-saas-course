@@ -2039,3 +2039,37 @@ provenance (security) | who sent this | Who a request is from; proved by a signa
 attempt identity | sameness | Whether an incoming request is the same attempt already seen; the key's job, answered by a unique constraint. | first defined: Chapter 063 L4
 natural domain unique | natural unique | A unique constraint on real domain columns (e.g. (orgId, slug), email) that already dedups, so no extra key column is needed. | first defined: Chapter 063 L4
 Svix | - | Hosted webhooks-as-a-service layer; standardizes signature headers and delivery so every Svix-backed webhook verifies the same way. Resend uses it. | first defined: Chapter 063 L5
+Stripe Product | product | The thing you sell — a plan tier like Pro; carries name, description, marketing copy, but no price; one per tier. | first defined: Chapter 064 L1
+Stripe Price | price | Binds a Product to a recurring interval, currency, amount (smallest unit), and a lookup_key; one Product has many Prices. | first defined: Chapter 064 L1
+lookup_key | lookup key | A stable, author-chosen string handle for a Price (e.g. pro_monthly), identical across test and live; resolve Prices by it, not price_id. | first defined: Chapter 064 L1
+Stripe Customer | customer | The account Stripe bills; owns subscriptions, payment methods, invoices; one per organization, never per user. | first defined: Chapter 064 L1
+Stripe Subscription | subscription | Joins a Customer to the Price they pay recurringly; carries status, tracks the period, emits a webhook on every change. | first defined: Chapter 064 L1
+subscription item | subscription items | The line inside a Subscription pairing a Price with a quantity; carries the current billing period (not the Subscription root). | first defined: Chapter 064 L1
+current_period_end | - | Timestamp the current paid interval ends and Stripe attempts the next charge; lives on the subscription item (items.data[0]) since API 2025-03-31. | first defined: Chapter 064 L1
+Stripe metadata | metadata (stripe) | Arbitrary key/value pairs on a Stripe object, echoed back on every webhook event, so a handler reads app-specific values without a DB round-trip. | first defined: Chapter 064 L1
+STRIPE_SECRET_KEY | sk_test_, sk_live_ | Server-only Stripe key authenticating SDK calls; can charge cards; must never reach the client bundle; prefix encodes the universe. | first defined: Chapter 064 L1
+STRIPE_PUBLISHABLE_KEY | pk_test_, pk_live_ | Client-side Stripe key, safe to ship; used by Stripe.js to mount payment UI; prefix encodes the universe. | first defined: Chapter 064 L1
+hot path | request hot path | Code running on a large fraction of requests, where latency is paid every time; work that can't afford a round-trip belongs off it. | first defined: Chapter 064 L1
+test mode and live mode | test universe, live universe | Two disjoint Stripe universes per account sharing no keys, objects, or IDs; dev/CI/staging use test, only production uses live. | first defined: Chapter 064 L1
+Checkout Session | checkout session | Server-created, single-use, short-lived Stripe object; parameterized once, returns a hosted payment URL; offloads PCI scope and leaves provisioning to the webhook. | first defined: Chapter 064 L2
+PCI compliance | PCI, PCI DSS | Security requirements for any system handling raw card data; letting Stripe's hosted page collect the card keeps that data off your servers and shrinks scope. | first defined: Chapter 064 L2
+content-security policy | CSP | Browser security header whitelisting which sources a page may load scripts, styles, and frames from; a hosted Stripe page sidesteps it, an embedded form needs allowing. | first defined: Chapter 064 L2
+Customer Portal | portal | Stripe-hosted prebuilt account-management UI scoped to one Customer: plan changes, payment method, invoice history, cancellation; maintained by Stripe. | first defined: Chapter 064 L3
+portal session | - | Short-lived, single-use URL scoped to one Customer that opens its billing screens then expires; mint a fresh one each time. | first defined: Chapter 064 L3
+bearer-style (link) | bearer-style | A link whose possession alone grants access, no further identity check; treat like a password. | first defined: Chapter 064 L3
+cancel_at_period_end | - | Subscription flag; when true the subscription stays active and billed through the period then ends at current_period_end; set false to reactivate. | first defined: Chapter 064 L3
+proration | - | Stripe's automatic credit-and-charge math on a mid-cycle subscription change; the app reads the result, never computes it. | first defined: Chapter 064 L3
+flow_data | - | Portal-session parameter deep-linking the customer into one prebuilt flow (cancel, plan change, card update) instead of the home screen. | first defined: Chapter 064 L3
+derived view (data) | projection, plan_entitlements | A small local table holding only the facts read on the hot path, refreshed from an authoritative source; read-shaped, not a full mirror. | first defined: Chapter 064 L4
+plan_entitlements | entitlement projection | One-row-per-org table projecting Stripe subscription state (plan, status, seats, period); the row every gate reads. | first defined: Chapter 064 L4
+subscriptionToEntitlement | projection function | Pure function mapping a Stripe.Subscription to an entitlement patch; no DB or network, so it unit-tests trivially. | first defined: Chapter 064 L4
+getEntitlement | - | The single cache()-wrapped read helper returning the org's entitlement row; non-null because every org is provisioned a row at creation. | first defined: Chapter 064 L4
+hasActiveAccess | - | The one exhaustive switch over subscription status deciding can-this-org-get-in; grants trialing/active/past_due, denies canceled/incomplete. | first defined: Chapter 064 L5
+isWindingDown | - | Predicate true when status is active and cancelAtPeriodEnd is set; a cancelled subscription still in its paid period. | first defined: Chapter 064 L5
+paywall | - | A gate blocking a feature behind a paid plan tier; below the line it's hidden or an upgrade nudge, above it the feature renders. | first defined: Chapter 064 L6
+requirePlan | requirePlan(planSlug) | The two-question billing gate: resolves the org, reads its entitlement, throws BillingError on inactive access or too-low tier, else resolves void. | first defined: Chapter 064 L6
+BillingError | - | Minimal Error subclass for billing; literal name plus a machine-readable code (no_access/plan_required/no_customer) and a customer-safe message. | first defined: Chapter 064 L6
+PLAN_RANK | - | The plan ladder as data: free 0, pro 1, team 2; as const satisfies Record<Plan, number> forces ranking any new plan. | first defined: Chapter 064 L6
+planAtLeast | planAtLeast(plan, required) | Tier comparison over PLAN_RANK; true when plan's rank meets or beats required, the twin of roleAtLeast. | first defined: Chapter 064 L6
+anti-corruption layer | ACL | A module translating a vendor's API into your own shapes and confining it to one place; the formal name for the interface verdict. | first defined: Chapter 064 L7
+adapter (SDK) | - | A thin module exposing your own stable interface over a third-party SDK, so call sites depend on your shape, not the vendor's. | first defined: Chapter 064 L7

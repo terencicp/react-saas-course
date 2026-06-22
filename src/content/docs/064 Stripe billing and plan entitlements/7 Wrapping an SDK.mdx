@@ -1,0 +1,296 @@
+---
+title: When to wrap a third-party SDK
+tagline: A three-question test for deciding when an SDK like Stripe, Resend, or R2 earns a wrapping interface, a thin helper, or a direct call.
+chapter-id: 064
+course-progress: 0.6298
+rewrites: 2
+sidebar:
+  order: 7
+  label: Wrapping an SDK
+---
+
+import { CardGrid } from '@astrojs/starlight/components';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import CodeReview from '../../../components/exercises/code-review/CodeReview.astro';
+import ReviewFile from '../../../components/exercises/code-review/ReviewFile.astro';
+import ReviewIssue from '../../../components/exercises/code-review/ReviewIssue.astro';
+import ReviewWhy from '../../../components/exercises/code-review/ReviewWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import Term from '../../../components/ui/Term.astro';
+import ForbiddenVsCoexist from '../../../components/lessons/064/7/ForbiddenVsCoexist.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+By now you've wrapped two of this app's third-party libraries. Billing got an interface last lesson, so app code calls `billing.upgrade`, never `stripe`. Authorization got one earlier: every privileged action goes through a wrapper, never the raw auth check. One library you left *un*wrapped: to send a welcome email, the app calls `sendEmail`, a thin convenience function that reaches straight for Resend.
+
+Now a teammate opens a pull request. They've wrapped Resend the way you wrapped Stripe: a `lib/email/` directory, a clean interface, Resend forbidden everywhere else. The diff is tidy, the justification one word, *consistency*. It looks like the billing code you already blessed, so every instinct says approve.
+
+Is it right?
+
+"It's tidier" is not an answer: every wrapper is a module to maintain and an extra hop a reader must follow. You need something firmer than taste, a test you can run on any library that returns a yes or no with a reason you can write in a review comment. By the end of this lesson you'll look at any new <Term definition="Software Development Kit: the vendor's official client library for calling their API from your code.">SDK</Term> and decide, by a fixed procedure, whether it earns a wrapper, and why leaving Resend alone was deliberate, not an oversight.
+
+## The three questions a wrapper has to answer
+
+A wrapper earns its keep only by answering yes to three questions, asked in a fixed order: each later question counts only once the earlier ones pass. Asking them in order is what stops "but it would be consistent" from deciding on its own.
+
+Measure each against the one yes-case you already own: billing, built last lesson and so your most reliable yardstick.
+
+**One: is the SDK's shape hard to read at the call site?** Does calling the library directly bury the *intent* under structural noise? Here is a Pro upgrade in raw Stripe:
+
+```ts "stripe.checkout.sessions.create"
+const session = await stripe.checkout.sessions.create({
+  mode: 'subscription',
+  customer: org.stripeCustomerId,
+  line_items: [{ price: priceId, quantity: 1 }],
+  success_url: `${appUrl}/billing/success`,
+  cancel_url: `${appUrl}/billing`,
+  subscription_data: { metadata: { organizationId: org.id } },
+});
+```
+
+Six lines of structure to say one thing: *upgrade this org to Pro.* A reader has to reconstruct that intent from the shape, so billing answers **yes**. Compare Resend:
+
+```ts "resend.emails.send"
+await resend.emails.send({ from, to, subject, react });
+```
+
+That already reads as its own intent. Resend answers **no**, and a no this early signals the library doesn't want a wrapper.
+
+**Two: is the swap cost real?** Across the realistic changes this code will live through, a pricing experiment or a vendor migration, how many call sites get rewritten? Not "could you theoretically swap vendors," since almost anything is theoretically swappable, but how many places actually move. Billing call sites get rewritten on every pricing experiment, and a vendor migration would touch the session-creation shape in every file that creates one. That's a **high** swap cost, and the wrapper lands the churn in one module instead of fifty.
+
+**Three: must a discipline be centralized?** Is there a rule that has to hold at *every* call, one that would otherwise be re-implemented slightly differently each time, or forgotten? Billing has several: every upgrade must run inside an org, must resolve to a Stripe Customer, and every paid surface must pass `requirePlan` before it renders. That last is the real prize: without it you'd have to ask of every privileged route by hand whether someone remembered to check the plan. `requirePlan` makes it a single function nobody can route around. Billing answers **yes**.
+
+Three yeses. Now the cut, stated as a rule you apply without re-deciding it each time:
+
+:::tip
+- **Three-of-three → an interface in `/lib`.** All access routes through one module; the SDK is forbidden outside it.
+- **Two-of-three → a helper at the call site.** A named function that simplifies the call; the SDK stays importable everywhere.
+- **Fewer → call the SDK directly.** It's already terse and carries no rule you need to enforce.
+:::
+
+The walker below applies the questions in order, shape then swap cost then discipline, and never lands on "call directly": that verdict is the floor you fall to when an SDK is already terse *and* is its own discipline-bearing layer. We'll meet a library like that shortly.
+
+<StateMachineWalker title="Does this SDK earn a wrapper?">
+  <Question id="shape" prompt="Does the SDK's shape harm the call site?"
+    description="Read the raw call. Is the intent buried under structural noise, or does it already read as what it does?">
+    <Branch label="Yes — calling it directly buries the intent in structure" to="swap" />
+    <Branch label="No — it already reads as the intent" to="swap"
+      rationale="Even a terse SDK can churn across a vendor swap; keep going." />
+  </Question>
+
+  <Question id="swap" prompt="When the vendor or pricing changes, how many call sites move?"
+    description="Not 'could you theoretically swap' — how many places actually get rewritten when the thing changes.">
+    <Branch label="Many — the same shape is repeated across the app" to="discipline" />
+    <Branch label="Few, or one helper covers them" to="leaf-helper"
+      rationale="Low churn doesn't justify forbidding the SDK everywhere." />
+  </Question>
+
+  <Question id="discipline" prompt="Is there a rule that must hold at every call site?"
+    description="A rule that would otherwise get re-implemented slightly differently each time, or forgotten outright.">
+    <Branch label="Yes — auth, plan-gating, tenant scoping" to="leaf-interface" />
+    <Branch label="No, or the SDK already enforces it itself" to="leaf-helper" />
+  </Question>
+
+  <Leaf id="leaf-interface" verdict="Interface in /lib">
+    All access routes through one module; the SDK is **forbidden everywhere else**. App code imports your surface, never the vendor. The two carve-outs in this course: `billing.*` and `authedAction`.
+  </Leaf>
+
+  <Leaf id="leaf-helper" verdict="Helper at the call site">
+    A named function that simplifies the call, but the SDK **stays importable** everywhere. Convenience, not a border. Examples: `sendEmail`, `presignedPut`.
+  </Leaf>
+
+  <Leaf id="leaf-direct" verdict="Call the SDK directly">
+    The floor case: the SDK is already terse *and* is itself the discipline-bearing layer. Its own primitives carry the rule, so there's nothing left to centralize. Example: a durable-task `task.trigger(payload)`.
+  </Leaf>
+</StateMachineWalker>
+
+## Helper versus interface
+
+Two of the three verdicts wrap an SDK: a helper and an interface. They get confused constantly.
+
+The difference is **not** "small function versus big module." A helper can be elaborate, and an interface can be three lines. The difference is *enforcement*: whether the rest of your code is still allowed to touch the SDK directly.
+
+A **helper** simplifies *one call*, and the SDK stays importable everywhere. `sendEmail` runs a suppression check and then calls `resend.emails.send` in its own body, but nothing stops another file from importing `resend` and calling it too. Helper and direct call coexist; it's a convenience, not a border.
+
+An **interface** is a module with a stable public surface where the SDK is **forbidden outside one directory**. App code imports `billing.upgrade`; it never imports `stripe`. Stripe becomes a <Term definition="A package your code reaches only through another module, never by importing it directly.">transitive dependency</Term>: present in `node_modules`, reachable only through the seam. That restriction is the whole point, because some disciplines hold only when there's no second door. Auditing every touch of the SDK, or keeping the secret-bearing client in exactly one place, both collapse the moment a second file reaches the SDK on its own.
+
+So one sharp question separates the two, and it's the one to carry out of this section:
+
+> **Is the rest of the code *forbidden* from touching the SDK?**
+
+For Stripe and the auth library, yes: audit, secret handling, and gating all break the moment a second file reaches around the seam. For Resend, no: a stray direct `resend.emails.send` is fine, because the helper was never a wall.
+
+Here are both side by side, kept to a signature and a single call. Watch where the SDK import lives, and ask the forbidden question of each.
+
+<CodeVariants>
+  <CodeVariant label="Helper — sendEmail" icon="lucide:arrow-right">
+    ```ts title="lib/email.ts" "resend.emails.send"
+    export const sendEmail = async (input: SendEmailInput) => {
+      if (await isSuppressed(input.to)) return;
+      return resend.emails.send(input);
+    };
+    ```
+    **The SDK lives _inside_ the function and stays importable everywhere else.** `sendEmail` adds one pre-flight suppression check, then calls `resend` directly. Another file can `import { resend }` and call it too, so the two coexist. A convenience, not a boundary.
+  </CodeVariant>
+
+  <CodeVariant label="Interface — billing.upgrade" icon="lucide:shield">
+    ```ts title="lib/billing/upgrade.ts" "PlanSlug"
+    import 'server-only';
+    // import { stripe } from './stripe' lives only inside /lib/billing/
+
+    export async function upgrade(planSlug: PlanSlug): Promise<{ url: string }>;
+    ```
+    **App code calls `billing.upgrade(planSlug)`, gets back a URL, and never imports `stripe`.** The Stripe client is constructed once inside `/lib/billing/`, unreachable from anywhere else. The only path to Stripe runs through this surface, and that's what makes it a boundary.
+  </CodeVariant>
+</CodeVariants>
+
+<ForbiddenVsCoexist />
+
+The interface verdict has a formal name, the <Term definition="A module that translates a vendor's API into your own shapes and confines it to one place, so the vendor's model can't leak into the rest of your code.">anti-corruption layer</Term>.
+
+<VideoCallout videoId="Dok2Ikcjaro" videoTitle="Anti-corruption Layer for mapping between Boundaries">
+  Derek Comartin (CodeOpinion) on the anti-corruption layer as a translation seam that keeps a vendor's shapes out of your model, including the indirection trade-off, in under 9 minutes.
+</VideoCallout>
+
+## Running the test on the course's five integrations
+
+This course touches five third-party integrations. You've already wrapped two; the other three you haven't. Run the three questions on each, starting with the three un-wrapped cases, where the "wrap it for consistency" instinct is loudest and most wrong.
+
+**Resend.** Shape: `send({ from, to, subject, react })` already reads as the intent → no. Swap cost: every transactional-email vendor exposes the same handful of fields, so a migration barely touches the call → low. Discipline: there *is* a pre-flight rule (don't send to a suppressed address), but it lives inside the `sendEmail` helper without forbidding Resend everywhere. Verdict: **helper** — the `sendEmail` you built earlier, correctly a helper and not an interface.
+
+**Trigger.dev.** This background-job library gets a full treatment in a later chapter; here, read only its *shape*. Kicking off a durable task looks like this:
+
+```ts "myTask.trigger"
+await myTask.trigger(payload);
+```
+
+Already terse — and what puts it on the floor is that the SDK's own primitives *are* the discipline-bearing layer. The input schema and idempotency key live in the task *definition*, enforced by the library itself, not in some outer wrapper. Wrapping `trigger` would add a hop and centralize nothing the library hasn't. Verdict: **direct call.**
+
+**R2.** Cloudflare's object storage, also a later chapter; shape only. Uploading a file looks like this:
+
+```ts "PutObjectCommand"
+await s3.send(new PutObjectCommand({ Bucket, Key, Body, ContentType }));
+```
+
+This one *partly* passes. The shape is verbose → partly hard to read, and the swap cost is real, since R2, S3, Backblaze, and Tigris are interchangeable behind the same protocol → medium. The first two questions push toward a wrapper; the third doesn't. There are only two call sites (one presigned upload, one presigned download) and no rule has to hold across them, so a `presignedPut(key)` helper wraps the verbosity at each site, raw SDK one line below. Two yeses, no central discipline. Verdict: **helper.**
+
+The two un-surprising cases close the matrix:
+
+**Authorization passes three-for-three.** The authz check is structural noise at the call site → yes. An auth-provider change would touch every action → high swap cost. The rule "this action must be authorized" has to hold at *every* privileged action → central discipline. `authedAction` is the first of the course's two interfaces.
+
+**Billing passes three-for-three.** The anchor from the start of this lesson, and the second interface.
+
+Here is the whole thing as one table, the answer to "why is this wrapped and that isn't" in one glance.
+
+| Test | Resend | Trigger.dev | R2 | Authorization | Billing |
+|------|--------|-------------|----|---------------|---------|
+| Shape hard to read | no | no | partly | yes | yes |
+| Swap cost real | low | medium | medium | high | high |
+| Discipline lives in wrapper | helper does it | SDK already does | helper does it | yes (authz) | yes (gating, scoping) |
+| **Verdict** | helper | direct call | helper | **interface** | **interface** |
+
+Only billing and authorization clear all three; across the five integrations, the wrapper rule is **applied twice and withheld three times.**
+
+Now run it yourself on five integrations plus two libraries you haven't been handed an answer for, sorting each by how app code should reach it.
+
+<Buckets twoCol instructions="Sort each integration by how app code should reach it — run the three questions to a verdict.">
+  <Bucket name="interface" label="Interface in /lib" description="SDK forbidden outside one directory" />
+  <Bucket name="helper" label="Helper at the call site" description="SDK still importable everywhere" />
+  <Bucket name="direct" label="Call the SDK directly" description="Already terse, no rule to centralize" />
+
+  <Item bucket="interface">Stripe billing — checkout, portal, and plan-gating (`billing.*`)</Item>
+  <Item bucket="interface">The authorization wrapper around every privileged action</Item>
+  <Item bucket="interface">A feature-flag SDK that must be checked at every gated route, always with the same fallback rule</Item>
+  <Item bucket="helper">Transactional email send with a suppression check</Item>
+  <Item bucket="helper">Two presigned-URL calls to object storage</Item>
+  <Item bucket="direct">A durable-task SDK whose primitives already carry the input schema and idempotency key</Item>
+  <Item bucket="direct">An SMS vendor with a one-line `send({ to, body })`, used in three places, with no cross-cutting rule</Item>
+</Buckets>
+
+## Why consistency isn't a reason to wrap
+
+Now you can answer the teammate's pull request.
+
+Wrapping Resend "to match billing" is an *aesthetic* request, but uniformity isn't quality. The wrapper would cost a maintenance surface and an indirection hop for as long as the code lives, and centralize *nothing*: the suppression check already lives in `sendEmail`, and no rule needs Resend forbidden elsewhere. The bar is decision quality, not symmetry. So the missing wrapper around Resend, Trigger.dev, and R2 is a deliberate verdict, not an oversight. When a reviewer asks "why isn't this wrapped like billing?", the answer is the three questions run out loud; "for consistency" was never one of them.
+
+Here is the pull request. Review it as you would a teammate's: click the line where the real problem lives and leave the comment you'd write.
+
+<CodeReview instructions="A teammate opened this PR to 'wrap Resend like billing, for consistency.' Review it.">
+  <ReviewFile name="src/lib/email/index.ts">
+    ```ts ins={1-8}
+    import 'server-only';
+    import { Resend } from 'resend';
+
+    const resend = new Resend(process.env.RESEND_API_KEY);
+
+    export const email = {
+      send: (input: SendEmailInput) => resend.emails.send(input),
+    };
+    ```
+  </ReviewFile>
+
+  <ReviewIssue file="src/lib/email/index.ts" line={7} kernel="pure indirection — wraps the SDK without centralizing any discipline; a helper or a direct call is correct here, not an interface">
+    This re-exports `resend.emails.send` one-for-one — the body forwards its argument and does nothing else. It buys a maintenance surface and a hop, and centralizes *no* rule; nothing here needs Resend forbidden elsewhere. Run the three questions on it: terse shape (**no**), low swap cost (**no**), no central discipline (**no**). Zero-of-three is a direct call. The existing `sendEmail` helper — which at least adds the suppression pre-flight — is already the right amount of wrapping; this interface adds the cost of a border without the discipline that would justify one.
+  </ReviewIssue>
+
+  <ReviewWhy>
+    The tell for a pointless wrapper is a body that forwards its arguments straight to the SDK and does nothing else. A wrapper has to earn the hop it adds. When it doesn't, the honest move is to delete it and call the SDK — or a thin helper — directly.
+  </ReviewWhy>
+</CodeReview>
+
+## What the two interfaces pay back
+
+The two interfaces you *did* build cost the same maintenance surface and hop as the Resend wrapper would. The difference is the return, and every payoff below traces to one fact: the seam is a single place for things to attach.
+
+**A single test seam.** Because every billing operation routes through `billing.*`, an integration test mocks *three methods*, not the whole Stripe SDK scattered across a dozen files. The seam is the natural mock point: the test substitutes your interface and never has to know Stripe was underneath. An un-wrapped SDK gets mocked at each call site instead, fine when there are few and painful when there are many.
+
+**Version pinning in one place.** Stripe's client takes an `apiVersion`, pinned in this chapter to `2025-03-31.basil`. Because the client is constructed exactly once inside `/lib/billing/`, that version lives in a single file, and bumping it is one diff you can test in isolation. Scatter `new Stripe(...)` across the app and the API version becomes a global concern to chase down everywhere.
+
+**A natural home for observability.** The seam is where logs and metrics want to live. `billing.upgrade` is the obvious place to log the org, the plan, and the session id; a `requirePlan` failure is the obvious place to bump a counter. Put the logging where every call already passes and you cover every call for free.
+
+**The class, hidden behind functions.** Stripe's Node SDK is a class: `new Stripe(secret)` gives you an object whose methods you call. The instance is constructed and held inside `lib/billing/stripe.ts`, and the public surface the app sees is plain functions. "Wrap the class behind functions" and "give this SDK an interface" are the same decision from the object-oriented side. This is what an <Term definition="A thin module that exposes your own stable interface over a third-party library, so call sites depend on your shape, not the vendor's.">adapter</Term> is: a boundary that keeps the vendor's shapes from leaking into the rest of your code.
+
+None of the three un-wrapped libraries needed any of these four payoffs, which is why they didn't get an interface. The posture to carry into every future integration:
+
+:::note
+Don't wrap an SDK unless **(a)** its shape harms the call site, **(b)** the swap cost is real, and **(c)** a discipline must be centralized. Three-of-three earns an interface. Otherwise it's a helper, or a direct call.
+:::
+
+## External resources
+
+These name the pattern behind the interface verdict and weigh the wrap-vs-direct call.
+
+<CardGrid>
+  <ExternalResource
+    title="Anti-Corruption Layer pattern"
+    href="https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer"
+    icon="simple-icons:microsoftazure"
+    iconColor="#0078D4"
+    description="The pattern behind the interface verdict: a translation seam that keeps a vendor's shapes out of your domain."
+  />
+  <ExternalResource
+    title="Adapter — Refactoring.Guru"
+    href="https://refactoring.guru/design-patterns/adapter"
+    icon="lucide:plug"
+    iconColor="#3DDC84"
+    description="The object-oriented sibling: wrapping an incompatible interface behind one you control, with diagrams."
+  />
+  <ExternalResource
+    title="Should I wrap 3rd-party libraries?"
+    href="https://markus.oberlehner.net/blog/wrap-third-party-libraries"
+    icon="lucide:message-square"
+    iconColor="#F97316"
+    description="A case-by-case take: when wrapping a library pays off, and when a direct call is the honest choice."
+  />
+</CardGrid>

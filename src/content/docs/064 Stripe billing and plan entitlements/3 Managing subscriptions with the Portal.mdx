@@ -1,11 +1,12 @@
 ---
 title: Managing subscriptions with the Portal
-tagline: Redirect paying customers into Stripe's hosted Customer Portal to switch plans, update cards, fetch invoices, and cancel, all without building a single billing screen yourself.
+tagline: Redirect paying customers into Stripe's hosted Customer Portal to switch plans, update cards, fetch invoices, and cancel, without building a billing screen yourself.
 chapter-id: 064
 course-progress: 0.6217
 sidebar:
   order: 3
   label: Customer Portal
+rewrites: 1
 ---
 
 import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
@@ -29,15 +30,21 @@ import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-Checkout turned a visitor into a paying customer. That customer keeps living in your product, and a few weeks in they want to change something. They started on a monthly plan, realized yearly is cheaper, and want to switch. Their bank reissued their card, so the next charge is going to bounce and they need to update it. Their finance person needs last month's invoice for the books. Or they're leaving and want to cancel.
+Checkout turned a visitor into a paying customer, and that customer keeps living in your product.
+A few weeks in, they want to switch their monthly plan to the cheaper yearly one, update a reissued card before the next charge bounces, pull last month's invoice for their accountant, or cancel.
 
-Count what each of those would cost you to build. Switching plans is a screen with a plan picker, proration math, and a confirmation step. Updating a card is a PCI-sensitive form with tokenization and validation. Invoices are a list, a renderer, and a PDF. Cancellation is a flow with a confirmation, a "you'll keep access until…" message, and the billing change behind it. Each one has a happy path and a long tail of edge cases, and each one has to stay correct as tax rules, card networks, and your own pricing change underneath it. Stripe has already built every one of these, keeps them current, and will hand them to you for the cost of a single redirect.
+Each of those is a screen you could build, and each carries a long tail: proration math, PCI-sensitive card forms, an invoice renderer and PDF, a cancellation flow that keeps access until the period ends.
+Every one has to stay correct as tax rules, card networks, and your own pricing shift underneath it.
+Stripe has built all of them, keeps them current, and hands them to you for the cost of one redirect.
 
-This lesson is about the screens your application doesn't build. You'll write one short Server Action, `billing.openPortal()`, that sends a customer into Stripe's hosted **Customer Portal** and brings them back. You'll see what the Portal can do, the configuration it reads, and three rules that separate an integration that holds up from one that generates support tickets and corrupts your data: cancel at the period end, never compute proration, and never trust the return URL. You'll finish with the one judgment call that matters here: when you're allowed to leave the Portal behind and build the screen yourself. Checkout got the money in; this lesson covers how it's managed after.
+This lesson covers the screens you don't build.
+You'll write one short Server Action, `billing.openPortal()`, that sends a customer into Stripe's hosted **Customer Portal** and back.
+You'll see what the Portal does, the configuration it reads, and three rules that keep the integration from generating support tickets and corrupting your data: cancel at the period end, never compute proration, never trust the return URL.
+You'll finish with the one judgment call that matters: when to skip the Portal and build the screen yourself.
 
-## The Portal is a hosted billing screen you redirect to
+## Redirect to Stripe's hosted billing screen
 
-Here is the whole integration. You create a portal session with the customer's id and a URL to return to, and Stripe hands you a link:
+You create a portal session with the customer's id and a URL to return to, and Stripe hands you a link:
 
 ```ts title="lib/billing/portal.ts"
 const session = await stripe.billingPortal.sessions.create({
@@ -46,19 +53,26 @@ const session = await stripe.billingPortal.sessions.create({
 });
 ```
 
-You redirect the customer to `session.url`. They land on a Stripe-hosted page where they can switch plans, fix their card, grab invoices, or cancel. When they're done, Stripe sends them back to your `return_url`. Your application wrote zero billing UI: no plan picker, no card form, no invoice renderer. The <Term definition="Stripe-hosted, prebuilt account-management UI scoped to a single Customer — plan changes, payment method, invoice history, and cancellation, all maintained by Stripe.">Customer Portal</Term> is the closest thing to a free, maintained, compliant settings screen in the entire SaaS toolchain, and defaulting to it is the correct engineering call rather than a shortcut you'll have to apologize for later.
+You redirect the customer to `session.url`.
+They land on a Stripe-hosted page where they can switch plans, fix their card, download invoices, or cancel.
+When they're done, Stripe sends them back to your `return_url`.
+Your application wrote zero billing UI: no plan picker, no card form, no invoice renderer.
+The <Term definition="Stripe-hosted, prebuilt account-management UI scoped to a single Customer: plan changes, payment method, invoice history, and cancellation, all maintained by Stripe.">Customer Portal</Term> is the closest thing to a free, maintained, compliant billing screen in the stack, so reach for it by default.
 
-The shape is a round-trip. It's worth fixing in your mind before any of the detail, because two of this lesson's three hard rules live at its two ends.
+The shape is a round-trip, and two of this lesson's three hard rules live at its ends.
 
-<Figure caption="Your app opens the Portal and receives the return; everything in between, the screens, the card, the cancel, is Stripe's.">
+<Figure caption="Your app opens the Portal and receives the return; the screens in between are Stripe's.">
   <PortalRoundtripStrip />
 </Figure>
 
-What Stripe handed you is a <Term definition="A short-lived, single-use URL scoped to one Customer. It opens that Customer's billing screens and then expires — you mint a fresh one each time.">portal session</Term>: a one-shot URL, scoped to exactly one Customer, that opens the billing screens and then expires. You don't store it and you don't reuse it; you mint a new one every time someone clicks "Manage billing." Now let's see what those screens actually let a customer do.
+What Stripe handed you is a <Term definition="A short-lived, single-use URL scoped to one Customer. It opens that Customer's billing screens and then expires; you mint a fresh one each time.">portal session</Term>.
+You don't store it or reuse it: you mint a new one every time someone clicks "Manage billing."
+Now let's see what those screens let a customer do.
 
-## What the Portal lets a customer do
+## What the Portal handles, and what stays yours
 
-The Portal isn't all-or-nothing. You choose which capabilities it exposes, configured once per account in the Stripe dashboard. Versioning that configuration in code is its own short topic at the end of this lesson; for the chapter, we click it in once. Here is the set this course turns on:
+The Portal isn't all-or-nothing: you pick which capabilities it exposes, configured once per account in the Stripe dashboard.
+This course turns on four.
 
 <CardGrid>
   <Card title="Switch plan" icon="random">
@@ -68,20 +82,25 @@ The Portal isn't all-or-nothing. You choose which capabilities it exposes, confi
     End the subscription. Configured to take effect **at the end of the period**, the rule we cover next.
   </Card>
   <Card title="Update payment method" icon="setting">
-    Replace an expired or declined card. A PCI-sensitive form, hosted entirely by Stripe.
+    Replace an expired or declined card, on a PCI-sensitive form hosted entirely by Stripe.
   </Card>
   <Card title="Invoice history" icon="document">
     View and download past invoices and receipts: the finance-person request, self-served.
   </Card>
 </CardGrid>
 
-Four screens you didn't build, didn't validate, and don't maintain. That's the trade the Portal offers, and for these four it's almost always the right one to take.
+Four screens you didn't build, validate, or maintain.
+For these four, that trade is almost always worth taking.
 
-Notice where the line falls, because it matters for the rest of the chapter. The Portal shows **Stripe-side billing facts**: what plan you're on, what card is on file, what you've been invoiced. It will not show how many API calls you've made this month, that you're three seats over your plan limit, or anything else that lives inside your product. Those are your application's own screens, and they read from your own data, not from Stripe. Keep that seam clean: billing facts are the Portal's job, and product state is yours. A later lesson builds the in-app surface that warns a customer their subscription is winding down, which is product state the Portal has no concept of.
+Notice where the line falls, because it shapes the rest of the chapter.
+The Portal shows **Stripe-side billing facts**: your plan, the card on file, what you've been invoiced.
+It knows nothing about how many API calls you've made this month or that you're three seats over your limit, because that lives in your product.
+Those screens read from your own data, not from Stripe.
+Keep the seam clean: billing facts are the Portal's job, product state is yours, including the in-app warning that a subscription is winding down, which a later lesson builds.
 
 ## Opening the Portal: the `billing.openPortal` action
 
-Now the code. This is the chapter's reference action for reaching the Portal, and the second method of the small `billing.*` interface you started with `billing.upgrade` last lesson. It's deliberately small. Read it once top to bottom, then we'll walk it.
+This is the second method of the small `billing.*` interface, paired with `billing.upgrade` from last lesson.
 
 <AnnotatedCode lang="ts" maxLines={18} code={`
 'use server';
@@ -105,51 +124,59 @@ export const openPortal = async (
 };
 `}>
   <AnnotatedStep meta={`{1,3-5}`} color="blue">
-    The directive and the signature. File-level `'use server'` makes this a Server Action, so the body runs only on the server, where the Stripe secret lives. Note what it returns: `{ url }`, not a `redirect()` call. That's the same shape as `billing.upgrade` from last lesson: the action mints the URL and hands it back, and the caller decides the navigation. `returnPath` is an optional parameter with a default, so most callers pass nothing.
+    The directive and the signature. File-level `'use server'` makes this a Server Action, so the body runs only on the server, where the Stripe secret lives. It returns `{ url }`, not a `redirect()` call: the same shape as `billing.upgrade`, where the action mints the URL and the caller decides the navigation. `returnPath` has a default, so most callers pass nothing.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{6-7} "requireOrgUser" "getOrganization"`} color="orange">
-    Resolve and authorize the org. `requireOrgUser()` is the same server-side check from the organizations work: it returns the trusted `{ user, orgId, role }` from the session and throws to the framework boundary if there's no session or no org. `getOrganization(orgId)`, a helper the project ships, then loads the organization row, from which you read `stripeCustomerId`. A portal session is scoped to one Customer, so you authenticate and org-scope before you mint anything.
+    Resolve and authorize the org. `requireOrgUser()` returns the trusted `{ user, orgId, role }` from the session and throws to the framework boundary when there's no session or org. `getOrganization(orgId)` then loads the organization row, from which you read `stripeCustomerId`. A portal session is scoped to one Customer, so you authenticate and org-scope before minting anything.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{9-11} "BillingError"`} color="red">
-    The no-Customer branch, which is the interesting one. Last lesson's `upgrade` created a Customer lazily if one was missing. This action does the opposite: if `stripeCustomerId` is null, it throws. The logic is tight: no `stripeCustomerId` means no Customer, which means no subscription, which means there is nothing to manage. `BillingError` is a small custom `Error` subclass carrying a machine-readable code; a later lesson gives it its full definition.
+    The no-Customer branch. Last lesson's `upgrade` created a Customer lazily when one was missing; this action does the opposite. No `stripeCustomerId` means no Customer, no subscription, and nothing to manage, so it throws. `BillingError` is a small `Error` subclass carrying a machine-readable code, defined fully in a later lesson.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{13-16} "billingPortal" "return_url"`} color="green">
-    The actual Stripe call, and it's two fields. `customer` says whose billing this is, and `return_url` says where to send the browser when they're done. That URL must be **absolute**, because Stripe is going to redirect a real browser to it and a relative path won't do. The `absoluteUrl` helper turns `/settings/billing` into the full `https://…` form.
+    The Stripe call, two fields. `customer` says whose billing this is; `return_url` says where to send the browser when they're done. That URL must be **absolute**, because Stripe redirects a real browser to it. The `absoluteUrl` helper turns `/settings/billing` into the full `https://…` form.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{18}`} color="blue">
-    Return `{ url }`. From here the client takes over and redirects with `window.location.assign(url)`. The customer leaves your app, manages their billing on Stripe's pages, and lands back at `return_url`.
+    Return `{ url }`. The client takes over and redirects with `window.location.assign(url)`. The customer leaves your app, manages billing on Stripe's pages, and lands back at `return_url`.
   </AnnotatedStep>
 </AnnotatedCode>
 
-This lives at `lib/billing/portal.ts`, alongside last lesson's `upgrade`. Both files share one non-negotiable rule: the `stripe` client is only ever imported inside `/lib/billing/`. That directory is the single place Stripe shapes are allowed to touch your codebase, which is why the file starts with `import 'server-only'`, so a stray import becomes a build error instead of a leaked secret, and `import { stripe } from '@/lib/stripe'`. The reason for wrapping Stripe at all, the architecture of that `billing.*` interface, is a later lesson. For now it's enough that the import lives here and nowhere else.
-
-One property of that returned URL deserves its own warning.
+This lives at `lib/billing/portal.ts`, beside last lesson's `upgrade`, under one non-negotiable rule: the `stripe` client is imported only inside `/lib/billing/`.
+So the file opens with `import 'server-only'`, which turns a stray client import into a build error rather than a leaked secret, and `import { stripe } from '@/lib/stripe'`.
+Why the project wraps Stripe at all is a later lesson; here, the import belongs in this directory and nowhere else.
 
 :::caution
-The portal URL is <Term definition="Possession of the token alone grants access — there's no further identity check. Whoever holds the link can act, so the link must be treated like a password.">**bearer-style**</Term>: whoever holds the link can manage that Customer's billing until it expires, with no further identity check. The Portal does not re-authenticate, so the URL is the credential. Treat it like any one-time secret link: never log it, never email it, never store it. Mint it, redirect to it, let it expire. This is the exit-side twin of last lesson's "the Checkout URL is single-use."
+The portal URL is <Term definition="Possession of the token alone grants access — there's no further identity check. Whoever holds the link can act, so the link must be treated like a password.">**bearer-style**</Term>: whoever holds it can manage that Customer's billing until it expires, with no further identity check.
+The Portal does not re-authenticate, so the URL is the credential.
+Treat it like any one-time secret link: never log it, never email it, never store it.
+Mint it, redirect to it, let it expire.
+It's the exit-side twin of last lesson's single-use Checkout URL.
 :::
 
-That bearer-style property is why you authorize before minting in step 2: the only access check the Portal ever gets is the one your action does up front. Get that wrong and you've handed one customer's billing to another.
+Because the URL is bearer-style, the only access check the Portal ever gets is the one your action runs up front, in step 2.
+Get that wrong and you've handed one customer's billing to another.
 
 <VideoCallout videoId="t2XJ7u-rTZ0" videoTitle="How to Add Stripe Subscriptions to Next.js Apps — Checkout, Webhooks, Portal">
-  FullStacked builds the same flow end to end in Next.js (46 min); jump to 35:51 to watch the billing-portal session minted and redirected to, exactly like `openPortal` above.
+  FullStacked builds the same flow end to end in Next.js (46 min); jump to 35:51 for the billing-portal session minted and redirected to, exactly like `openPortal` above.
 </VideoCallout>
 
-## Cancellation defaults to the end of the period
+## Cancel at period end, and the two events it emits
 
-Of everything a customer can do in the Portal, cancellation is the one most likely to cause trouble if it's misconfigured, so it gets its own section. The rule is short: **never cancel immediately by default, because the customer paid for the month.**
+Cancellation is the one Portal action that causes real trouble when misconfigured, so configure it deliberately: **never cancel immediately, because the customer paid for the month.**
 
-When a customer clicks Cancel in the Portal, the configured behavior is *cancel at period end*. The subscription doesn't vanish. It stays `active`, gains a `cancel_at_period_end: true` flag, and keeps a `current_period_end` date in the future. Access stays fully live until that date. When the period boundary arrives, Stripe ends the subscription. The customer keeps exactly what they already paid for, and not a day more or less.
+When a customer clicks Cancel in the Portal, the configured behavior is *cancel at period end*.
+The subscription doesn't vanish.
+It stays `active`, gains a `cancel_at_period_end: true` flag, and keeps its `current_period_end` date in the future.
+Access stays live until that date, when Stripe ends the subscription.
+The customer keeps exactly what they paid for, no more and no less.
+Cancel mid-cycle instead and you've taken away access someone paid for, which is unfair billing and a steady source of angry tickets.
 
-Get this wrong, by cancelling the moment someone clicks the button mid-cycle, and you've taken away access they paid for. That's a fair-billing problem and a reliable source of angry support tickets. The Portal's *cancel at period end* mode exists precisely so you don't have to think about it: configure it once and the right thing happens.
+A single cancel produces **two webhook events, separated in time**, one now and one later:
 
-Here's the part that shapes how the rest of the chapter models cancellation. A single cancel produces **two webhook events, separated in time**, one now and one later:
-
-<Figure caption="The Portal triggers cancellation; the webhook records it. The winding-down banner and the actual access flip are built later, so here we only note which events the Portal emits.">
+<Figure caption="One cancel, two events: customer.subscription.updated fires now to record the winding-down state, and customer.subscription.deleted fires at current_period_end.">
 ```mermaid
 %%{init: {'themeCSS': '.messageText, .messageText tspan { font-size: 20px !important; } .actor { font-size: 18px !important; } .noteText, .noteText tspan { font-size: 18px !important; }'} }%%
 sequenceDiagram
@@ -166,25 +193,35 @@ sequenceDiagram
 ```
 </Figure>
 
-Hold on to that two-event shape, because it explains a modeling decision a later lesson makes. A single `is_canceled` boolean can't represent "canceled but still active until August 14th." It throws away the *when*. That's why the entitlement projection a later lesson builds keeps `cancel_at_period_end` and `current_period_end` as first-class columns rather than collapsing them into one flag. The two-event sequence is the reason the richer shape is necessary.
+That two-event shape forces a modeling decision.
+A single `is_canceled` boolean can't represent "canceled but still active until August 14th": it throws away the *when*.
+So the entitlement projection a later lesson builds keeps `cancel_at_period_end` and `current_period_end` as first-class columns rather than one flag.
 
-Now the scope boundary, stated plainly so the seam stays clean. This section covers only the *Portal configuration* (cancel at period end) and the *events it emits*. The banner that tells a customer "your plan ends on Aug 14," the undo-and-reactivate link, and the actual decision to cut off access are all built later, and they consume these events. The rule from the previous chapter still holds without exception: the webhook is the only writer for the entitlement. The Portal triggers events; it does not reach into your database. The <Term definition="A subscription flag. When true, the subscription stays active and billed through the current period, then ends at current_period_end. Set it back to false to reactivate before the period closes.">`cancel_at_period_end`</Term> flag is the primitive that carries this, and reactivation is just setting it back to `false`.
+This section covers only the Portal configuration and the events it emits; the winding-down banner, the undo-and-reactivate link, and the actual access flip come later and consume these events.
+The <Term definition="A subscription flag. When true, the subscription stays active and billed through the current period, then ends at current_period_end. Set it back to false to reactivate before the period closes.">`cancel_at_period_end`</Term> flag carries all of this, and reactivation is just setting it back to `false`.
 
-## Plan changes and proration are Stripe's math
+## Plan changes and proration
 
-The other thing customers do in the Portal is switch plans: Pro up to Team, or monthly across to yearly. When they do, Stripe generates a `customer.subscription.updated` event carrying the new Price, and it computes the money for you. Switch mid-cycle and Stripe issues a credit for the unused part of the old price and an immediate charge for the new one (for an upgrade; a downgrade typically credits forward to the next invoice). That calculation is <Term definition="Stripe's automatic credit-and-charge math when a subscription changes mid-cycle — a credit for the unused portion of the old price against the cost of the new one. Mid-cycle, tax-inclusive, multi-currency. The application never computes it.">proration</Term>, and the rule about it is one line: **trust Stripe's proration; never recompute it in your app.**
+The other thing customers do in the Portal is switch plans: Pro up to Team, or monthly across to yearly.
+Stripe fires a `customer.subscription.updated` event carrying the new Price and computes the money for you.
+Switch mid-cycle and Stripe credits the unused part of the old price and charges immediately for the new one on an upgrade; a downgrade typically credits forward to the next invoice.
+That calculation is <Term definition="Stripe's automatic credit-and-charge math when a subscription changes mid-cycle — a credit for the unused portion of the old price against the cost of the new one. Mid-cycle, tax-inclusive, multi-currency. The application never computes it.">proration</Term>, and the rule is one line: **trust Stripe's proration; never recompute it in your app.**
 
-It's worth being clear about why. Proration done correctly is mid-cycle, tax-inclusive, and multi-currency, a genuinely deep well of edge cases. Reimplementing it buys you nothing and exposes you to a class of bugs that show up as wrong charges on real customers' cards. Your application's job is not to predict the invoice. Its job is to read the *result*, the new plan, after the change lands.
+Correct proration is a deep well of edge cases, and reimplementing it buys you nothing while exposing you to wrong charges on real customers' cards.
+Your app's job is not to predict the invoice but to read the result, the new plan, after the change lands.
 
 :::note
-Keep the two concerns separate in your head. The *new plan* is an entitlement change that arrives through the webhook and updates what your app lets the customer do. The *charge* is purely Stripe's concern, and the customer can already see the proration line items and the invoice inside the Portal. Your app surfaces neither.
+Keep the two concerns separate. The *new plan* is an entitlement change: it arrives through the webhook and updates what your app lets the customer do. The *charge* is Stripe's concern, and the customer already sees the proration line items and the invoice inside the Portal. Your app surfaces neither.
 :::
 
-There's one thread from the first lesson of this chapter that pays off here. When the plan-change event arrives, the projection maps the new Stripe Price back to your app's plan slug (`pro`, `team`) through its `lookup_key`. Because that mapping is by stable key and not by a mode-specific Price id, a customer switching plans in the Portal needs no code change on your side, even after you re-seed the catalog. The mechanics of that mapping are a later lesson; the point now is that a Portal-driven plan change just works.
+When the plan-change event arrives, the projection maps the new Stripe Price back to your plan slug (`pro`, `team`) through its `lookup_key`.
+Because that mapping keys off a stable string rather than a mode-specific Price id, a Portal plan change needs no code on your side, even after you re-seed the catalog.
 
 ## Deep-linking to a specific Portal flow
 
-By default, `openPortal()` drops the customer on the Portal's home screen, and from there they navigate to whatever they came for. That's the right baseline. But sometimes you know exactly where they're headed: a button that says "Cancel subscription" shouldn't land them on the home screen to go hunting for the cancel option. For that, you add `flow_data` to the session and deep-link straight to one flow:
+By default, `openPortal()` drops the customer on the Portal's home screen to navigate from there, which is the right baseline.
+But sometimes you know exactly where they're headed: a button that says "Cancel subscription" shouldn't strand them on the home screen hunting for the cancel option.
+For that, add `flow_data` to the session and deep-link straight to one flow:
 
 <Code
   lang="ts"
@@ -200,21 +237,28 @@ By default, `openPortal()` drops the customer on the Portal's home screen, and f
 });`}
 />
 
-The course cares about three <Term definition="A portal-session parameter that deep-links the customer straight into one prebuilt flow — cancel, plan change, or card update — instead of the Portal home screen.">`flow_data`</Term> flows: `subscription_cancel`, `subscription_update`, and `payment_method_update`. The pattern is the same for all three: name the flow `type`, then point it at the right object. The cancel one above is enough to see the shape.
+The course uses three <Term definition="A portal-session parameter that deep-links the customer straight into one prebuilt flow — cancel, plan change, or card update — instead of the Portal home screen.">`flow_data`</Term> flows: `subscription_cancel`, `subscription_update`, and `payment_method_update`.
+The pattern is the same for each: name the flow `type`, then point it at the right object, as the cancel session above does.
 
-One rule comes attached to this, and it's about honesty rather than code: **name the destination in the link text.** If a button deep-links to cancellation, it reads "Cancel subscription," not "Manage billing." Dropping a customer onto a cancel-confirmation screen they didn't ask for is a dark pattern and a trust cost you don't want to pay. Deep-links are an enhancement layered on top of the plain `openPortal()`; the Portal-home default is the baseline this chapter ships, and it's a perfectly good one.
+One rule comes attached, and it is about honesty rather than code: **name the destination in the link text.**
+A button that deep-links to cancellation reads "Cancel subscription," not "Manage billing."
+Dropping a customer onto a cancel-confirmation screen they didn't ask for is a dark pattern and a trust cost you don't want to pay.
 
-## When the Portal stays open after the subscription ends
+## Who gets the Portal, and who gets Checkout
 
-Two situations trip people up, and they're worth grouping because they turn on the same fact: in Stripe, the **Customer outlives the subscription**.
+Two cases turn on one fact: in Stripe, the **Customer outlives the subscription**.
 
-The first is the **ex-subscriber**. Someone paid for months, then downgraded to your free plan. They have no active subscription anymore, but they still have invoices from when they did, and their finance person will eventually need them. The Stripe Customer record persists even with no active subscription, so `openPortal()` still works for them and the Portal still shows their full invoice history. The rule: the Customer outlives any individual subscription, and the Portal stays reachable for as long as the Customer exists.
+The **ex-subscriber** paid for months, then downgraded to your free plan.
+They have no active subscription, but they still have invoices their finance person will eventually need.
+The Stripe Customer record persists with no active subscription, so `openPortal()` still works and the Portal still shows their full invoice history.
 
-The second is the **never-subscribed user**, the mirror image, which you already handled. No `stripeCustomerId` means no Customer, which is exactly the `BillingError` branch in the action. For this person the right move is not the Portal at all; it's Checkout. Surface a "subscribe to manage billing" message and route them to the upgrade flow from last lesson. The Portal is for existing Customers, and brand-new subscriptions start at Checkout.
+The **never-subscribed user** is the reverse: no `stripeCustomerId` means no Customer, the `BillingError` branch in the action.
+The right move here is not the Portal but Checkout.
+Surface a "subscribe to manage billing" message and route them to last lesson's upgrade flow.
 
-That gives you a clean two-way split for any "open billing" button:
+That gives a clean two-way split for any "open billing" button:
 
-<Figure caption="One branch decides every billing entry point: an existing Customer manages in the Portal; a new one subscribes through Checkout.">
+<Figure caption="One branch routes every billing entry point: an existing Customer to the Portal, a new one to Checkout.">
 ```mermaid
 %%{init: {'themeCSS': '.nodeLabel, .nodeLabel * { font-size: 18px !important; } .edgeLabel, .edgeLabel * { font-size: 16px !important; }'} }%%
 flowchart LR
@@ -226,9 +270,9 @@ flowchart LR
 ```
 </Figure>
 
-Let's check that those rules stuck while they're fresh. Fill in each blank:
+Check those three rules. Fill in each blank:
 
-<Dropdowns instructions="Each blank pins one rule from this lesson — entry-point routing, period-end cancellation, and who writes the entitlement.">
+<Dropdowns instructions="Each blank pins one rule from this lesson: entry-point routing, period-end cancellation, and who writes the entitlement.">
 1. A user who has never paid hits the billing page, so you route them to <DropdownChoice answer="Checkout" options={['Checkout', 'the Portal']} /> — not the surface for managing an existing subscription.
 
 2. A customer mid-cycle clicks Cancel, so the subscription's `cancel_at_period_end` becomes <DropdownChoice answer="true" options={['true', 'false']} /> and access <DropdownChoice answer="stays live until period end" options={['stays live until period end', 'ends immediately']} />.
@@ -236,20 +280,25 @@ Let's check that those rules stuck while they're fresh. Fill in each blank:
 3. After the Portal redirects the customer back, the app updates `plan_entitlements` from <DropdownChoice answer="the webhook" options={['the webhook', 'the return URL']} /> — the only writer for that row.
 </Dropdowns>
 
-That last blank carries the central idea of the lesson, and it earns its own section.
+## The return URL is not proof of change
 
-## Don't trust the return URL as proof of change
+When the customer finishes in the Portal, Stripe redirects them to your `return_url`.
+The trap is to read that redirect as news: "they're back, so something changed, let me refresh their entitlement."
+But the `return_url` fires **regardless** of what the customer did.
+They might have switched plans, or browsed and left without touching anything, or opened the cancel flow and backed out.
+The redirect proves one thing only: the customer came back. It proves nothing about state.
 
-When the customer finishes in the Portal, Stripe redirects them to your `return_url`. The trap is to read that redirect as news, to think "they're back, so something must have changed, let me refresh their entitlement." Nothing has necessarily changed. The `return_url` fires **regardless** of what the customer did. They might have switched plans. They might have browsed around and left without touching anything. They might have changed their mind halfway and closed the cancel flow. The redirect proves exactly one thing: the customer came back. It proves nothing about state.
+Picture a billing page that, on return, calls `refreshEntitlementFromStripe(org.id)` to "sync."
+That call has two ways to go wrong, and it will hit one of them:
 
-Picture the developer who renders the billing page on return and, on render, calls something like `refreshEntitlementFromStripe(org.id)` to "sync." That code has two ways to go wrong, and it'll hit one of them:
+- It double-fires an update the webhook already owns. Now two writers race for the same `plan_entitlements` row, the exact single-writer violation the previous chapter spent a lesson teaching you to avoid.
+- The webhook hasn't landed yet, because redirects routinely beat webhooks. The page reads a not-yet-updated projection and paints stale state: the old plan, shown as current truth.
 
-- It double-fires an update the webhook already owns. Now two writers are racing for the same `plan_entitlements` row, the exact single-writer violation the previous chapter spent a whole lesson teaching you to avoid.
-- Or the webhook hasn't landed yet (redirects routinely beat webhooks), so it reads a not-yet-updated projection and confidently paints stale state: the old plan, dressed up as fresh truth.
-
-The fix isn't a more careful refresh. It's structural: **do nothing stateful on return.** The webhook is the source of truth, so let it do its job. If the return page genuinely needs to reflect a change the customer just made, it does the same thing last lesson's success page did: it *reads* the entitlement and, if the projection isn't finalized yet, mounts the poller from the previous chapter and waits for the webhook to catch up. It reads and polls. It never writes.
-
-Put the wrong and right versions side by side:
+The fix isn't a more careful refresh, it's structural: **do nothing stateful on return.**
+The webhook is the source of truth, so let it write.
+If the return page needs to reflect a change the customer just made, it does what last lesson's success page did.
+It *reads* the entitlement, and if the projection isn't finalized, mounts the poller from the previous chapter and waits for the webhook to catch up.
+It reads and polls; it never writes.
 
 <TabbedContent syncKey="return-page">
   <TabbedItem label="Wrong" icon="error" caption="Writes on every return, racing the webhook for the same row or painting a projection that hasn't updated yet.">
@@ -278,27 +327,30 @@ Put the wrong and right versions side by side:
   </TabbedItem>
 </TabbedContent>
 
-Now connect this to last lesson and hold the pair together as one idea, not two facts to memorize:
+Now hold this together with last lesson as one idea, not two facts to memorize:
 
 - **The Checkout success URL** is the *entry-side* redirect, and it is not proof of payment. The webhook proves payment.
 - **The Portal return URL** is the *exit-side* redirect, and it is not proof of change. The webhook proves the change.
 
-Both collapse to a single principle: **a redirect is a navigation event, never a transaction-completion signal.** This is the same redirect-versus-webhook race from the previous chapter, met again on the other side of the flow. The single-writer rule it taught is the same rule that governs the return page here. The redirect tells you where the browser is, never what happened to your data.
+Both collapse to one principle: **a redirect is a navigation event, never a transaction-completion signal.**
+It tells you where the browser is, never what happened to your data.
 
-## Build the screen yourself only when product forces it
+## When to build instead of using the Portal
 
-The whole lesson has been one argument: default to the Portal. So let's close by turning it from a rule into a decision you can defend, including the cases where the answer goes the other way, because sometimes it does. Here are the conditions that earn an in-house build:
+Default to the Portal, but some requirements earn an in-house build.
+These are the conditions that justify one:
 
-- **Regulated consent flows** the Portal can't host: explicit retention or cancellation disclosures, or jurisdiction-specific copy a lawyer requires on the cancel screen.
-- **Complex plan-change UX**: seat-count sliders with their own validation, usage-tier pickers, add-on bundling. The Portal does pick-a-plan; it doesn't do a configurator.
-- **B2B contract motions**: an upgrade gated behind sales approval, a quote, or a purchase-order workflow.
+- **Regulated consent flows the Portal can't host:** explicit retention or cancellation disclosures, or jurisdiction-specific copy a lawyer requires on the cancel screen.
+- **Complex plan-change UX:** seat-count sliders with their own validation, usage-tier pickers, add-on bundling. The Portal does pick-a-plan, not a configurator.
+- **B2B contract motions:** an upgrade gated behind sales approval, a quote, or a purchase-order workflow.
 - **Internationalization** beyond the languages Stripe's Portal supports.
 
-Know exactly what you're signing up for when you carve one of these out, and price it honestly: **every screen you build is a Stripe-maintained, PCI-aware, localized, continuously-updated screen you now own forever.** The cancellation logic, the proration display, the card tokenization, the invoice rendering, and the long tail of edge cases behind each, all become yours to keep correct as the world changes underneath them. The chapter default is the Portal. An in-house build is a deliberate, justified exception, never a default and never an aesthetic preference. "It'd feel more on-brand" is not a reason that survives contact with the maintenance bill.
+Price each carve-out honestly: every screen you build is a Stripe-maintained, PCI-aware, localized, continuously-updated screen you now own forever.
+Cancellation logic, proration display, card tokenization, invoice rendering, and the long tail of edge cases behind each all become yours to keep correct.
+An in-house build is a justified exception, not an aesthetic preference.
 
-So here's the order of operations an experienced engineer follows: ship the Portal first, instrument it, and let real product and retention data, not taste, earn the in-house screen. That's the same trigger-before-tool posture that runs through this whole chapter: you reach for the heavier tool only after the default has crossed a named threshold.
-
-Walk the decision in that exact order. Each question is a gate, and only a real product or legal blocker should send you down the build path.
+Ship the Portal first, instrument it, and let real product and retention data earn the in-house screen.
+Walk the decision in order, and let only a real product or legal blocker send you down the build path.
 
 <StateMachineWalker title="Build the billing screen, or use the Portal?">
   <Question id="legal" prompt="Does the flow need consent or disclosure copy the Portal can't host, or sales-approval gating on the change?" description="Regulated retention copy, jurisdiction-specific cancel disclosures, a quote or PO gate before an upgrade: anything legal or sales forces onto the screen.">
@@ -317,29 +369,31 @@ Walk the decision in that exact order. Each question is a gate, and only a real 
   </Question>
 
   <Leaf id="build-full" verdict="Build in-house">
-    A legal or sales-gated flow is a real product requirement the Portal can't meet. This is the carve-out the default was waiting for. You still keep the Portal for invoices and the card form; you only own the screen product forces.
+    A legal or sales-gated flow is a real requirement the Portal can't meet. This is the carve-out the default was waiting for. Keep the Portal for invoices and the card form; own only the screen product forces.
   </Leaf>
 
   <Leaf id="build-plan-change" verdict="Build the plan-change screen only">
-    Hand-roll just the part that genuinely needs custom controls. Even here you keep the Portal for the routine screens, invoices and card update, and let Stripe keep maintaining those forever.
+    Hand-roll just the part that needs custom controls. Keep the Portal for the routine screens, invoices and card update.
   </Leaf>
 
   <Leaf id="build-i18n" verdict="Build, or wait for Stripe">
-    If the locale is on Stripe's roadmap, waiting is often cheaper than owning a localized billing surface forever. Build only if the language gap is blocking customers today.
+    If the locale is on Stripe's roadmap, waiting is often cheaper than owning a localized billing surface forever. Build only if the language gap blocks customers today.
   </Leaf>
 
   <Leaf id="use-portal" verdict="Use the Portal">
-    No legal blocker, no custom UX, no missing language. There is no product reason to build. Ship the Portal and move on, and let real product and retention data, not taste, earn any future carve-out.
+    No legal blocker, no custom UX, no missing language, so no product reason to build. Ship the Portal and let future product and retention data earn any carve-out.
   </Leaf>
 </StateMachineWalker>
 
-Notice that even the build outcomes keep the Portal for the screens nobody wants to own: invoices and the card form. An in-house carve-out is almost never "replace the Portal." It's "build the one screen product forces, and let Stripe keep the rest."
+Even the build outcomes keep the Portal for the screens nobody wants to own.
+A carve-out is almost never "replace the Portal"; it's "build the one screen product forces, and let Stripe keep the rest."
 
-## Versioning the Portal config in code
+## Configuring the Portal in code instead of the dashboard
 
-One last point, kept short on purpose. Everything the Portal exposes, which capabilities are on and the cancel-at-period-end behavior, was configured by clicking around the Stripe dashboard. But Stripe also exposes those settings through the API, under `stripe.billingPortal.configurations.*`. That means you can version the Portal's configuration in code and apply it per mode, exactly the way the first lesson described versioning the price catalog with a seed script. The payoff is the same: reviewable diffs and automatic parity between your test and live worlds, instead of two dashboards a human has to keep in sync.
+The Portal settings you set by clicking through the dashboard, which capabilities are on and the cancel-at-period-end behavior, are also exposed through the API under `stripe.billingPortal.configurations.*`.
+That lets you version the configuration in code and apply it per mode, the way the first lesson seeded the price catalog, so you get reviewable diffs and automatic test-and-live parity instead of two dashboards to keep in sync.
 
-This chapter ships dashboard-configured, for simplicity. The config-as-code path is named here only so you know it exists and know when to reach for it: when "who changed the cancel behavior?" needs an answer in version control, code wins.
+This chapter stays dashboard-configured for simplicity; reach for config-as-code once changes to Portal behavior need to be tracked in version control.
 
 ## External resources
 

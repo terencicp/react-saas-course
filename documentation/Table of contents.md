@@ -560,9 +560,9 @@
 - 2 Starting subscriptions with Checkout (Teaches the Server Action that creates a hosted Checkout session, lazy Stripe Customer creation per organization, trials via `subscription_data`, and the success-page polling that waits for the webhook to land the entitlement.)
 - 3 Managing subscriptions with the Portal (Teaches the hosted Customer Portal as the default for plan changes, period-end cancellation, payment-method updates, and invoice history, plus deep-link flows and the rule that the return URL is a navigation hint, not state-change proof.)
 - 4 Plan entitlements as a derived view (Teaches the `plan_entitlements` schema, the one-row-per-org projection of Stripe state, the single-writer rule (only the webhook writes it), and the `getEntitlement` read helper that every request-path gate calls instead of touching Stripe.)
-- 5 Subscription status as first-class state (Teaches the Stripe status enum (`trialing`, `active`, `past_due`, `canceled`, `incomplete`, `unpaid`), the `hasActiveAccess` decision table, grace-period banners over instant lockout, and the `cancel_at_period_end` winding-down state.)
+- 5 Decoding subscription status into access (Teaches the Stripe status enum (`trialing`, `active`, `past_due`, `canceled`, `incomplete`, `unpaid`), the `hasActiveAccess` decision table, grace-period banners over instant lockout, and the `cancel_at_period_end` winding-down state.)
 - 6 The thin billing interface (Teaches the `billing.*` carve-out to Architectural Principle #5 — `upgrade`, `openPortal`, and `requirePlan` as the three methods, `requirePlan` as the load-bearing server-side gate, and `/lib/billing/` as the only place the Stripe SDK is imported.)
-- 7 When an SDK adapter earns its weight (Teaches the three-test threshold for wrapping an SDK (read-hostile shape, real swap cost, discipline to centralize), and applies it to show why auth and billing earn interfaces while Resend, Trigger.dev, and R2 only earn helpers.)
+- 7 Wrapping an SDK (Teaches the three-test threshold for wrapping an SDK (read-hostile shape, real swap cost, discipline to centralize), and applies it to show why auth and billing earn interfaces while Resend, Trigger.dev, and R2 only earn helpers.)
 - 8 Quiz
 
 ### Chapter 065 — Project: From Stripe webhook to plan entitlement
