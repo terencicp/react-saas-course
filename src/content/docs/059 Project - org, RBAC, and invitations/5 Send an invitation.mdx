@@ -1,0 +1,577 @@
+---
+title: Send an invitation with a signed accept URL
+chapter-id: 059
+course-progress: 0.5804
+sidebar:
+  order: 5
+  label: Send an invitation
+rewrites: 2
+---
+
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+An admin types a teammate's email into the inspector's invite form, picks a role, and the teammate gets an email with one button that drops them into the organization.
+
+The button is a URL, and holding that URL *is* the authorization to join: no password, no second factor.
+So the URL must be unguessable, so no one joins by typing a likely link; tamper-evident, so flipping the org id in the query string is rejected, not honored; and useless to anyone who reads the database, so a leaked dump can't forge a working link.
+The token is 32 random bytes, the URL is HMAC-signed, and Postgres stores only `sha256(token)`.
+
+## Your mission
+
+You are building the send half of the invitation handshake: the crypto helpers that mint and sign the URL, the email template that carries it, the pending-invites query that surfaces the result, and the `sendInvitation` action that ties them together.
+The accept half is the next lesson; here you only confirm the emailed URL *loads* the accept page.
+
+Those three properties drive three crypto decisions, each explained at its code in the walkthrough: a 256-bit random token, only its `sha256` stored, and an HMAC over `${invitationId}.${rawToken}` keyed by an `INVITATION_SIGNING_SECRET` you keep distinct from `BETTER_AUTH_SECRET`.
+
+The other decision is transaction discipline.
+The invitation row and its `invitation.sent` audit row co-commit inside one `withTenant(ctx.orgId, ...)` transaction, but the email sends *after* the commit: a send inside a transaction that rolls back promises a stranger a seat that no longer exists, while a committed row with a failed send is recoverable, so a Resend outage returns `ok({ invitationId, emailSent: false })` instead of failing.
+Two smaller rules: lowercase the email (`z.email().toLowerCase()`) to match the partial unique index on `(organizationId, lower(email)) WHERE status='pending'`, and translate a duplicate's `23505` into a `conflict` Result with `isUniqueViolation` instead of a 500.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Submitting the invite form as an admin creates an `invitation` row with `status='pending'` and the chosen role, surfaced in the pending panel.</ChecklistItem>
+  <ChecklistItem chip="tested">`tokenHash` holds a 64-character hex string and the raw token appears in no column of any table.</ChecklistItem>
+  <ChecklistItem chip="tested">A successful send appends an `invitation.sent` audit row in the same transaction as the invitation insert — force-failing the insert lands neither.</ChecklistItem>
+  <ChecklistItem chip="tested">A second invite to the same pending email returns `conflict` (the `23505` partial-index catch).</ChecklistItem>
+  <ChecklistItem chip="tested">Inviting an email that already belongs to a member returns `conflict`, with a distinct message fired by the membership pre-check rather than the index.</ChecklistItem>
+  <ChecklistItem chip="tested">When Resend rejects the send, the action returns `ok({ invitationId, emailSent: false })` and the row still exists.</ChecklistItem>
+  <ChecklistItem chip="untested">The React Email arrives in your real inbox with the org name, inviter name, role, and a CTA whose href is `/accept-invite?id=...&token=...&sig=...`.</ChecklistItem>
+  <ChecklistItem chip="untested">The emailed URL is well-formed and opening it loads the provided accept page — accepting only works once the next lesson ships.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Build it against the brief and the lesson's tests first.
+The reference solution below is collapsed: open it once you have something running, or when a piece won't come together.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### The signing key in `env.ts`
+
+The HMAC key is a secret, so it passes the env boundary like every other.
+Add `INVITATION_SIGNING_SECRET` to the `server` block and its matching `runtimeEnv` entry.
+
+<CodeVariants>
+  <CodeVariant label="Before">
+    ```ts title="src/env.ts"
+    server: {
+      DATABASE_URL: z.url(),
+      DATABASE_URL_UNPOOLED: z.url(),
+      SEED: z.coerce.number().default(1),
+      BETTER_AUTH_SECRET: z.string().min(32),
+      BETTER_AUTH_URL: z.url(),
+      RESEND_API_KEY: z.string().min(1),
+      EMAIL_FROM: z.string().min(1),
+      EMAIL_REPLY_TO: z.email(),
+    },
+    ```
+    **The starting point.** Every secret the app already needs is validated here, but not yet the HMAC key.
+  </CodeVariant>
+
+  <CodeVariant label="After">
+    <div data-mark-color="green">
+
+    ```ts title="src/env.ts" ins={10}
+    server: {
+      DATABASE_URL: z.url(),
+      DATABASE_URL_UNPOOLED: z.url(),
+      SEED: z.coerce.number().default(1),
+      BETTER_AUTH_SECRET: z.string().min(32),
+      BETTER_AUTH_URL: z.url(),
+      RESEND_API_KEY: z.string().min(1),
+      EMAIL_FROM: z.string().min(1),
+      EMAIL_REPLY_TO: z.email(),
+      INVITATION_SIGNING_SECRET: z.string().min(1),
+    },
+    ```
+
+    </div>
+    **The key, validated alongside the rest.** One line declares it as a required, non-empty string.
+  </CodeVariant>
+</CodeVariants>
+
+And the matching `runtimeEnv` entry, wiring the validated value to `process.env`:
+
+```ts title="src/env.ts" ins={2}
+    EMAIL_REPLY_TO: process.env.EMAIL_REPLY_TO,
+    INVITATION_SIGNING_SECRET: process.env.INVITATION_SIGNING_SECRET,
+```
+
+Validating here means a missing key fails `next build` with a message naming the variable, not when the first admin sends an invite.
+Generate it with `openssl rand -base64 32`, distinct from `BETTER_AUTH_SECRET`.
+
+### The capability URL helpers
+
+`src/lib/invitations/url.ts` mints the token, hashes it, signs it, and verifies it: four small functions sharing one imported key.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import 'server-only';
+
+import { env } from '@/env';
+
+// The accept URL is a capability: a 32-byte random token (base64url) whose sha256
+// is the only form stored, plus an HMAC signature over \`\${id}.\${token}\` keyed by
+// INVITATION_SIGNING_SECRET (distinct from BETTER_AUTH_SECRET). The key is imported
+// once, non-extractable, with the sign/verify capability only — a lazily-awaited
+// module-scope promise so the import cost is paid once per process. Verification
+// uses crypto.subtle.verify (constant-time), never a string === on the signature.
+const keyPromise = crypto.subtle.importKey(
+  'raw',
+  Buffer.from(env.INVITATION_SIGNING_SECRET, 'base64'),
+  { name: 'HMAC', hash: 'SHA-256' },
+  false,
+  ['sign', 'verify'],
+);
+
+const payload = (invitationId: string, rawToken: string): BufferSource =>
+  new Uint8Array(new TextEncoder().encode(\`\${invitationId}.\${rawToken}\`));
+
+export const generateInviteToken = (): string => {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Buffer.from(bytes).toString('base64url');
+};
+
+export const signedInviteUrl = async (
+  invitationId: string,
+  rawToken: string,
+): Promise<string> => {
+  const key = await keyPromise;
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    payload(invitationId, rawToken),
+  );
+  const sig = Buffer.from(new Uint8Array(signature)).toString('base64url');
+
+  const url = new URL('/accept-invite', env.NEXT_PUBLIC_APP_URL);
+  url.searchParams.set('id', invitationId);
+  url.searchParams.set('token', rawToken);
+  url.searchParams.set('sig', sig);
+  return url.toString();
+};
+
+export const verifyInviteSignature = async (
+  invitationId: string,
+  rawToken: string,
+  sig: string,
+): Promise<boolean> => {
+  const key = await keyPromise;
+  return crypto.subtle.verify(
+    'HMAC',
+    key,
+    new Uint8Array(Buffer.from(sig, 'base64url')),
+    payload(invitationId, rawToken),
+  );
+};
+
+export const sha256 = async (raw: string): Promise<string> => {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new Uint8Array(new TextEncoder().encode(raw)),
+  );
+  return Buffer.from(new Uint8Array(digest)).toString('hex');
+};
+`}>
+  <AnnotatedStep meta="{11-17}" color="violet">
+    The key is imported once at module scope as a lazily-awaited promise, paying the import cost a single time per process. The fourth argument, `false`, marks it **non-extractable**: the raw bytes can never be read back, so even a bug that logs the key object can't leak it. The capability list `['sign', 'verify']` confines the key to HMAC.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{19-20}" color="blue">
+    The payload is `${invitationId}.${rawToken}`, id and token together. Signing the id is what makes the URL tamper-evident: change `id=` and the signature no longer verifies, so an attacker can't aim a valid token at a different invitation.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{22-26}" color="green">
+    `generateInviteToken` draws 32 bytes from `crypto.getRandomValues` and base64url-encodes them so the token rides in a URL with no escaping. That is 256 bits of entropy: the unguessable property.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{28-45}" color="orange">
+    `signedInviteUrl` signs the payload, encodes the signature, and assembles `/accept-invite?id=&token=&sig=` against `NEXT_PUBLIC_APP_URL`. The raw token travels here, in the email to its recipient, while only its hash reaches the database.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{47-59} "crypto.subtle.verify"`} color="violet">
+    `verifyInviteSignature` checks the signature with the constant-time `crypto.subtle.verify`. It lives beside the signer because it shares the key.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{61-67}" color="blue">
+    `sha256` returns a hex digest, the only form of the token that may touch the database.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+These Web Crypto calls and the SHA-256-at-rest plus HMAC pattern come from chapter 58, lesson 2 (*the signed accept link*); here the project applies them.
+
+:::caution
+Never compare a signature with `===`, `Buffer.compare`, or any byte-by-byte loop that returns early.
+Such a check returns as soon as two bytes differ, and its timing correlates with how many leading bytes matched — an attacker who measures it reconstructs a valid signature one byte at a time.
+`crypto.subtle.verify` is constant-time; use it.
+:::
+
+### The invitation email
+
+`src/emails/invite.tsx` is the React Email the invitee receives, mirroring `welcome-verification.tsx` and reusing the shared `EmailLayout` and `emailTailwindConfig`.
+
+```tsx title="src/emails/invite.tsx"
+import {
+  Body,
+  Button,
+  Head,
+  Heading,
+  Html,
+  Preview,
+  Section,
+  Tailwind,
+  Text,
+} from 'react-email';
+
+import { EmailLayout } from './components/email-layout';
+import { emailTailwindConfig } from './email-tailwind-config';
+
+const APP_NAME = 'Acme';
+
+export type InviteEmailProps = {
+  orgName: string;
+  inviterName: string;
+  role: string;
+  acceptUrl: string;
+  expiresAt: Date;
+};
+
+const InviteEmail = ({
+  orgName,
+  inviterName,
+  role,
+  acceptUrl,
+  expiresAt,
+}: InviteEmailProps) => (
+  <Tailwind config={emailTailwindConfig}>
+    <Html lang="en" dir="auto">
+      <Head>
+        <title>{`You're invited to ${orgName} on ${APP_NAME}`}</title>
+        <meta name="color-scheme" content="light dark" />
+      </Head>
+      <Preview>{`${inviterName} invited you to join ${orgName}`}</Preview>
+      <Body className="bg-zinc-50">
+        <EmailLayout>
+          <Section className="px-6 py-4">
+            <Heading as="h1">Join {orgName}</Heading>
+            <Text>
+              {inviterName} invited you to join {orgName} as a {role}.
+            </Text>
+            <Button
+              href={acceptUrl}
+              className="rounded-md bg-brand px-5 py-3 text-brand-foreground"
+            >
+              Accept invitation
+            </Button>
+            <Text className="text-[12px] text-muted">
+              Or paste this link into your browser: {acceptUrl}
+            </Text>
+            <Text className="text-[12px] text-muted">
+              This invitation expires on {expiresAt.toUTCString()}.
+            </Text>
+          </Section>
+        </EmailLayout>
+      </Body>
+    </Html>
+  </Tailwind>
+);
+
+InviteEmail.PreviewProps = {
+  orgName: 'Acme',
+  inviterName: 'Ada Lovelace',
+  role: 'member',
+  acceptUrl: 'https://acme.example/accept-invite?id=abc&token=xyz&sig=sig',
+  expiresAt: new Date('2026-06-15T00:00:00.000Z'),
+} satisfies InviteEmailProps;
+
+export default InviteEmail;
+```
+
+Two details are deliberate.
+The `acceptUrl` renders twice, as the `Button` href and as plain text below it, because many email clients strip styled buttons and an unclickable link is a dead invite.
+And `InviteEmail.PreviewProps` is what the `react-email` dev preview renders, so you can iterate on the template in the browser without sending a real email.
+
+### The pending-invites query
+
+`src/db/queries/invitations.ts` holds the read the pending panel renders.
+Write `listPendingInvitations` here, and leave `getInvitationById` for the next lesson.
+
+```ts title="src/db/queries/invitations.ts"
+import 'server-only';
+
+import { and, desc, eq, gt } from 'drizzle-orm';
+
+import { db } from '@/db';
+import { invitation } from '@/db/schema/auth';
+import { tenantDb } from '@/db/tenant';
+
+// The pending-invites panel's row view. The inviter relation is aliased `user`
+// (auth:generate names invitation's one(user) join on inviterId `user`, never
+// `inviter`), so the row's `.user` IS the inviter — read its name/email for the
+// "invited by" label. acceptUrl is omitted: the raw token is never stored (only its
+// sha256), so a pending row cannot reconstruct its signed URL; the seed prints the
+// one known URL and the dev Copy button reads it from there.
+export type PendingInvitationRow = {
+  id: string;
+  email: string;
+  role: string | null;
+  expiresAt: Date;
+  acceptUrl?: string;
+  user: { name: string; email: string } | null;
+};
+
+export const listPendingInvitations = async (
+  orgId: string,
+): Promise<PendingInvitationRow[]> => {
+  const rows = await tenantDb(orgId).query.invitation.findMany({
+    where: and(
+      eq(invitation.status, 'pending'),
+      gt(invitation.expiresAt, new Date()),
+    ),
+    with: { user: true },
+    orderBy: desc(invitation.createdAt),
+  });
+
+  return rows.map((row) => ({
+    id: row.id,
+    email: row.email,
+    role: row.role,
+    expiresAt: row.expiresAt,
+    user: row.user ? { name: row.user.name, email: row.user.email } : null,
+  }));
+};
+```
+
+The read goes through `tenantDb(orgId)`, filtered to `status='pending'` and unexpired so a stale invite never shows.
+Two choices look odd until you know why.
+
+First, the relation is named `user`, not `inviter`: `pnpm auth:generate` names the `one(user)` join on `inviterId` simply `user`, so `row.user` is the inviter and `row.user.name` gives the "invited by" label.
+Aliasing it would mean re-editing the generated schema on every regeneration.
+
+Second, `acceptUrl` is in the type but never populated.
+Because only the hash is stored, a pending row has nothing to sign with and cannot reconstruct its signed URL.
+The full URL exists only where the seed printed it at creation, which the dev-only `<CopyAcceptUrl>` button reads.
+
+### The send action
+
+`sendInvitation` lives in `src/lib/invitations/send.ts`.
+It is an `authedAction('admin', schema, fn)`, so by the time your body runs the wrapper has resolved the caller, refused anyone below admin, and parsed the form.
+The order of operations in that body is the lesson, so walk it.
+
+```ts title="src/lib/invitations/send.ts"
+'use server';
+
+import { eq } from 'drizzle-orm';
+import { revalidatePath } from 'next/cache';
+import { createElement } from 'react';
+import { z } from 'zod';
+
+import { db } from '@/db';
+import { logAudit } from '@/db/audit-log';
+import { invitation, member, organization, user } from '@/db/schema/auth';
+import { withTenant } from '@/db/tenant';
+import InviteEmail from '@/emails/invite';
+import { INVITATION_TTL_SECONDS } from '@/lib/auth';
+import { authedAction } from '@/lib/auth/authed-action';
+import { sendEmail } from '@/lib/email';
+import {
+  generateInviteToken,
+  sha256,
+  signedInviteUrl,
+} from '@/lib/invitations/url';
+import { err, isUniqueViolation, ok } from '@/lib/result';
+
+// Module-local, NOT exported: a "use server" module may export only async
+// functions — Next 16.2.7 rejects a non-function export (the Zod schema is an
+// object) at runtime. .toLowerCase() matches the partial-unique lower(email) index;
+// owner is not invitable (the transfer flow, not built).
+const sendInvitationSchema = z.strictObject({
+  email: z.email().toLowerCase(),
+  role: z.enum(['admin', 'member']),
+});
+```
+
+The schema stays module-local: a `'use server'` module may export only async functions, so the Zod object cannot be exported.
+The `z.email().toLowerCase()` normalizes the address before it reaches the partial unique index over `(organizationId, lower(email))`, so the duplicate check treats `Bob@acme.test` and `bob@acme.test` as one.
+
+Now the action body, step by step:
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const sendInvitation = authedAction(
+  'admin',
+  sendInvitationSchema,
+  async ({ email, role }, ctx) => {
+    const existingUser = await db.query.user.findFirst({
+      where: eq(user.email, email),
+    });
+    if (existingUser) {
+      const existingMember = await ctx.db.query.member.findFirst({
+        where: eq(member.userId, existingUser.id),
+      });
+      if (existingMember) {
+        return err(
+          'conflict',
+          \`\${existingUser.name} is already a member of this organization.\`,
+        );
+      }
+    }
+
+    const rawToken = generateInviteToken();
+    const tokenHash = await sha256(rawToken);
+
+    let invitationId: string;
+    try {
+      invitationId = await withTenant(ctx.orgId, async (tx) => {
+        const [row] = await tx
+          .insert(invitation)
+          .values({
+            id: crypto.randomUUID(),
+            organizationId: ctx.orgId,
+            email,
+            role,
+            inviterId: ctx.user.id,
+            status: 'pending',
+            tokenHash,
+            expiresAt: new Date(Date.now() + INVITATION_TTL_SECONDS * 1000),
+          })
+          .returning({ id: invitation.id });
+        if (!row) {
+          throw new Error('invitation insert returned no row');
+        }
+
+        await logAudit(tx, {
+          action: 'invitation.sent',
+          subjectType: 'invitation',
+          subjectId: row.id,
+          payload: { email, role },
+        });
+
+        return row.id;
+      });
+    } catch (e) {
+      if (isUniqueViolation(e)) {
+        return err('conflict', 'This address already has a pending invite.');
+      }
+      throw e;
+    }
+
+    const org = await db.query.organization.findFirst({
+      where: eq(organization.id, ctx.orgId),
+    });
+    const orgName = org?.name ?? 'your organization';
+    const acceptUrl = await signedInviteUrl(invitationId, rawToken);
+
+    const sent = await sendEmail({
+      to: email,
+      subject: \`You're invited to \${orgName}\`,
+      react: createElement(InviteEmail, {
+        orgName,
+        inviterName: ctx.user.name,
+        role,
+        acceptUrl,
+        expiresAt: new Date(Date.now() + INVITATION_TTL_SECONDS * 1000),
+      }),
+      idempotencyKey: \`invite:\${invitationId}\`,
+    });
+
+    revalidatePath('/inspector');
+    return ok({ invitationId, emailSent: sent.ok });
+  },
+);
+`}>
+  <AnnotatedStep meta="{5-18}" color="violet">
+    The existing-member pre-check. Before any insert, it looks up the email's user and, if found, whether they already belong to this org, returning `conflict` with a message naming the person. No row is written for someone already in.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{20-21}" color="blue">
+    Mint the token and immediately hash it. From here `rawToken` lives only in this function; `tokenHash` is the only thing written to the row.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{23-51} "withTenant(ctx.orgId, async (tx) =>"`} color="green">
+    The transaction. The insert is hand-rolled through `tx`, not `auth.api`'s invite endpoint, whose after-hooks run post-commit and would break the one-transaction audit guarantee. `logAudit(tx, ...)` writes the audit row on the same `tx`, so the two co-commit or co-roll-back — the force-fail test checks exactly this.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{52-57} "isUniqueViolation(e)"`} color="orange">
+    A second pending invite to the same email trips the partial unique index, and Postgres raises a `23505`. `isUniqueViolation(e)` recognizes that SQLSTATE and returns `err('conflict', ...)`; any other error rethrows. Without it, a duplicate would 500 the form instead of returning a typed `conflict`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{59-63}" color="blue">
+    The transaction has committed. Only now does the action look up the org name and build the signed accept URL, the first time the raw token is woven into anything that leaves the process.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{65-76} "idempotencyKey: \`invite:\${invitationId}\`"`} color="violet">
+    The send, after the commit. A Resend outage here leaves a recoverable pending invite, not an orphaned email promising a seat that rolled away. The `idempotencyKey` keyed on the invitation id stops a retry from double-sending.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{78-79}" color="green">
+    `revalidatePath('/inspector')` refreshes the panels, then the action returns `ok({ invitationId, emailSent: sent.ok })`. `emailSent` is a flag on the success shape, not an error branch: a failed send still returns `ok` because the row committed, and the flag lets the UI offer a resend.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The sequence: pre-check, then the `withTenant` transaction (insert plus `logAudit`), then commit, then `signedInviteUrl`, then `sendEmail`.
+The commit boundary sits between the two halves on purpose: what must be atomic runs inside the transaction, while the one call to a flaky third party runs outside it, so a failed send degrades gracefully instead of rolling back real work.
+
+The two `conflict` paths guard different things: the pre-check stops inviting someone already in the org, firing before any write, and the `23505` catch stops a second pending invite to the same address, firing at the database.
+Their distinct messages tell the admin which rule they hit.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Crypto: getRandomValues()"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The CSPRNG behind generateInviteToken — why it, not Math.random(), gives the 256-bit unguessable token."
+  />
+  <ExternalResource
+    title="SubtleCrypto: sign() — HMAC"
+    href="https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/sign"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="The exact API signedInviteUrl and verifyInviteSignature call, with the HMAC algorithm parameters."
+  />
+  <ExternalResource
+    title="React Email — Button"
+    href="https://react.email/docs/components/button"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Props and email-client support for the Accept invitation CTA in invite.tsx."
+  />
+  <ExternalResource
+    title="Resend — Idempotency Keys"
+    href="https://resend.com/docs/dashboard/emails/idempotency-keys"
+    icon="simple-icons:resend"
+    iconColor="#000000"
+    description="How the invite:${invitationId} key stops a resend from double-sending the same invitation."
+  />
+</CardGrid>
+
+## Run the suite, then verify by hand
+
+Run the lesson's test suite:
+
+```bash frame="none"
+pnpm test:lesson 5
+```
+
+It first checks your crypto helpers as positive controls, so an unimplemented `url.ts` fails before any row is touched, then drives `sendInvitation` against the live Docker Postgres, cleaning up every row so it stays re-runnable.
+
+The suite can't reach the real email or the live URL; those need a verified domain and your own inbox, so confirm them by hand from the inspector.
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">As the admin (Bob), submit the invite form with your real email and role `member`: the pending panel updates and the audit tail shows an `invitation.sent` entry.</ChecklistItem>
+  <ChecklistItem chip="untested">Your inbox receives the React Email naming the org, inviter, and role, with an `Accept invitation` button linking to `/accept-invite?id=...&token=...&sig=...`.</ChecklistItem>
+  <ChecklistItem chip="untested">In `pnpm db:studio`, the new row's `tokenHash` is 64-char hex and the raw token from the email URL appears in no column.</ChecklistItem>
+  <ChecklistItem chip="untested">Opening the emailed link loads the accept page; clicking Accept does nothing yet, since that action ships next lesson.</ChecklistItem>
+</Checklist>

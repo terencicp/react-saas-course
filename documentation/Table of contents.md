@@ -511,13 +511,13 @@
 - 5 Invitation edge cases and the senior call (Make the senior calls on inviter-removed-before-accept (honor the invite), strict email-mismatch refusal, the double-click race against the `WHERE status='pending'` filter, and the already-a-member short-circuit.)
 - 6 Quiz
 
-### Chapter 059 — Project: org, RBAC, and invitations end-to-end
+### Chapter 059 — Project: org, RBAC, and invitations
 - 1 Project Overview
-- 2 Organization plugin and the active-org session
+- 2 Organization plugin and the active org
 - 3 Append-only audit_logs with RLS
-- 4 Scoped data, the action wrapper, and role changes
+- 4 Scoped data, the action wrapper, role changes
 - 5 Send an invitation with a signed accept URL
-- 6 Accept the invitation across four arrival shapes
+- 6 Accept an org invitation
 
 ---
 

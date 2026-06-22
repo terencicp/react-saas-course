@@ -1980,3 +1980,15 @@ link unfurler | unfurler | A client or service that fetches a pasted link to dra
 URL rewriter | link rewriter | A proxy intercepting outbound links and fetching them first (malware scan, click logging) before the user's click reaches the destination. | first defined: Chapter 058 L3
 token rotation | rotate | Replacing a still-valid secret with a fresh one so any leaked or forwarded copy of the old one stops working. | first defined: Chapter 058 L4
 tombstone | - | A row flipped to a dead state instead of deleted, surviving as a record that the thing existed and was ended. | first defined: Chapter 058 L4
+capability URL | capability-bearing URL | A URL whose mere possession grants the ability to act; the secret rides in the URL itself. | first defined: Chapter 059 L1
+organization plugin | organization() | Better Auth plugin owning the organization/member/invitation tables, the active-org session column, and setActive. | first defined: Chapter 059 L2
+ROLE_RANK | role rank | Object mapping each role to an integer (member 0, admin 1, owner 2) so roleAtLeast is a >= compare. | first defined: Chapter 059 L2
+getActiveMember | auth.api.getActiveMember | Better Auth call reading the active org's membership row fresh from the DB, bypassing the cookie-cached role. | first defined: Chapter 059 L2
+INVITATION_TTL_SECONDS | invitation expiry constant | Module-scope constant for the seven-day invitation lifetime, fed to the plugin's invitationExpiresIn. | first defined: Chapter 059 L2
+base62 | - | ID encoded with 0-9, A-Z, a-z; compact and URL-safe, not a UUID; Better Auth's id format. | first defined: Chapter 059 L3
+superuser (Postgres) | superuser | Postgres role with all privileges, implicitly bypassing every RLS policy; the default postgres role. | first defined: Chapter 059 L3
+facade | scoped-data facade | A single object every caller goes through, hiding the raw client behind one safe surface; tenantDb is the only tenant-scoped data path. | first defined: Chapter 059 L4
+getInvitationById | unscoped read | The project's one deliberately unscoped query, run through the raw db (not tenantDb); the invitee is not yet a member, so the org is derived from the loaded row. | first defined: Chapter 059 L6
+verify ladder | accept-invite ladder | Fixed-order checks (signature, row, hash, expiry, status, identity) the accept-invite page runs to pick exactly one of seven arrival surfaces. | first defined: Chapter 059 L6
+tamper-evident | - | Property of a signed value where any edit (e.g. flipping the org id) breaks the signature and is detected, not honored. | first defined: Chapter 059 L5
+non-extractable | non-extractable key | A CryptoKey imported with extractable=false: raw bytes can never be read back out, so a logged key object can't leak the secret. | first defined: Chapter 059 L5

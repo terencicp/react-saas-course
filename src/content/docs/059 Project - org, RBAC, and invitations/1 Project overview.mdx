@@ -1,0 +1,252 @@
+---
+title: "Project: org, RBAC, and invitations"
+chapter-id: 059
+course-progress: 0.574
+sidebar:
+  order: 1
+  label: Project overview
+rewrites: 2
+---
+
+import { CardGrid, Card, FileTree, Steps } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The auth dashboard you shipped answers one question: who is this request from?
+A real app needs two more before it can act: which organization the request is in, and whether this person may do what they're asking.
+This chapter turns that single-user dashboard into a multi-tenant app with three roles (`owner`, `admin`, `member`), an audit trail the database itself protects, and an invitation handshake that turns an email link into a seat in the org.
+
+The value is in the structure, not the keystrokes.
+Wiring an organization plugin or hashing a token is a few lines; the lesson is making cross-tenant data leaks refuse to compile, and making the `audit_logs` table append-only at the database level.
+
+The screenshots below are the *finished* build this chapter produces, not what your starter renders today.
+
+<Figure caption="The finished build: the inspector page, and the invite handshake from send to seat.">
+  <TabbedContent syncKey="building-flow">
+    <TabbedItem label="Inspector" caption="The finished /inspector page: active-org banner, members panel with per-row role selects, invite form, pending-invitations panel, and audit-log tail.">
+      <Screenshot viewport="desktop">
+        <img
+          src="/screenshots/059/l5-desktop-1280.png"
+          alt="The /inspector page acting as Bob (admin of Acme): an 'Active org' banner reading 'Acme' and 'admin' with an org switcher and an acting-user switcher; a Members panel listing Alice, Bob, and Carol each with a per-row role select; an 'Invite a member' panel with Email and Role fields above a Send invitation button; a Pending invitations panel showing 'newcomer@acme.test · member' with a Copy accept URL button; an Audit log panel showing a 'member.role-changed' entry; and a Raw helpers panel reading 'auditLogs count (current org) 1'."
+        />
+      </Screenshot>
+    </TabbedItem>
+
+    <TabbedItem label="Invite flow" caption="The accept screen the invitee lands on after clicking the emailed link: a consent card naming the org and role, with an explicit Accept invitation button — the server gates the join, not the link visit.">
+      <Screenshot viewport="desktop">
+        <img
+          src="/screenshots/059/l6-desktop-1280.png"
+          alt="The /accept-invite consent screen: a centered card titled 'Join Acme', the line 'Bob invited you to Acme as member', and an 'Accept invitation' button. The invite is still pending — accepting requires the explicit button press, not the link visit."
+        />
+      </Screenshot>
+    </TabbedItem>
+  </TabbedContent>
+</Figure>
+
+## What you'll practice
+
+These five lessons reuse patterns from earlier units — the organization model, the action wrapper, RLS, the signed URL — for multi-tenancy. You will:
+
+- **Model multi-tenancy.** Make the organization the unit of tenancy: carry `activeOrganizationId` on the session, and resolve the acting `{ user, orgId, role }` through one `requireOrgUser` helper reading the server-validated session.
+- **Make the two most common tenancy bugs uncompilable.** A missing org filter on a query and a missing role check on a mutation are what leak data across tenants. A `tenantDb(orgId)` facade and an `authedAction(role, schema, fn)` wrapper fold in each predicate, so code that omits it fails to compile.
+- **Build an append-only audit trail.** Keep `audit_logs` append-only at two levels: application discipline and a Postgres row-level policy that denies every `UPDATE` and `DELETE`. Write each row in the same transaction as the change it records.
+- **Design a <Term definition="A URL whose possession alone grants the ability to act: holding the accept link is what lets the invitee join, so the secret token lives in the URL.">capability-bearing URL</Term>.** Carry a 32-byte random token and an HMAC signature in the accept link, store only the token's SHA-256 hash, and email it only after the transaction commits.
+- **See server-side authorization do the work.** The inspector renders the role `<Select>` and invite form to every role, including a plain `member`, so you confirm the refusal happens on the server, not from a hidden button on the client.
+
+## Architecture
+
+Four layers stack, and a verification surface lets you watch them work. Each build lesson fills in one layer.
+
+- **Session layer.** Better Auth's organization plugin owns the `organization`, `member`, and `invitation` tables. You add an `activeOrganizationId` column to `session`, `tokenHash` and `acceptedAt` columns to `invitation`, and a `session.create` hook that seeds the active org when a session is minted.
+- **Access layer.** `requireOrgUser()` resolves the acting `{ user, orgId, role }`. `tenantDb(orgId)` is the only scoped data facade, and `authedAction(role, schema, fn)` the only shape a privileged Server Action takes. Both fold in the org predicate, so omitting it is a type error, not a silent leak.
+- **Audit layer.** The `auditLogs` table carries row-level security: a per-org read-and-insert policy keyed on `current_setting('app.org_id')`, plus deny-everything policies for `UPDATE` and `DELETE`. `withTenant(orgId, fn)` opens the transaction that sets the session variable, and `logAudit(tx, event)` writes one row, running only inside a transaction by its signature. This is the project's only table with RLS; every other tenant-owned table is scoped at the application layer through `tenantDb`.
+- **Invitation layer.** `signedInviteUrl` and `verifyInviteSignature` bracket the capability URL. `sendInvitation` writes the invitation row and its audit event, then emails after the transaction commits. The provided `/accept-invite` page runs the verification ladder and branches across arrival surfaces; `acceptInvitation` joins the org and audits in one transaction, then switches the active org after commit.
+- **Verification surface.** The provided `/inspector` page, seeded with two orgs, four mixed-role users, one pending invite, and one audit row, exercises every helper and action you build. A dev-only acting-user switcher toggles between identities without signing out.
+
+## Starting file tree
+
+You start from the layout below, which carries in the full toolchain and stack from the auth and email projects.
+Bold files are the stubs you fill this chapter; each comment opens with the lesson that fills it (`TODO L2`, `TODO L3`, …) and what lands there.
+Everything else is provided, commented only where a lesson touches it or it changed from a project you carried in.
+
+<FileTree>
+- .env.example *provided — prior entries plus the new `INVITATION_SIGNING_SECRET`*
+- docker-compose.yml *provided — local `postgres:18`*
+- drizzle.config.ts *provided — three-file schema array, snake_case*
+- scripts/
+  - seed.ts *provided — 2 orgs (Acme, Globex), 4 mixed-role users, 1 pending invite, 1 audit row*
+- package.json *provided — `db:*`, `auth:generate`, `dev`, `verify`, `test:lesson`*
+- src/
+  - **env.ts** *TODO L5 — add `INVITATION_SIGNING_SECRET` to the server block*
+  - proxy.ts *provided — the cookie-presence gate from the auth project*
+  - lib/
+    - **auth.ts** *TODO L2 — add the `organization()` plugin and the active-org hook; complete `requireOrgUser`*
+    - **auth-schema.config.ts** *TODO L2 — mirror the `organization()` config so the CLI emits the plugin tables*
+    - auth-client.ts *provided — client with `organizationClient()` registered*
+    - email.ts *provided — the Resend `sendEmail` wrapper*
+    - result.ts *provided — `Result<T>`, `ok`, `err`, `isUniqueViolation`*
+    - auth/
+      - **roles.ts** *TODO L2 — `ROLE_RANK` and `roleAtLeast` (the `Role` type is provided)*
+      - **authed-action.ts** *TODO L4 — the `authedAction(role, schema, fn)` wrapper*
+      - error-mapping.ts *provided — `mapAuthError`*
+    - invitations/
+      - **url.ts** *TODO L5 — `generateInviteToken`, `signedInviteUrl`, `verifyInviteSignature`, `sha256`*
+      - **send.ts** *TODO L5 — the `sendInvitation` action*
+      - **accept.ts** *TODO L6 — the `acceptInvitation` action*
+      - **manage.ts** *TODO L4 — the `changeMemberRole` action*
+  - db/
+    - **index.ts** *TODO L3 — spread `auditSchema` into the Drizzle client*
+    - **audit.ts** *TODO L3 — the `auditLogs` table plus its RLS policies*
+    - **audit-log.ts** *TODO L3 — `logAudit(tx, event)`*
+    - **tenant.ts** *TODO L3 `withTenant`, L4 `tenantDb` facade*
+    - columns.ts *provided — shared `timestamps` group*
+    - schema.ts *provided — `emailSuppressions`*
+    - schema/
+      - **auth.ts** *provided, regenerated by `auth:generate` after the org plugin lands — commit the diff*
+    - queries/
+      - **members.ts** *TODO L4 — `listMembers(orgId)`*
+      - **invitations.ts** *TODO — `listPendingInvitations` (L5), `getInvitationById` (L6)*
+      - **audit.ts** *TODO L3 — `auditLogCount`, `recentAuditLogs` (read through `withTenant`)*
+  - emails/
+    - **invite.tsx** *TODO L5 — the `InviteEmail` template*
+    - welcome-verification.tsx *provided — React Email pattern reference*
+    - components/email-layout.tsx *provided — the `EmailLayout` wrapper*
+  - app/
+    - (protected)/
+      - dashboard/
+        - org-switcher.tsx *provided — calls `authClient.organization.setActive` + `router.refresh()`*
+      - inspector/
+        - page.tsx *provided — six Suspense-wrapped verification panels*
+        - **_data.ts** *TODO L2 — `getInspectorContext` with the dev acting-user override*
+        - actions.ts *provided — dev-only acting-user switch + reseed*
+        - _components/ *provided — acting-user switcher, invite form, role select, copy-accept-url*
+    - (auth)/
+      - accept-invite/
+        - page.tsx *provided — the verify ladder + arrival surfaces*
+        - accept-form.tsx *provided — the client island posting to `acceptInvitation`*
+    - onboarding/
+      - create-org/page.tsx *provided — calls `authClient.organization.create`*
+- tests/
+  - lessons/ *provided — the `Lesson <n>` suites, run via `pnpm test:lesson <n>`*
+</FileTree>
+
+Plugin-owned tables come from a code generator, not your keyboard.
+Once you add the `organization()` plugin next lesson, `pnpm auth:generate` reads `src/lib/auth-schema.config.ts` and rewrites `src/db/schema/auth.ts` with the `organization`, `member`, and `invitation` tables.
+Run it and commit the diff; never hand-edit that file, since the next person to run the CLI silently overwrites your changes.
+
+The inspector's "switch acting user" control is dev-only, gated behind `NODE_ENV !== 'production'`.
+It writes a cookie swapping which seeded identity the page renders as, so you can watch RBAC behave as owner, admin, and member without three real accounts.
+In production it would be a privilege-escalation hole: any user could become any other.
+
+## Roadmap
+
+Five build lessons turn the tree of stubs into the running app. Each ends on a state you can confirm in the inspector.
+
+<CardGrid>
+  <Card title="Lesson 2 — Organization plugin and the active-org session" icon="puzzle">
+    Installs the organization plugin, seeds `activeOrganizationId` on session create, and ships `roleAtLeast` plus `requireOrgUser`, so the inspector's active-org banner renders a real identity.
+  </Card>
+  <Card title="Lesson 3 — Append-only audit_logs with RLS" icon="database">
+    Adds the `auditLogs` table with deny-`UPDATE`/`DELETE` policies and the transaction-required `logAudit(tx, event)` writer behind `withTenant`.
+  </Card>
+  <Card title="Lesson 4 — Scoped data, the action wrapper, and role changes" icon="padlock">
+    Builds the `tenantDb(orgId)` facade and the `authedAction(role, schema, fn)` wrapper, then ships `changeMemberRole`, which refuses owner targets and last-owner demotion and audits in-transaction.
+  </Card>
+  <Card title="Lesson 5 — Send an invitation with a signed accept URL" icon="email">
+    Generates the token, hashes it at rest, HMAC-signs the URL, writes the row and audit event in one transaction, and sends the React Email after commit.
+  </Card>
+  <Card title="Lesson 6 — Accept the invitation behind the provided arrival surfaces" icon="approve-check-circle">
+    Ships `acceptInvitation` (and `getInvitationById`) behind the provided `/accept-invite` page: it joins the org, auto-verifies the email, and audits in one transaction, then switches the active org after commit.
+  </Card>
+</CardGrid>
+
+## Setup
+
+Work through these in order. You are done when the dev server boots and the dashboard flow you carried in still works. You are standing up the shell here; the org context, audit table, and invite flow stay stubs.
+
+:::caution[Use the verified sender, not the sandbox]
+Set `EMAIL_FROM` to the verified-domain sender from the email project, not Resend's sandbox address: the sandbox will not deliver to your personal inbox, and the final lesson's accept-the-invite step needs a real email to arrive. Put the verified value in `.env` now.
+:::
+
+<Steps>
+1. Get the starter codebase from the [project repository](https://github.com/terencicp/react-saas-course-projects), under `Chapter 059/start/`:
+
+   ```bash
+   pnpm dlx degit terencicp/react-saas-course-projects/Chapter-059/start org-rbac-invitations
+   cd org-rbac-invitations
+   ```
+
+   `degit` copies that folder into a fresh `org-rbac-invitations` directory with no git history. Each project ships `start/` and `solution/` siblings, so you can diff against the reference anytime.
+
+2. Bring up Postgres:
+
+   ```bash
+   docker compose up -d
+   ```
+
+   This starts the `postgres:18` service on port `5432` in the background. The first run pulls the image; later runs are instant.
+
+3. Install the dependencies:
+
+   ```bash
+   pnpm install
+   ```
+
+   The repo is pnpm-only: a `preinstall` hook blocks other package managers, and versions are pinned.
+
+4. Copy the example env file and fill in the values (the table below covers every variable):
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   The database variables already match the Docker Postgres above. You supply three: a `BETTER_AUTH_SECRET`, your carried-in Resend values, and a fresh `INVITATION_SIGNING_SECRET`.
+
+5. Run the migrations and seed the database:
+
+   ```bash
+   pnpm db:migrate && pnpm db:seed
+   ```
+
+   This applies the carry-in schema and loads the two orgs, four users, one pending invite, and one audit row the inspector reads. Your own org, audit, and invitation tables land across the build lessons.
+
+6. Start the dev server:
+
+   ```bash
+   pnpm dev
+   ```
+
+   The Next app comes up at `http://localhost:3000`.
+</Steps>
+
+Both secrets want the same kind of value: 32 base64-encoded bytes of CSPRNG output, which this command produces. Run it twice and give each secret a *different* output; the two must never match.
+
+```bash
+openssl rand -base64 32
+```
+
+| Variable | Purpose | How to get it |
+| --- | --- | --- |
+| `DATABASE_URL` | Postgres connection string. | Matches the `docker-compose.yml` defaults; leave as-is. |
+| `DATABASE_URL_UNPOOLED` | Same value locally. The pooled/unpooled split lets a managed Postgres drop in later without renaming anything. | Leave as-is. |
+| `SEED` | Seed toggle. | Leave as `1`. |
+| `BETTER_AUTH_SECRET` | Signs session cookies and tokens. Server-only. | A fresh value from `openssl rand -base64 32`, or the one carried in from the auth project. |
+| `BETTER_AUTH_URL` | The auth server's origin. | `http://localhost:3000`. |
+| `RESEND_API_KEY` | Authenticates the invitation-email send. | Carry-in from the email project: your Resend API key. |
+| `EMAIL_FROM` | The verified sender identity, in `Name <addr>` form. | Carry-in from the email project; the address must live on a domain you verified in Resend. |
+| `EMAIL_REPLY_TO` | The reply-to address. | Carry-in from the email project. |
+| `INVITATION_SIGNING_SECRET` | The HMAC key that signs the accept URL. Distinct from `BETTER_AUTH_SECRET`. | A *second*, fresh value from `openssl rand -base64 32`. You add it to `src/env.ts` in Lesson 5; set it in `.env` now so it's ready. |
+| `NEXT_PUBLIC_APP_NAME` | The app name shown in the email chrome. | Carry-in; leave as the default. |
+| `NEXT_PUBLIC_APP_URL` | The public app origin, and the base host for the signed accept URL. | `http://localhost:3000`. |
+
+On success, `pnpm dev` serves the same sign-up, sign-in, sign-out, and `/dashboard` flow you carried in. Open `/inspector` and you get placeholder panels, not a working build: the active-org banner reads "No active organization", and the members, pending, and audit panels show empty states. That is correct: the helpers behind them are deliberate stubs that return empty data instead of throwing, so the page renders while the real org context and scoped data layer are still ahead.
+
+:::tip
+A green `pnpm dev` and an `/inspector` page of placeholder panels is the right finish line. Next, *Organization plugin and the active-org session* installs the plugin and that banner starts rendering a real org and role.
+:::
