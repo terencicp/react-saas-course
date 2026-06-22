@@ -1992,3 +1992,28 @@ getInvitationById | unscoped read | The project's one deliberately unscoped quer
 verify ladder | accept-invite ladder | Fixed-order checks (signature, row, hash, expiry, status, identity) the accept-invite page runs to pick exactly one of seven arrival surfaces. | first defined: Chapter 059 L6
 tamper-evident | - | Property of a signed value where any edit (e.g. flipping the org id) breaks the signature and is detected, not honored. | first defined: Chapter 059 L5
 non-extractable | non-extractable key | A CryptoKey imported with extractable=false: raw bytes can never be read back out, so a logged key object can't leak the secret. | first defined: Chapter 059 L5
+list view | list-view anatomy | A list screen built from four pillars working as one state: filter, sort, search, and paginate. | first defined: Chapter 060 L1
+share-and-refresh contract | - | The promise that list-view URL state survives a new tab, a refresh, a shared link, and the back button. | first defined: Chapter 060 L1
+view parameters | view state | The filter/sort/search/page a URL pins; it saves the question, not a frozen snapshot of the rows. | first defined: Chapter 060 L1
+parser builder (nuqs) | parseAs* | A nuqs function declaring one URL param's type that validates-or-defaults (parseAsString, parseAsInteger, etc.). | first defined: Chapter 060 L1
+parseAsStringEnum | - | nuqs parser builder constraining a param to a fixed set of string literals, falling back to the default otherwise. | first defined: Chapter 060 L1
+parseAsString | - | nuqs parser builder for a plain string param. | first defined: Chapter 060 L1
+.withDefault (nuqs) | withDefault | nuqs parser method setting a default; when the param equals it, nuqs strips it from the URL. | first defined: Chapter 060 L1
+createSearchParamsCache | searchParamsCache | nuqs/server reader: composes parsers into a cache that parses and validates a page's searchParams server-side. | first defined: Chapter 060 L1
+useQueryState | - | nuqs client hook returning a param's current value and a setter that writes it to the URL. | first defined: Chapter 060 L1
+NuqsAdapter | - | nuqs root-layout adapter teaching it the framework's router; wrap once around the app. | first defined: Chapter 060 L1
+filter shape | - | A reusable pattern for encoding one kind of filter as URL state: single enum, multi-value, range, or boolean. | first defined: Chapter 060 L2
+multi-value filter | - | A filter holding several values in one param, joined by commas by default in nuqs. | first defined: Chapter 060 L2
+range filter | - | A bounded filter modeled as two separate flat params (from/to), not one blob. | first defined: Chapter 060 L2
+parseAsArrayOf | - | nuqs parser builder wrapping a single-value parser into an array parser that splits/joins on a separator (comma by default). | first defined: Chapter 060 L2
+parseAsIsoDate | - | nuqs parser builder reading an ISO-8601 date string into a Date, falling back to default on malformed input. | first defined: Chapter 060 L2
+parseAsBoolean | - | nuqs parser builder for a boolean param; with a false default the param appears only when on. | first defined: Chapter 060 L2
+useQueryStates | merge-setter | nuqs client hook taking an object of parsers and returning one setter that updates only the named keys, leaving the rest untouched. | first defined: Chapter 060 L2
+reset invariant | - | Every write that changes what rows are shown bundles cursor: null into the same setter call. | first defined: Chapter 060 L2
+active-filter chips | filter chips | A row of pills above the table, one per active filter, each with a ✕ to clear that one filter. | first defined: Chapter 060 L2
+shape injection | shape-injection | Letting a URL value reach a query's structure (e.g. which column to sort by) rather than its data; closed by gating on an enum. | first defined: Chapter 060 L2
+bounded set | - | A list whose maximum size you can name up front; what licenses offset pagination. | first defined: Chapter 060 L4
+shallow (nuqs) | shallow write | A nuqs write that updates the URL on the client only and skips re-rendering the server; shallow: false reaches the server. | first defined: Chapter 060 L3
+throttle (rate-limit) | throttle(ms) | Act at most once per N-ms window regardless of event count; fits a continuous stream like a dragged slider. | first defined: Chapter 060 L3
+limitUrlUpdates | - | nuqs option, set on the parser, that bounds how often the URL may change via a debounce or throttle limiter; replaced throttleMs. | first defined: Chapter 060 L3
+typed vs committed | typed, committed | Typed is the per-keystroke box value in component state; committed is the settled value written to the URL and queried by the server. | first defined: Chapter 060 L3
