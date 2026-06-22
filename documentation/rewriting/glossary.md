@@ -2086,3 +2086,59 @@ forged tenancy | forged organization_id | Caller-influenceable tenancy claim (he
 carry-channel | carry channel | A value the app sets, sends through an external service, and reads back on the event; attacker-influenceable, so distrusted. | first defined: Chapter 065 L6
 blast radius | - | The set of code a change can break or force you to touch; small means impact is contained to one place. | first defined: Chapter 065 L5
 SPA | single-page application | Web app that loads once and updates the view with client-side JS instead of full page loads, keeping its own nav history. | first defined: Chapter 065 L5
+after | after() | next/server primitive scheduling a callback to run after the response ships, in the same invocation; runs once, no retry, bounded by maxDuration. | first defined: Chapter 066 L1
+waitUntil | - | Platform primitive keeping a serverless function alive past the response until a callback finishes or maxDuration hits; after() builds on it. | first defined: Chapter 066 L1
+maxDuration | wall-clock cap | A serverless function's hard time limit; hit it and the function is killed mid-run, and every second up to it is billed to the request. | first defined: Chapter 066 L1
+p99 | 99th-percentile latency | The latency 99% of requests beat; the slow 1% tail real users complain about. | first defined: Chapter 066 L1
+Vercel Cron | cron | Platform-native scheduler firing a secured HTTP GET at a route handler on a UTC clock; no queue, worker, or second platform. | first defined: Chapter 066 L2
+external scheduler | - | A service running on its own clock, separate from your app, whose only job is firing requests at declared times. | first defined: Chapter 066 L2
+serverless function invocation | invocation | One short-lived run of a handler, spun up for a single request, torn down after, with a wall-clock cap and no memory of other runs. | first defined: Chapter 066 L2
+best-effort delivery | best-effort | Delivery that can both miss and duplicate a scheduled run; weaker than at-least-once, so handlers must self-heal both. | first defined: Chapter 066 L2
+reconciliation (cron) | catch-up-based | Processing all outstanding work from a known-good baseline every run, not a remembered delta; a miss is caught up next run, a duplicate finds nothing left. | first defined: Chapter 066 L2
+job runner | - | Separate platform for off-request background work with durable retries, longer limits, and a run timeline; Trigger.dev is the course pick. | first defined: Chapter 066 L2
+five-field cron expression | cron expression | Minute, hour, day-of-month, month, day-of-week; Vercel evaluates it in UTC, numbers only, the two day fields mutually exclusive. | first defined: Chapter 066 L2
+durable run | durable runs | A run that survives worker crashes, redeploys, and restarts by checkpointing between steps. | first defined: Chapter 066 L3
+exponential backoff | - | Retry delays that grow geometrically, with jitter, so retries spread out instead of stampeding. | first defined: Chapter 066 L3
+concurrency limit | concurrency limits | Cap on how many runs of a queue execute at once; back-pressure. | first defined: Chapter 066 L3
+waitpoint | waitpoints | A durable, resumable pause token: the run parks, the worker frees, an external signal resumes it. | first defined: Chapter 066 L3
+project ref | proj_ ref | The proj_... id in trigger.config.ts linking local code to a Trigger.dev cloud project. | first defined: Chapter 066 L4
+dirs (trigger.config) | dirs | trigger.config.ts array listing folders Trigger.dev scans for task files; files outside are silently ignored. | first defined: Chapter 066 L4
+Standard Schema | - | Validator-agnostic schema interface (Zod, Valibot, ArkType all implement it), so the validation library isn't locked in. | first defined: Chapter 066 L4
+Trigger.dev task | task() | The unit you define and call: an object with id and run; bare task has an untyped payload. | first defined: Chapter 066 L4
+schemaTask | - | task plus a schema; parses the payload (a Standard Schema validator) before run executes, typed inside. | first defined: Chapter 066 L4
+durable identity (task id) | task id | A task's id string: its permanent identity; runs reference it across deploys, renaming orphans every run. | first defined: Chapter 066 L4
+ctx (Trigger.dev) | run context | Per-run context passed as run's second arg: run.id, attempt.number, environment; not request context, no session or headers. | first defined: Chapter 066 L4
+handle (trigger) | run handle | The { id, ... } object trigger returns the moment a run is enqueued; carries the run id, not the result. | first defined: Chapter 066 L4
+triggerAndWait | - | Pauses a parent run until a child task finishes, returning its typed result; legal only inside another task, not request code. | first defined: Chapter 066 L4
+queue (Trigger.dev) | queue() | Predeclared at module scope; caps how many runs of a task execute at once for downstream back-pressure. | first defined: Chapter 066 L4
+concurrencyKey | - | Value passed at trigger time splitting a queue's limit into one independent lane per key; e.g. one lane per org. | first defined: Chapter 066 L4
+static schedule | schedules.task | One global schedule declared in code and deployed with the task via schedules.task. | first defined: Chapter 066 L4
+dynamic schedule | schedules.create | One schedule per tenant created at runtime via schedules.create; cron is a plain string, timezone top-level. | first defined: Chapter 066 L4
+externalId | - | Your own domain id attached to a dynamic schedule, so you look it up, deactivate, or delete it by your id. | first defined: Chapter 066 L4
+deduplicationKey | - | Key making schedules.create idempotent; a repeat call with the same key updates instead of duplicating. | first defined: Chapter 066 L4
+metadata.set (Trigger.dev) | run metadata | Mutable per-run object written from inside a task; the dashboard renders it live for progress like "47 of 200". | first defined: Chapter 066 L4
+locals (Trigger.dev) | locals API | v4 per-run resource container populated in middleware via locals.create<T>(); replaces the deprecated per-task init hook. | first defined: Chapter 066 L4
+checkpoint | - | Saved snapshot of a run's progress, written at every wait/triggerAndWait and end of attempt; a crash resumes from the most recent one. | first defined: Chapter 066 L5
+worker (Trigger.dev) | - | The Trigger.dev compute process running a task, separate from the Vercel function that triggered it. | first defined: Chapter 066 L5
+AbortTaskRunError | - | Thrown inside a task to fail the run immediately, skipping all remaining retries; for permanent failures retrying cannot fix. | first defined: Chapter 066 L5
+transient (failure) | transient failure | A failure likely to clear on its own (5xx, network error, 429); worth retrying. | first defined: Chapter 066 L5
+run-level retry | - | The runtime re-running a whole task on an unhandled throw, restarting from the most recent checkpoint; set by the retry block. | first defined: Chapter 066 L5
+call-level retry | - | An SDK or HTTP client retrying a single failed request on its own, restarting only that call rather than the whole run. | first defined: Chapter 066 L5
+idempotency key (Trigger.dev) | idempotencyKey | Stable identifier on a trigger; within its TTL, re-triggering with the same key returns the original run instead of starting a new one. | first defined: Chapter 066 L5
+idempotencyKeyTTL | - | How long an idempotency key keeps returning the original run; a duration string like '5m' or '24h'; defaults to 30 days. | first defined: Chapter 066 L5
+scope (idempotency) | - | Namespacing for an idempotency key: 'run' (per parent run, default), 'attempt' (per retry), or 'global' (key alone). | first defined: Chapter 066 L5
+wait.for | - | Durable relative pause; checkpoints, frees the worker (no compute billed), resumes after the duration on a possibly new worker. | first defined: Chapter 066 L5
+wait.until | - | Durable pause until an absolute wall-clock Date; same checkpoint/free-worker/crash-safe semantics as wait.for; past dates resolve immediately. | first defined: Chapter 066 L5
+cooperative cancellation | cooperative | Cancellation where the runtime stops new steps but an in-flight step halts only if it honors the abort signal. | first defined: Chapter 066 L5
+wait.createToken | createToken | Mints a waitpoint token (id, url, publicAccessToken); takes a timeout and optional idempotencyKey. | first defined: Chapter 066 L6
+wait.forToken | forToken | Parks the run on a token (a checkpoint); resumes with the completion payload or ok:false on timeout. | first defined: Chapter 066 L6
+wait.completeToken | completeToken | Completes a token from your own SDK code, resuming the parked run; one-shot, second call is a no-op. | first defined: Chapter 066 L6
+programmatic completion | - | Completing a waitpoint token from your own code via the SDK rather than an external callback URL. | first defined: Chapter 066 L6
+token.url (waitpoint) | - | A waitpoint's server-to-server completion webhook; no CORS, hand to a backend partner. | first defined: Chapter 066 L6
+token.publicAccessToken | publicAccessToken | Bearer token a browser uses to complete a waitpoint via the CORS-enabled endpoint. | first defined: Chapter 066 L6
+human-in-the-loop | human in the loop | A workflow that pauses for a person to decide before continuing. | first defined: Chapter 066 L6
+fan-in | - | Spawn N units of work, resume only when all N finish; opposite of fan-out. | first defined: Chapter 066 L6
+batchTriggerAndWait | - | Triggers many children at once and parks the parent on all of them; returns a typed array once all settle. | first defined: Chapter 066 L6
+predicate-idempotent | - | A job whose own first run invalidates its WHERE clause, so re-running changes nothing and it needs no dedup key. | first defined: Chapter 066 L7
+caller / callee | caller, callee | The caller is the code that triggers a task (the app); the callee is the triggered task; deploy the callee first. | first defined: Chapter 066 L7
+concurrency seat | - | A unit of paid concurrency: one slot for a run to execute in at the same time as others. | first defined: Chapter 066 L7
