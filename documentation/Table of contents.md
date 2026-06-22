@@ -547,7 +547,7 @@
 
 ## Unit 11 — Webhooks and Stripe Billing
 
-### Chapter 063 — Webhook ingestion
+### Chapter 063 — Webhook ingestion and idempotency
 - 1 Verify before parse (Teaches the route handler trust boundary for Stripe webhooks — raw body via `request.text()`, HMAC-SHA-256 over `${t}.${rawBody}`, constant-time compare, the 5-minute timestamp tolerance, the `stripe.webhooks.constructEvent` SDK helper, and returning 400 with RFC 9457 problem+json on failure before any business logic runs.)
 - 2 Claim once, mutate once (Teaches the `processed_events(provider, eventId)` ledger with `INSERT ... ON CONFLICT DO NOTHING RETURNING` as atomic check-and-claim, wrapping the dedup insert and the business mutation in one transaction, returning 200 (not 4xx) on lost-claim, and the 30-second Stripe timing budget that pushes side-effects to background jobs.)
 - 3 Newer wins, single writer (Teaches the `event.created` plus `last_event_at` predicate inside the UPDATE WHERE for out-of-order delivery, UPDATE-RETURNING to detect stale no-ops, the "webhook is the only writer" rule, and the success-page read-and-poll via `router.refresh()` that closes the redirect-versus-webhook race without double-writing entitlements.)

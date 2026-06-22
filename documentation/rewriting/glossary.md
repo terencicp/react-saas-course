@@ -2027,3 +2027,15 @@ conflict() helper | conflict(current) | Project helper spreading err('conflict',
 CRDTs and operational transforms | CRDT, operational transform, OT | Algorithms merging concurrent edits so all writers' changes survive; basis of real-time collaborative editors; out of scope here. | first defined: Chapter 061 L3
 fluent builder | fluent interface, chainable builder | A builder whose methods each return the builder, so calls chain into one readable sentence. | first defined: Chapter 062 L3
 resolveView | read-layer view gate | Pure RBAC step collapsing the all view to active for non-admins, so a hand-typed ?view=all is refused at the read, not the hidden tab. | first defined: Chapter 062 L3
+one-shot stream | single-read body | A request body you can consume exactly once; reading drains it and a second read sees an empty body. | first defined: Chapter 063 L1
+entitlement | - | The access a customer earns by paying — plan, seats, or feature flag granted once billing confirms. | first defined: Chapter 063 L1
+constructEvent | stripe.webhooks.constructEvent | Stripe SDK call that verifies the signature, HMAC, and tolerance in one line and returns a typed event or throws. | first defined: Chapter 063 L1
+Stripe CLI | stripe listen, stripe trigger | Local tool that tunnels Stripe events to localhost and fires synthetic events for testing webhooks. | first defined: Chapter 063 L1
+replay attack | replay | Resending a captured authentic request so its valid signature passes again; blocked by a timestamp tolerance. | first defined: Chapter 063 L1
+at-least-once delivery | at-least-once | Sender guarantees a message arrives one or more times, never zero; duplicates expected, receiver must tolerate them. | first defined: Chapter 063 L2
+time-of-check-to-time-of-use | TOCTOU | Race where a condition is checked then acted on, but the world changes in the gap so the action runs on a stale fact. | first defined: Chapter 063 L2
+high-water mark | last_event_at | Stored marker of the newest value seen so far; here the created timestamp of the most recent event applied, so older events are stale. | first defined: Chapter 063 L3
+provenance (security) | who sent this | Who a request is from; proved by a signature (webhook) or auth (public route); orthogonal to attempt identity. | first defined: Chapter 063 L4
+attempt identity | sameness | Whether an incoming request is the same attempt already seen; the key's job, answered by a unique constraint. | first defined: Chapter 063 L4
+natural domain unique | natural unique | A unique constraint on real domain columns (e.g. (orgId, slug), email) that already dedups, so no extra key column is needed. | first defined: Chapter 063 L4
+Svix | - | Hosted webhooks-as-a-service layer; standardizes signature headers and delivery so every Svix-backed webhook verifies the same way. Resend uses it. | first defined: Chapter 063 L5
