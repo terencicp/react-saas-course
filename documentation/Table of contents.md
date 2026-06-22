@@ -565,7 +565,7 @@
 - 7 Wrapping an SDK (Teaches the three-test threshold for wrapping an SDK (read-hostile shape, real swap cost, discipline to centralize), and applies it to show why auth and billing earn interfaces while Resend, Trigger.dev, and R2 only earn helpers.)
 - 8 Quiz
 
-### Chapter 065 — Project: From Stripe webhook to plan entitlement
+### Chapter 065 — Project: Stripe webhook to entitlement
 - 1 Project Overview
 - 2 Verify before you parse
 - 3 Claim the event inside one transaction

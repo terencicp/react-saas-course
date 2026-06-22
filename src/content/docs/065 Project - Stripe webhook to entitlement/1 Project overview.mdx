@@ -1,0 +1,229 @@
+---
+title: Project overview
+chapter-id: 65
+course-progress: 0.6313
+rewrites: 2
+sidebar:
+  order: 1
+  label: Project overview
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import { FileTree, CardGrid, Card, Steps } from '@astrojs/starlight/components';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+This project welds the last two chapters, webhook discipline and the Stripe billing model, into one runnable loop.
+Inbound, three Stripe webhooks (`checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`) reach one route handler that verifies, dedupes, and projects them into a single derived `plan_entitlements` row per organization.
+Outbound, three methods behind `lib/billing/` — `upgrade`, `openPortal`, `requirePlan` — let the app start a subscription, manage it, and gate paywalled content.
+One rule joins the two sides: only the webhook writes the entitlement; everything else reads it.
+You will prove the whole loop locally with `stripe listen` and `stripe trigger`, no deploy required.
+
+<Figure caption="Where you land by lesson 6: after a test-card upgrade the entitlement panel reads plan: pro with a populated subscriptionId and currentPeriodEnd, processed_events shows the landed event, and the Portal button is enabled.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/065/l1-desktop-1280-pro-state.png"
+      alt="The finished Stripe inspector page at desktop width. The header shows the active org Acme with a populated Stripe Customer id and an enabled Manage billing button. The Entitlement panel reads plan pro, status active, subscription sub_1QtAcmeProMonthly, a current period end of 2026-12-31, and 1 seat. The Processed events panel lists one checkout.session.completed row with its event id."
+    />
+  </Screenshot>
+</Figure>
+
+## What we'll practice
+
+A webhook handler runs unattended, retries on failure, and writes the state your customers pay for, so a partial or double-applied write costs money, not pixels.
+The skill here is not calling the Stripe SDK; it is making that seam safe:
+
+- **Verify, then claim, then mutate, inside one transaction.** A forged request never reaches your parser, a replayed event lands exactly once, and a crash mid-handler leaves nothing half-written.
+- **Order with a predicate, not a guess.** Stripe promises no delivery order, so a `last_event_at` comparison lets a stale event no-op instead of overwriting newer state.
+- **One writer for derived state.** The webhook owns every write to the `plan_entitlements` row; every other surface only reads it.
+- **Project, don't store raw.** A pure function maps a `Stripe.Subscription` to exactly the columns your app needs.
+- **A thin interface around the SDK.** Three methods behind one import site, so the rest of the app never touches Stripe directly.
+
+None of this is Stripe-specific; the same shape fits every async ingest you write next, from email-bounce webhooks to an internal event bus.
+
+## Architecture
+
+The loop runs in two directions over one rule.
+
+- **Inbound — the webhook.** Stripe sends an event to `POST /api/webhooks/stripe`. The handler reads the raw body, verifies the signature, claims the event in `processed_events` to dedupe, dispatches by event type, projects the Subscription into an entitlement patch, upserts `plan_entitlements`, and writes an `audit_logs` row before answering `200`. Every write runs inside one `db.transaction`, all-or-nothing.
+
+- **Outbound — the interface.** The inspector's buttons call `upgrade` and `openPortal`, Server Actions that return a Stripe-hosted URL: Checkout to start a subscription, the Customer Portal to manage it. `requirePlan` gates Server Components, reading the entitlement before paywalled content renders.
+
+- **The contract between them.** The webhook is the only writer for `plan_entitlements`; every other surface reads. When Checkout starts, the org's id rides along on the Subscription's `metadata.organization_id`, but that channel isn't trusted alone. The authoritative source is `resolveOrgIdFromCustomer`, a reverse lookup from the Stripe Customer to the org that owns it. Lesson 6 cross-checks the two, so a forged `organization_id` cannot write to the wrong tenant.
+
+## Starting file tree
+
+Bold files are your work: each carries a `TODO` marker naming its lesson. Everything else ships complete; the subtrees you never touch are collapsed to one line.
+
+<FileTree>
+- src/
+  - env.ts validates the `sk_test_` prefix at boot
+  - db/
+    - **schema.ts** `planEntitlements` stub, PK-only — *L4 adds the columns*
+    - schema/auth.ts Better Auth tables, `organization` now carries `stripeCustomerId`
+    - index.ts
+    - audit.ts
+    - audit-log.ts
+    - tenant.ts
+    - queries/
+      - **entitlements.ts** `getEntitlement`, `hasActiveAccess` — *L4*
+      - organizations.ts `getOrgWithOwnerEmail`, `setStripeCustomerId`
+  - lib/
+    - billing/
+      - stripe.ts the sole importer of `stripe`; `apiVersion` pinned `'2026-05-27.dahlia'`
+      - catalog.ts `loadCatalog()` typed loader
+      - catalog.json `lookup_key` → plan slug map, rewritten by `seed:stripe`
+      - **projection.ts** the pure `subscriptionToEntitlement` — *L4*
+      - **upgrade.ts** the `upgrade` Server Action — *L5*
+      - **portal.ts** the `openPortal` Server Action — *L5*
+      - **require-plan.ts** the `requirePlan` gate — *L5*
+      - billing-error.ts the `BillingError` class
+      - index.ts barrel: `upgrade`, `openPortal`, `requirePlan`
+    - webhooks/
+      - **stripe.ts** dispatch + handlers + `resolveOrgIdFromCustomer` — *L3, L4, L6*
+      - processed-events.ts `claimEvent`, carried in from the webhook chapter
+    - logger.ts, problem.ts, result.ts, auth.ts provided
+  - app/
+    - api/webhooks/stripe/
+      - **route.ts** the POST handler: verify, claim, dispatch — *L2, L3*
+    - (protected)/
+      - inspector/ the verification surface, provided in full
+      - billing/success/ `page.tsx` + `Poller.tsx`, provided
+  - …auth, emails, invitations, UI primitives — provided, untouched
+</FileTree>
+
+Four provided pieces the lessons build on:
+
+- **`lib/billing/stripe.ts`** configures the SDK singleton with the `apiVersion` pinned and `STRIPE_SECRET_KEY` from the typed env. Everything else goes through its three methods.
+- **`catalog.json`** maps Stripe `lookup_key`s to app plan slugs; the loader's `planFromLookupKey(key)` is the projection's only path across that boundary, so raw `price_id` strings never appear in app code.
+- **`claimEvent(tx, provider, eventId, eventType)`** is the check-and-claim dedupe helper from the webhook chapter. It returns `true` on a fresh insert and `false` when the `unique(provider, eventId)` constraint blocks a replay.
+- **`inspector/page.tsx`** is where you watch behavior land. It renders the active org's `plan_entitlements` row, `processed_events` tail, and audit log, the Checkout and Portal buttons, and dev-only debug controls: tamper a signature, replay an event, force out-of-order delivery, forge tenancy metadata.
+
+## The five build lessons
+
+Each lesson adds one capability to the loop.
+
+<CardGrid>
+  <Card title="Lesson 2 — Verify before you parse">
+    The route handler reads the raw body once, verifies the signature with `constructEvent`, and answers `400 application/problem+json` on failure, logging every disposition.
+  </Card>
+  <Card title="Lesson 3 — Claim the event inside one transaction">
+    Wraps the verified path in `db.transaction`, dedupes against `processed_events`, and stubs the dispatch switch so every event type is logged.
+  </Card>
+  <Card title="Lesson 4 — Project three events into one entitlement row">
+    Completes the `plan_entitlements` schema, writes the pure projection, and adds the three handlers with the ordering predicate and an audit-log write on every transition.
+  </Card>
+  <Card title="Lesson 5 — Ship the three-method billing interface">
+    Implements `upgrade`, `openPortal`, and `requirePlan`, wires the Checkout and Portal buttons, and runs the Stripe-hosted flow end to end with a test card.
+  </Card>
+  <Card title="Lesson 6 — Harden the webhook against forged tenancy">
+    Adds the metadata cross-check so a forged `organization_id` can never write an entitlement to the wrong organization.
+  </Card>
+</CardGrid>
+
+## Setup
+
+Install the **Stripe CLI** first; the steps depend on it.
+
+<ExternalResource
+  title="Stripe CLI — install"
+  href="https://docs.stripe.com/stripe-cli"
+  icon="simple-icons:stripe"
+  iconColor="#635BFF"
+  description="Official install guide for the CLI that forwards live test events to your dev server."
+/>
+
+Run these once, in order.
+
+<Steps>
+1. Get the starter codebase from the [project repository](https://github.com/terencicp/react-saas-course-projects), under `Chapter 065/start/`.
+
+2. Copy the env template.
+
+   ```bash
+   cp .env.example .env
+   ```
+
+3. Start local Postgres; the project ships a `docker-compose.yml` with `postgres:18`. Wait for the container to report healthy.
+
+   ```bash
+   docker compose up -d
+   ```
+
+4. Install dependencies. `preinstall` enforces pnpm and the `engines` field requires Node 24, so a wrong version fails fast.
+
+   ```bash
+   pnpm install
+   ```
+
+5. Fill in `.env` (see the list below): generate the two secrets with `openssl rand -base64 32` and paste your Stripe test-mode secret key. `STRIPE_WEBHOOK_SECRET` comes in step 8.
+
+   ```bash
+   openssl rand -base64 32
+   ```
+
+6. Apply the migrations: the prior project's set plus `processed_events`, the `plan_entitlements` PK stub, and `organization.stripe_customer_id`.
+
+   ```bash
+   pnpm db:migrate
+   ```
+
+7. Seed the database: two orgs (Acme and Globex), four users (Alice, Bob, Carol, Dave), and one `'free'` `plan_entitlements` row per org. Nothing calls Stripe yet, so each `stripe_customer_id` stays `null`.
+
+   ```bash
+   pnpm db:seed
+   ```
+
+8. Authenticate the Stripe CLI, then open the forwarding tunnel in a **second terminal** and leave it running for the project.
+
+   ```bash
+   stripe login
+   ```
+
+   ```bash
+   pnpm stripe:listen
+   ```
+
+   `stripe listen` prints a local signing secret (`whsec_…`); copy it into `.env` as `STRIPE_WEBHOOK_SECRET`.
+
+9. Seed your Stripe account. This creates the pro and team Products with monthly Prices in **test mode** and rewrites `src/lib/billing/catalog.json` with their real `lookup_key`s. It finds-or-creates by `lookup_key`, so re-runs are no-ops.
+
+   ```bash
+   pnpm seed:stripe
+   ```
+
+10. Start the dev server. If it was already running when you pasted `STRIPE_WEBHOOK_SECRET`, restart it to load the new env.
+
+    ```bash
+    pnpm dev
+    ```
+</Steps>
+
+### Environment variables
+
+Four entries are specific to this project; the rest carry over unchanged.
+
+- **`STRIPE_SECRET_KEY`** — your test-mode secret key (`sk_test_…`), from the Dashboard under **Developers → API keys** in test mode. Server-only. `src/env.ts` validates the `sk_test_` prefix at boot, so an `sk_live_` key refuses to start.
+- **`STRIPE_WEBHOOK_SECRET`** — the local signing secret (`whsec_…`) that `stripe listen` prints. It changes every CLI session, so re-paste it whenever you restart the CLI.
+- **`STRIPE_PORTAL_RETURN_URL`** — `http://localhost:3000/inspector`. Where the Customer Portal returns the user after they manage their subscription.
+- **`APP_URL`** — `http://localhost:3000`. The origin for Checkout's `success_url` and `cancel_url`.
+- **Inherited from prior projects** — `DATABASE_URL` (and `_UNPOOLED`), `SEED`, `BETTER_AUTH_SECRET` / `URL`, `INVITATION_SIGNING_SECRET`, `RESEND_API_KEY`, `EMAIL_FROM` / `REPLY_TO`, `NEXT_PUBLIC_APP_NAME` / `URL`.
+
+### Expected result
+
+Open `http://localhost:3000/inspector`. The active org's `plan_entitlements` row reads `plan: free`, and the Portal button is **disabled**: no Stripe Customer exists yet, so the Portal has nothing to manage.
+
+The `stripe listen` terminal is your tunnel check: it prints `200 OK` or `404` for every event it forwards. Fire one now:
+
+```bash
+stripe trigger checkout.session.completed
+```
+
+It returns **`404`**, which is correct: the handler is still an empty stub. That `404` is the deliberate starting line; the next lesson turns it into a `200`.
+
+:::tip
+Keep three things open through this chapter: the dev server terminal, the `stripe listen` terminal, and the `/inspector` page. The inspector refreshes as events land, so you watch each lesson's behavior in real time.
+:::

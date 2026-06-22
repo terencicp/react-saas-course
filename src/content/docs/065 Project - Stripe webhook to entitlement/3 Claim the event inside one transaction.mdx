@@ -1,0 +1,231 @@
+---
+title: Claim the event inside one transaction
+chapter-id: 65
+course-progress: 0.6332
+rewrites: 1
+sidebar:
+  order: 3
+  label: Claim in one transaction
+---
+
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid, Aside } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The webhook stops trusting that it sees each event once and starts enforcing it: every verified delivery is claimed and worked inside one transaction, so a replay can never mutate twice and a failed handler leaves no half-claimed row.
+
+Last lesson's gate lets genuine events through but does nothing with them — a verified delivery returns a bare `200` and the `processed_events` panel stays empty.
+By the end of this lesson, firing `stripe trigger checkout.session.completed` lands exactly one row in the inspector's `processed_events` tail (`eventId`, `eventType`, `receivedAt`) and the log shows `verified` then `claimed`.
+Press "Replay last event" and the same `event.id` returns, but the tail stays at one row, the log records `duplicate`, and the response is `200` with `{ received: true, duplicate: true }`.
+The `plan_entitlements` panel stays `free`, because the handlers the dispatch switch routes to are still `'not implemented'` stubs you fill next lesson.
+You build the boundary here, not the work inside it.
+
+## Your mission
+
+Stripe delivers the same event more than once.
+This is not an edge case but the documented contract of at-least-once delivery, and every webhook you write lives under it.
+The naive defense — "check whether we've seen this id, and if not, do the work" — breaks the moment the two steps drift apart.
+If the claim commits in one transaction and the work fails halfway in another, no retry can fix it: the next delivery sees "already processed" and skips, so the half-finished work is never completed and never undone.
+The fix is to make claim and work **one step**.
+They share a single `db.transaction`, so either both commit or neither does; a crash mid-handler rolls the claim back with the work, and the replay finds the id unclaimed and does it properly.
+Idempotency stops being a hope and becomes a guarantee of the transaction boundary.
+
+That decision shapes every constraint that follows.
+`claimEvent(tx, 'stripe', event.id, event.type)` is the check-and-claim from chapter 063: it inserts the id under a `unique(provider, eventId)` constraint, returning `true` when the row is freshly yours and `false` when the constraint blocked it.
+Its first argument is the transaction handle, not the global `db` — pass `tx` to every database call in this seam.
+Route one call to the bare `db` and you open a sibling transaction that commits on its own and ignores the outer abort: the partial-state bug, reintroduced by one character.
+A lost claim (`claimEvent` returns `false`) is a **success**, not an error: answer `200` with `{ received: true, duplicate: true }` and do no work.
+Never a `4xx` or `5xx` — a `4xx` tells Stripe the delivery is terminal, a `5xx` tells it to retry an already-handled event forever, and both are wrong answers to "I've already got this one."
+The dispatch switch is exhaustive over the three subscription events the app acts on, and its `default` arm logs `unhandled` and returns a clean `200`: a dashboard misconfiguration can send events the app never subscribed to, and refusing them is noise, not a client error.
+Log every disposition — the recorded outcome of handling a delivery — keyed by `event.id`: `verified`, `duplicate`, `claimed`, `dispatched`, and `unhandled`. That log is your forensic surface when something breaks at 2am.
+
+One number shapes what comes next: Stripe waits about thirty seconds for a `2xx` before it retries.
+Work inside the transaction holds a database connection open, so a network call in a handler ties up that connection while it waits on Stripe.
+The one allowed reach, a single `subscriptions.retrieve`, lands next lesson; anything heavier belongs in a <Term definition="Work queued to run outside the request that triggered it, on a separate worker, so the response returns immediately and slow tasks don't tie up the request's connection.">background job</Term>.
+That budget is why the handlers stay thin.
+
+Out of scope this lesson: the projection and the entitlement writes.
+The three handlers still throw `'not implemented'` and the `plan_entitlements` panel will not move — that lands next lesson.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">A first-seen verified event opens one `db.transaction`, then calls `claimEvent` and `dispatch` with that same transaction handle.</ChecklistItem>
+  <ChecklistItem chip="tested">A replay (`claimEvent` returns `false`) answers `200` with `{ received: true, duplicate: true }`, does no work, and never returns a `4xx` or `5xx`.</ChecklistItem>
+  <ChecklistItem chip="tested">A first-seen delivery (`claimEvent` returns `true`) answers `200` with `{ received: true, duplicate: false }` and routes through `dispatch`.</ChecklistItem>
+  <ChecklistItem chip="tested">`dispatch` routes `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted` each to its own handler, and an unsubscribed event type hits `default` and returns without error.</ChecklistItem>
+  <ChecklistItem chip="untested">Firing `stripe trigger checkout.session.completed` once adds exactly one row to the `processed_events` tail (`eventId`, `eventType`, `receivedAt`), and the log shows `verified` then `claimed`.</ChecklistItem>
+  <ChecklistItem chip="untested">"Replay last event" re-delivers the same `event.id`, the tail stays at one row, and the disposition logs `duplicate`.</ChecklistItem>
+  <ChecklistItem chip="untested">Every disposition is logged with its `event.id`, and `plan_entitlements` stays `free` because the handlers are still stubs.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Open `src/app/api/webhooks/stripe/route.ts` and `src/lib/webhooks/stripe.ts`, implement the transaction wrapper and the dispatch switch against the brief above and the lesson tests, then read the walkthrough below.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+Two files change.
+The route handler gains a transaction around the post-verify path, and `lib/webhooks/stripe.ts` turns its placeholder `dispatch` into a real switch.
+Everything else — `claimEvent`, the `processed_events` table, the `db.transaction` shape, the `Transaction` type — ships in the starter, carried in from [Claim once, mutate once](/063-webhook-ingestion/2-claim-once-mutate-once).
+
+### The route: wrap the work in one transaction
+
+The verification gate from the last lesson is untouched; only the tail changes.
+Before, a verified event got a bare `200`.
+Now it is claimed and dispatched inside a single transaction, and the response carries a `duplicate` flag so the dedup outcome is visible to the caller.
+
+<CodeVariants maxLines={0}>
+  <CodeVariant label="Before — lesson 2">
+    ```ts
+      log.info({ eventId: event.id, eventType: event.type }, 'verified');
+
+      return Response.json({ received: true }, { status: 200 });
+    };
+    ```
+    **A verified event is acknowledged and nothing is written.** The gate lets the event through, then the route falls straight to a bare `200` — no claim, no dispatch, no row.
+  </CodeVariant>
+
+  <CodeVariant label="After — lesson 3">
+    ```ts ins={3-21}
+      log.info({ eventId: event.id, eventType: event.type }, 'verified');
+
+      // Verify → claim → mutate in ONE transaction: the claim and every handler write
+      // share `tx`, so a crash mid-handler rolls back both — a replayed event id can
+      // never mutate twice and a failed dispatch leaves no half-claimed row.
+      let duplicate = false;
+      await db.transaction(async (tx) => {
+        const claimed = await claimEvent(tx, 'stripe', event.id, event.type);
+        if (!claimed) {
+          // A lost claim is a replay: log it and return without mutating. The route
+          // still answers 200 below — a duplicate is a success, not a 4xx/5xx (a 4xx
+          // would tell Stripe to retry the same event forever).
+          duplicate = true;
+          log.info({ eventId: event.id }, 'duplicate');
+          return;
+        }
+        log.info({ eventId: event.id }, 'claimed');
+        await dispatch(tx, event);
+      });
+
+      return Response.json({ received: true, duplicate }, { status: 200 });
+    };
+    ```
+    **Claim and dispatch share one transaction.** The response reports whether the event was a duplicate, so the dedup outcome is visible to the caller.
+  </CodeVariant>
+</CodeVariants>
+
+`duplicate` is declared with `let` outside the callback because it has to outlive it: the callback sets it, the `Response.json` after the `await` reads it.
+On a lost claim the callback flips it to `true` and returns early, so `dispatch` never runs; on a fresh claim it logs `claimed` and hands `tx` to `dispatch`.
+Either way the route reaches one response, and `{ received: true, duplicate }` tells the caller which path it took.
+
+### The dispatch switch: route each event to its handler
+
+`dispatch` began as a placeholder that logged `unhandled` for everything and ignored its transaction argument, named `_tx` to mark it unused.
+Two things change: the argument becomes `tx`, threaded to whichever handler the switch selects, and the body becomes an exhaustive switch over the three event types the app subscribes to.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const dispatch = async (
+  tx: Transaction,
+  event: Stripe.Event,
+): Promise<void> => {
+  switch (event.type) {
+    case 'checkout.session.completed':
+      await onCheckoutCompleted(tx, event);
+      break;
+    case 'customer.subscription.updated':
+      await onSubscriptionUpdated(tx, event);
+      break;
+    case 'customer.subscription.deleted':
+      await onSubscriptionDeleted(tx, event);
+      break;
+    default:
+      log.info({ eventId: event.id, eventType: event.type }, 'unhandled');
+      return;
+  }
+  log.info({ eventId: event.id, eventType: event.type }, 'dispatched');
+};
+`}>
+  <AnnotatedStep meta={`{1-4} "tx"`} color="violet">
+    The signature names `tx`, not `_tx`, and threads it into every handler the switch routes to, so each handler writes on the same transaction the claim used.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6-14}" color="blue">
+    The `case` arms cover exactly the three subscription events the app acts on. Each awaits its handler, `break`s, and falls through to the `dispatched` log on line 19.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{15-17}" color="green">
+    The `default` arm catches an unsubscribed event type: it logs `unhandled` and `return`s with a clean `200`, never reaching the `dispatched` log. The two log lines separate "we ignored this on purpose" from "we did the work."
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The three handlers below the switch — `onCheckoutCompleted`, `onSubscriptionUpdated`, `onSubscriptionDeleted` — are still exactly as the starter left them:
+
+```ts
+export const onCheckoutCompleted = async (
+  _tx: Transaction,
+  _event: Stripe.Event,
+): Promise<void> => {
+  throw new Error('not implemented');
+};
+```
+
+<Aside type="caution">
+This is expected. The switch routes correctly, but the moment a real `checkout.session.completed` reaches `onCheckoutCompleted`, the throw aborts the transaction and the route returns a `500`. That is why the `plan_entitlements` panel does not move this lesson: you wired the routing, not the work behind it. The handler bodies, the projection, and the entitlement writes are the whole of the next lesson.
+</Aside>
+
+### Two details worth keeping in view
+
+The `duplicate` flag could be dropped in favor of always returning `{ received: true }`.
+It earns its place by making a dedup hit observable without a log dive: an operator reading the response, and a test suite in a later testing chapter, can tell a first delivery from a replay by the body alone.
+
+`claimEvent` only needs `(provider, eventId)` to dedupe, but `processed_events` records `eventType` too.
+It costs nothing on the insert and lets an analyst count event types straight from the table — how many checkouts, how many cancellations — with no Stripe round-trip.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Receive Stripe events in your webhook endpoint"
+    href="https://docs.stripe.com/webhooks"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="Stripe's own page on at-least-once delivery and guarding against duplicate events by logging processed event IDs — the contract this lesson enforces."
+  />
+  <ExternalResource
+    title="Drizzle ORM — Transactions"
+    href="https://orm.drizzle.team/docs/transactions"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The db.transaction(async (tx) => ...) API you wrap the claim and dispatch in, including how an uncaught error rolls the whole thing back."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash
+pnpm test:lesson 3
+```
+
+The suite sends real signed `POST` requests at your route handler, with the database, `claimEvent`, and the handlers' downstream calls swapped for test doubles, so it needs no live Postgres and no network.
+It checks the orchestration: a fresh claim opens one transaction and dispatches on that same handle, a lost claim answers `200 { received: true, duplicate: true }` and does no work, a fresh claim answers `200 { received: true, duplicate: false }` and routes through dispatch, and each of the three subscription events reaches its handler while an unsubscribed type takes the `default` arm.
+
+The tests cover the claim-and-dispatch wiring but not the live Stripe loop or the logged dispositions.
+With `pnpm stripe:listen` forwarding and `pnpm dev` running, confirm the rest by hand:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">`stripe trigger checkout.session.completed` adds exactly one row to the inspector's `processed_events` tail (`eventId`, `eventType`, `receivedAt`), and your terminal log shows `verified` then `claimed`.</ChecklistItem>
+  <ChecklistItem chip="untested">The inspector's "Replay last event" re-delivers the same `event.id`, the tail stays at one row, the response is `200` with `{ received: true, duplicate: true }`, and the log records `duplicate`.</ChecklistItem>
+  <ChecklistItem chip="untested">Every disposition is logged keyed by its `event.id`, and the `plan_entitlements` panel still reads `free` — the handlers the switch routes to are still stubs.</ChecklistItem>
+</Checklist>
+
+With each event landing exactly once and replays deduped, the boundary is in place. Next lesson fills the handlers behind the switch.

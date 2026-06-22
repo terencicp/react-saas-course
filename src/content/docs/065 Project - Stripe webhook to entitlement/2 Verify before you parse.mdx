@@ -1,0 +1,222 @@
+---
+title: Verify before you parse
+chapter-id: 65
+course-progress: 0.6321
+rewrites: 2
+sidebar:
+  order: 2
+  label: Verify before you parse
+---
+
+import { CardGrid } from '@astrojs/starlight/components';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Term from '../../../components/ui/Term.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Right now `POST /api/webhooks/stripe` is a dead end: the handler the starter shipped returns a bare `404`, so `stripe trigger checkout.session.completed` gets you nothing.
+
+By the end of this lesson that trigger returns `200`, while a forged or header-less request returns `400 invalid_signature` as `application/problem+json`.
+The `processed_events` panel stays empty: a verified event does no business work yet.
+You build the gate, not the machinery behind it.
+
+## Your mission
+
+This handler is the trust boundary of the billing system.
+Everything downstream — the dedup claim, the entitlement write, the audit log — assumes the event in front of it really came from Stripe, which holds only if the gate holds.
+The gate is one rule in one order: **read the raw body exactly once, verify the signature against your endpoint secret, then trust the payload.**
+Reverse the steps and you parse attacker-controlled bytes before you know who sent them.
+Order is the entire lesson.
+
+A few rules follow from that order.
+A bad signature and a missing `stripe-signature` header get the **same answer**, `400` not `401`: a request with no signature has failed the contract as surely as one that forged it, and a `4xx` tells Stripe to stop retrying.
+Read the body with `request.text()` exactly once; a second read returns an empty string, the silent webhook bug from chapter 063.
+Never log the body before verification: an attacker-controlled string in a <Term definition="A log where each line is machine-readable JSON of named fields rather than free text, so you can filter and query by field instead of grepping prose.">structured log</Term> is a <Term definition="An attack where forged content is written into your logs, faking entries or corrupting the log parser. Logging unverified request bodies hands the attacker a way to inject it.">log-injection</Term> vector.
+The verification call does the real work — timestamp, HMAC, constant-time compare, five-minute replay tolerance — and throws **one specific error type** on failure.
+That type is a `400`; any *other* error is a real bug, a `500`, and must be re-thrown rather than swallowed.
+
+Out of scope until the next lesson: claiming the event, the dispatch switch, and every database write.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">A valid `stripe trigger checkout.session.completed` returns `200`.</ChecklistItem>
+  <ChecklistItem chip="tested">The inspector's "Tamper signature" button returns `400 application/problem+json` with `title: 'invalid_signature'`.</ChecklistItem>
+  <ChecklistItem chip="tested">A POST with no `stripe-signature` header returns the same `400 invalid_signature`.</ChecklistItem>
+  <ChecklistItem chip="tested">Firing a trigger adds no `processed_events` row — the `200` carries no business effect yet.</ChecklistItem>
+  <ChecklistItem chip="untested">The structured log records one disposition per request keyed by event id — `verified` on success, `invalid_signature` on a bad signature, `missing_header` on a null header — and no request body is logged before the signature verifies.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Open `src/app/api/webhooks/stripe/route.ts`, implement the verification gate against the brief above and the lesson tests, then read the walkthrough below.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+Everything this handler needs already ships in the starter: the `stripe` singleton (`lib/billing/stripe.ts`), the `problemJson` helper (`lib/problem.ts`), the Pino `logger` (`lib/logger.ts`), and the boot-validated `env.STRIPE_WEBHOOK_SECRET`.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const log = logger.child({ seam: 'webhook.stripe' });
+
+export const POST = async (request: Request): Promise<Response> => {
+  const body = await request.text();
+  const signature = request.headers.get('stripe-signature');
+
+  if (signature === null) {
+    log.warn('missing_header');
+    return problemJson(400, 'invalid_signature');
+  }
+
+  let event: ReturnType<typeof stripe.webhooks.constructEvent>;
+  try {
+    event = stripe.webhooks.constructEvent(
+      body,
+      signature,
+      env.STRIPE_WEBHOOK_SECRET,
+    );
+  } catch (error) {
+    if (error instanceof stripe.errors.StripeSignatureVerificationError) {
+      log.warn('invalid_signature');
+      return problemJson(400, 'invalid_signature');
+    }
+    throw error;
+  }
+
+  log.info({ eventId: event.id, eventType: event.type }, 'verified');
+
+  return Response.json({ received: true }, { status: 200 });
+};
+`}>
+  <AnnotatedStep meta="{1}" color="violet">
+    A child logger scoped to this seam, so every line carries `seam: 'webhook.stripe'` and you filter by seam and event id instead of grepping JSON.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4}" color="green">
+    Read the raw body once, as text; `constructEvent` verifies against the exact bytes Stripe signed.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5,7-10}" color="blue">
+    Pull the signature header and null-check it first; a missing header short-circuits to the same `400` a bad signature gets.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12-18}" color="blue">
+    The verification primitive parses the timestamp, computes the HMAC, runs the constant-time compare, and enforces the five-minute tolerance. The event it returns IS the parsed payload, so there is no separate parse step to write.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{20-23}" color="orange">
+    Discriminate the failure: a `StripeSignatureVerificationError` is the only thing that earns a `400`, so the `instanceof` check is load-bearing.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{24}" color="red">
+    Anything else re-throws untouched as a genuine `500`. Swallowing a `TypeError` into a `400` would tell Stripe to stop retrying a delivery the next attempt might handle.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{27}" color="violet">
+    One `verified` line on success, keyed by event id and type. Nothing above this point logged the body: the first attacker-shaped data to touch your logs has already passed verification.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{29}" color="green">
+    A plain `200` acknowledges the event; nothing is written yet. The next lesson wraps everything below the `verified` log in `db.transaction` to claim and dispatch it.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+**Why `400`, never `401`.** Stripe retries `5xx` and treats `4xx` as terminal, so a `4xx` is correct: a signature failure never succeeds on retry, and this stops Stripe from hammering your endpoint forever. Prefer `400` over `401` for the operator reading the failed-delivery panel: `401` reads as "your endpoint rejected our auth" and sends them chasing a credentials problem that does not exist, while `400` reads as "your request was malformed", the truth.
+
+**Why the body is read exactly once.** A `Request` body is a one-shot stream, so reading it twice returns empty on the second read:
+
+<CodeVariants>
+  <CodeVariant label="Broken">
+    <div data-mark-color="red">
+
+    ```ts {3}
+    // Broken — the stream is consumed twice
+    const body = await request.text();        // first read drains the stream
+    const event = await request.json();       // second read returns ""; constructEvent never sees the bytes
+    ```
+
+    </div>
+    **The stream is read twice.** The second read returns an empty string, so `constructEvent` never sees the bytes Stripe signed, and the failure is silent, not thrown.
+  </CodeVariant>
+
+  <CodeVariant label="Correct">
+    <div data-mark-color="green">
+
+    ```ts {3}
+    // Correct — read once, verify against the raw text
+    const body = await request.text();
+    const event = stripe.webhooks.constructEvent(body, signature, env.STRIPE_WEBHOOK_SECRET);
+    // `event` IS the parsed payload — the SDK parses it for you after the signature checks out
+    ```
+
+    </div>
+    **Read once.** `constructEvent` returns the parsed event after verifying, so the verify step and the parse step are one.
+  </CodeVariant>
+</CodeVariants>
+
+**Why a missing header is the same `400`.** A request that omits the signature has failed the contract exactly as a forged one has, so it returns the identical `400 invalid_signature` document: a verification failure must never leak what it expected. Only the internal log differs, `missing_header` versus `invalid_signature`, so you can tell the two apart while debugging.
+
+**Why there is no `runtime` export.** Node is the default runtime for route handlers in Next 16, which is what you need, since the Stripe SDK is Node-only and `constructEvent` runs synchronously. With Cache Components enabled, Next rejects an explicit `runtime` segment export, so `export const runtime = 'nodejs'` would break the build.
+
+**Why the five-minute tolerance is left alone.** `constructEvent` rejects any signature whose timestamp is more than five minutes old, defending against a replayed delivery. Do not tighten the window: ordinary clock skew between your server and Stripe's would then surface as a stream of `invalid_signature` errors that look exactly like an attack, sending you to chase a security incident that is really <Term definition="Network Time Protocol — how servers keep their clocks synced to a reference time. NTP drift is the small clock gap that opens when that sync lags.">NTP</Term> drift.
+
+The rejections return the starter's `problemJson` helper, worth seeing once:
+
+```ts
+export const problemJson = (status: number, title: string): Response =>
+  new Response(JSON.stringify({ type: 'about:blank', title, status }), {
+    status,
+    headers: { 'content-type': 'application/problem+json' },
+  });
+```
+
+It is [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem+json carrying only `type`, `title`, and `status`, with no `detail` and no echo of the request body: a verification failure must never reflect what the caller sent back at them.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Stripe — Resolve webhook signature verification errors"
+    href="https://docs.stripe.com/webhooks/signature"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="The constructEvent contract, the raw-body rule, and the whsec_ secret — with Next.js framework notes for exactly the bug this gate avoids."
+  />
+  <ExternalResource
+    title="Stripe — Receive events in your webhook endpoint"
+    href="https://docs.stripe.com/webhooks"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="The HMAC, constant-time compare, and five-minute replay tolerance constructEvent runs for you — read it once to know what the primitive enforces."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash
+pnpm test:lesson 2
+```
+
+The suite sends real `POST` requests to your handler and inspects each `Response`.
+It signs a valid body with Stripe's `generateTestHeaderString` against the same `STRIPE_WEBHOOK_SECRET` the route uses, so a genuine delivery passes the crypto.
+Four checks should turn green: the valid-trigger `200`, the tampered-signature `400` titled `invalid_signature`, the missing-header `400`, and proof that a rejected request opens no transaction — no `processed_events` row, no state touched.
+
+The tests cover the HTTP contract, not the logs or the live inspector. Confirm those by hand:
+
+<Checklist id="moment">
+  <ChecklistItem chip="untested">`stripe trigger checkout.session.completed` returns `200`, and your terminal shows exactly one `verified` line with the event id and type.</ChecklistItem>
+  <ChecklistItem chip="untested">The inspector's "Tamper signature" button renders a `400 application/problem+json` titled `invalid_signature`, inline in the debug panel.</ChecklistItem>
+  <ChecklistItem chip="untested">The inspector's "Missing header" button renders the same `400 invalid_signature` inline.</ChecklistItem>
+  <ChecklistItem chip="untested">The `processed_events` panel stays empty after every trigger, since a verified event does no business work yet.</ChecklistItem>
+</Checklist>
+
+With the gate holding, the next lesson claims the verified event and dispatches it inside one transaction.
+</content>
+</invoke>

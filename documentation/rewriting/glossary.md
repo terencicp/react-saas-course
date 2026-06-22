@@ -2073,3 +2073,16 @@ PLAN_RANK | - | The plan ladder as data: free 0, pro 1, team 2; as const satisfi
 planAtLeast | planAtLeast(plan, required) | Tier comparison over PLAN_RANK; true when plan's rank meets or beats required, the twin of roleAtLeast. | first defined: Chapter 064 L6
 anti-corruption layer | ACL | A module translating a vendor's API into your own shapes and confining it to one place; the formal name for the interface verdict. | first defined: Chapter 064 L7
 adapter (SDK) | - | A thin module exposing your own stable interface over a third-party SDK, so call sites depend on your shape, not the vendor's. | first defined: Chapter 064 L7
+processed_events | dedupe ledger | Table with a unique(provider, eventId) constraint; one claimed row per event, the dedupe seam every webhook handler shares. | first defined: Chapter 063 L2
+claimEvent | claimEvent(tx, provider, eventId, eventType) | Check-and-claim helper; returns true when the row is freshly inserted, false when the unique(provider, eventId) constraint blocks a replay. | first defined: Chapter 063 L2
+ordering predicate | newer-wins, last_event_at | A last_event_at comparison on the entitlement write that lets a stale out-of-order event no-op instead of overwriting newer state. | first defined: Chapter 063 L3
+resolveOrgIdFromCustomer | reverse lookup (tenancy) | Authoritative reverse lookup mapping a Stripe Customer back to the org that owns it; cross-checks metadata so forged tenancy can't write the wrong tenant. | first defined: Chapter 065 L6
+structured log | - | Log where each line is machine-readable JSON of named fields, queryable by field instead of grepping prose. | first defined: Chapter 065 L2
+log-injection | log injection | Attack writing forged content into logs to fake entries or break the parser; logging unverified input enables it. | first defined: Chapter 065 L2
+NTP | Network Time Protocol, NTP drift | Protocol syncing server clocks to a reference; drift is the small gap when sync lags. | first defined: Chapter 065 L2
+disposition | webhook disposition | The recorded outcome of handling a delivery (verified, duplicate, claimed, dispatched, unhandled), logged keyed by event id. | first defined: Chapter 065 L3
+background job | background work | Work queued to run outside the triggering request on a separate worker, so the response returns immediately. | first defined: Chapter 065 L3
+forged tenancy | forged organization_id | Caller-influenceable tenancy claim (here metadata.organization_id) that names the wrong org; rejected by cross-checking the Customer-owned org. | first defined: Chapter 065 L6
+carry-channel | carry channel | A value the app sets, sends through an external service, and reads back on the event; attacker-influenceable, so distrusted. | first defined: Chapter 065 L6
+blast radius | - | The set of code a change can break or force you to touch; small means impact is contained to one place. | first defined: Chapter 065 L5
+SPA | single-page application | Web app that loads once and updates the view with client-side JS instead of full page loads, keeping its own nav history. | first defined: Chapter 065 L5
