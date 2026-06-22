@@ -1949,6 +1949,7 @@ ABAC | attribute-based access control | Access decided by attributes of the user
 roleAtLeast | roleAtLeast(have, need) | Predicate comparing a caller's role against a required floor on the authority gradient; true if at or above. | first defined: Chapter 057 L1
 Role union | Role | The string-literal union of org roles ('member' | 'admin' | 'owner'). | first defined: Chapter 057 L1
 privilege escalation | - | A user performing an action above their permission level (a member running an admin-only mutation). | first defined: Chapter 057 L2
+privilege confusion | confused-deputy | An action runs under the wrong identity's authority, e.g. a forwarded invite accepted by the wrong account inheriting access never granted. | first defined: Chapter 058 L5
 factory (function) | function factory | A function that builds and returns another function; authedAction builds a Server Action. | first defined: Chapter 057 L2
 authedAction | authedAction(role, schema, fn) | The one sanctioned Server Action factory folding session, role, and schema checks into one boundary; body receives parsed input plus a ctx. | first defined: Chapter 057 L2
 transport code | - | A Result error's fixed-vocabulary code (forbidden, validation, conflict) naming the category of failure for the caller. | first defined: Chapter 057 L2
@@ -1971,3 +1972,11 @@ show-once | hash-and-show-once | Posture where the raw secret is returned to the
 key prefix | prefix | The public, plaintext lookup half of an API key (rsk_live_...); safe to log and list, used to find the row. | first defined: Chapter 057 L6
 api-key scope | scope | Per-key capability grant (invoices:read) checked after the role gate; can only narrow a key's role, never widen it. | first defined: Chapter 057 L6
 personal access token | PAT | API-key mechanism owned by a user instead of an org; acts as that user and is hard-deleted with their account. | first defined: Chapter 057 L6
+additionalFields | - | Better Auth mechanism to add your own columns to a plugin-owned table via plugin config; migration and row type pick them up. | first defined: Chapter 058 L1
+tokenHash | token_hash | The SHA-256 digest of the raw invitation token stored in the DB; the raw token lives only in the emailed URL. | first defined: Chapter 058 L1
+canonical signing payload | signing payload | The exact byte string an HMAC is computed over (invitationId + '.' + rawToken); must be byte-for-byte identical on sign and verify sides. | first defined: Chapter 058 L2
+signedInviteUrl | signedInviteUrl(id, token) | Async helper minting the accept URL and its HMAC sig; single source of truth for the URL shape the accept route verifies. | first defined: Chapter 058 L2
+link unfurler | unfurler | A client or service that fetches a pasted link to draw a preview card; a silent GET, not a human click. | first defined: Chapter 058 L3
+URL rewriter | link rewriter | A proxy intercepting outbound links and fetching them first (malware scan, click logging) before the user's click reaches the destination. | first defined: Chapter 058 L3
+token rotation | rotate | Replacing a still-valid secret with a fresh one so any leaked or forwarded copy of the old one stops working. | first defined: Chapter 058 L4
+tombstone | - | A row flipped to a dead state instead of deleted, surviving as a record that the thing existed and was ended. | first defined: Chapter 058 L4

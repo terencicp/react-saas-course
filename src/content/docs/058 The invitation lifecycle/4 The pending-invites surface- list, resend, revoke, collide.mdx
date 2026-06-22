@@ -1,0 +1,610 @@
+---
+title: 'The pending-invites surface: list, resend, revoke, collide'
+tagline: 'Build the admin surface for pending organization invitations with Server Actions: list, resend, revoke, and translate a Postgres unique-constraint collision into a recoverable conflict.'
+chapter-id: 58
+course-progress: 0.5701
+sidebar:
+  order: 4
+  label: Pending invites
+rewrites: 1
+---
+
+import { Aside, CardGrid } from '@astrojs/starlight/components';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import ActionsSummaryGrid from '../../../components/lessons/058/4/ActionsSummaryGrid.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The last three lessons followed a single invite down the happy path: an admin sends it, a token is minted, an email goes out, a human accepts.
+But an admin doesn't live on one row.
+They live on a screen of several pending invites at once, some opened, some ignored, one a typo, plus the buttons that act on them.
+
+Picture Alice, an admin at Acme.
+Last week she sent three invites.
+Bob never opened his.
+Carol opened hers but hasn't accepted.
+Dave's never arrived, because she typed `dav@acme.com` instead of `dave@acme.com`.
+Today she opens `/settings/members` and needs four things: to see what's still pending and how long each invite has left, to resend Bob's in case it went to spam, to fix Dave by killing the typo and inviting the right address, and to trust that Carol's hasn't quietly expired without warning.
+
+That gives us the read surface, the three actions on a pending row, and the case that turns interesting: re-inviting an address that already has an invite outstanding.
+One idea decides every action: **a pending-invite row is a record of what you promised.**
+It says "we offered Dave admin on Tuesday."
+Rows are cheap and historical, so you never delete one, never silently rewrite a promise the email already made, and never quietly stretch a security window that's already running.
+
+## Reading the pending list: filter expiry in the query, not the row
+
+The three actions need a surface to act on, and that surface is a list.
+It sits on `/settings/members`, beside the member list from last chapter.
+Where the member list shows who already holds a seat, the pending list shows who's been offered one but hasn't accepted: same page, two tables.
+
+The read is a tenant-scoped helper, `listPendingInvitations(orgId)`, in `db/queries/invitations.ts`, the file the accept flow factored last lesson.
+
+One line in the query carries the lesson.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+export async function listPendingInvitations(orgId: string) {
+  const db = tenantDb(orgId);
+  return db.query.invitation.findMany({
+    where: and(
+      eq(invitation.status, 'pending'),
+      gt(invitation.expiresAt, new Date()),
+    ),
+    with: { inviter: true },
+    orderBy: desc(invitation.createdAt),
+  });
+}
+`}>
+  <AnnotatedStep meta={`{4-7} "gt(invitation.expiresAt, new Date())"`} color="blue">
+    "Pending" is two conditions, not one: the `status` column reads `'pending'` and the row hasn't expired. An invite whose `expiresAt` slid into the past is no longer pending, even though `status` still says so. Expiry is computed from the clock, never stored as a status, the rule from the first lesson applied here at the read.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{8} "with: { inviter: true }"`} color="blue">
+    `with: { inviter: true }` pulls each invite's inviter in the same round-trip, so you can render "invited by Alice" with one query for the whole list instead of one per row.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{9} "orderBy"`} color="blue">
+    `desc(createdAt)` puts the newest invite on top, the order an admin scans in.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The load-bearing decision is in step 1: **filter `expiresAt > now()` inside the `where` clause, not after the rows return.**
+The tempting alternative selects every `'pending'` row and drops the expired ones in JavaScript with `.filter()`.
+Avoid it: it pulls rows across the wire only to discard them, and in a tenant system every row you load is a row you must scope correctly.
+The database filters on a timestamp better than you can, so let it.
+There is no cron job and no background process flipping a status; the `where` clause alone decides "still pending," and it decides fresh on every read.
+
+Each row renders the invited email, the role, the inviter's name, the date sent, a countdown like "expires in 3 days," and a per-row menu with Resend and Revoke.
+The countdown is pure display: derived from `expiresAt` and formatted with the project's date helpers.
+
+The list is admin-only, since who's been invited is privileged information a plain `member` must not see.
+The page is already gated behind `roleAtLeast('admin')` from last chapter, and every mutation below runs through `authedAction('admin', …)`, so the read inherits the page's guard and the writes carry their own.
+
+:::note
+The pending list and the member list are siblings, not one table.
+The member list shows accepted seats and routes role changes through `changeMemberRole`; the pending list shows offered-but-not-taken seats.
+They never join: an invite's job ends the moment it's accepted, which is where the member's begins.
+:::
+
+## Resending an invite rotates the token and the window
+
+Resending is the one action in this lesson with a real decision behind it.
+
+The action is `resendInvitation`, following the chapter's convention: `sendInvitation`, `acceptInvitation`, `resendInvitation`, verb plus noun, no `Action` suffix.
+It takes one input, the id of the invite to resend:
+
+```ts
+const resendInvitationSchema = z.object({ invitationId: z.uuid() });
+
+export const resendInvitation = authedAction(
+  'admin',
+  resendInvitationSchema,
+  async ({ invitationId }, ctx) => {
+    // ...
+  },
+);
+```
+
+Now the decision.
+Alice clicks "resend" on Bob's invite.
+What does she actually send?
+There are two honest answers, and only one is right.
+
+<CodeVariants maxLines={14}>
+  <CodeVariant label="Re-send the same link">
+    <div data-mark-color="red">
+
+    ```ts del={3,4}
+    await tx
+      .update(invitation)
+      .set({ /* no new token */ })
+      .set({ /* same expiresAt — window keeps running */ })
+      .where(eq(invitation.id, invitationId));
+    // reuse the original acceptUrl, re-send the same email
+    ```
+
+    </div>
+    **Cheap, and quietly wrong.** Re-firing the original link leaves the original window running, so a resend the day before expiry buys Bob 24 hours, not a fresh week. And if he forwarded that first email, the link in it still works: you've re-confirmed a credential you don't control.
+  </CodeVariant>
+
+  <CodeVariant label="Rotate (the default)">
+    <div data-mark-color="green">
+
+    ```ts ins={1,2,3,7}
+    const rawToken = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url');
+    const newExpiresAt = new Date(Date.now() + INVITATION_TTL_SECONDS * 1000);
+    await tx
+      .update(invitation)
+      .set({ tokenHash: await sha256(rawToken), expiresAt: newExpiresAt })
+      .where(eq(invitation.id, invitationId));
+    const acceptUrl = await signedInviteUrl(invitationId, rawToken);
+    ```
+
+    </div>
+    **Fresh token, fresh window.** Mint a new 32-byte token, overwrite `tokenHash`, push `expiresAt` a full `INVITATION_TTL_SECONDS` out, rebuild the signed URL, and send that. The old token, including any forwarded copy, dies the instant its hash is overwritten, and Bob gets a clean seven days. Every primitive comes from the send lesson; the only new thing is an UPDATE rather than an INSERT.
+  </CodeVariant>
+</CodeVariants>
+
+Rotate, because **a resend is a security event, not just a UX one.**
+The first lesson framed the token as a bearer credential and the expiry as a security primitive: anyone holding the token can accept, and the window exists so an old link can't be cashed in months later.
+Preserving the old token and window honors neither; rotating refreshes both.
+This is <Term definition="Replacing a still-valid secret with a fresh one so any leaked or forwarded copy of the old one stops working.">token rotation</Term>, the same move you'll make for API keys, password resets, and session tokens.
+
+Mechanically, `resendInvitation` is a diff against `sendInvitation`.
+Six steps carry over untouched: token generation, the `tokenHash` write, `signedInviteUrl`, the audit write inside `withTenant`, the post-commit email send, and the `revalidatePath`.
+Three things change: an UPDATE keyed by `invitationId` instead of an INSERT, the audit action `'invitation.resent'`, and a precondition guard up front.
+
+The guard matters.
+You cannot resend an invite Bob already accepted, since he's a member now, nor one that was revoked.
+So the action reads the row first, filtered on `status = 'pending'`, and a miss returns `err('not_found', …)` instead of silently re-sending.
+Same discipline as the accept flow: every write that depends on the invite still being pending checks that it is.
+
+Here is the full body, with the rotation folded in.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+const rawBytes = crypto.getRandomValues(new Uint8Array(32));
+const rawToken = Buffer.from(rawBytes).toString('base64url');
+const newExpiresAt = new Date(Date.now() + INVITATION_TTL_SECONDS * 1000);
+
+const row = await withTenant(ctx.orgId, async (tx) => {
+  const current = await tx.query.invitation.findFirst({
+    where: and(
+      eq(invitation.id, invitationId),
+      eq(invitation.status, 'pending'),
+    ),
+    columns: { email: true, role: true, expiresAt: true },
+  });
+  if (!current) return null;
+
+  await tx
+    .update(invitation)
+    .set({ tokenHash: await sha256(rawToken), expiresAt: newExpiresAt })
+    .where(eq(invitation.id, invitationId));
+
+  await logAudit(tx, {
+    action: 'invitation.resent',
+    subjectType: 'invitation',
+    subjectId: invitationId,
+    payload: {
+      email: current.email,
+      role: current.role,
+      oldExpiresAt: current.expiresAt,
+      newExpiresAt,
+    },
+  });
+  return current;
+});
+
+if (!row) return err('not_found', 'This invite is no longer pending.');
+
+const orgName = await getOrgName(ctx.orgId);
+const acceptUrl = await signedInviteUrl(invitationId, rawToken);
+const sent = await sendEmail({
+  to: row.email,
+  subject: \`You're invited to \${orgName}\`,
+  react: (
+    <InviteEmail
+      orgName={orgName}
+      inviterName={ctx.user.name}
+      acceptUrl={acceptUrl}
+      expiresAt={newExpiresAt}
+    />
+  ),
+  idempotencyKey: \`invite-resend:\${invitationId}:\${newExpiresAt.getTime()}\`,
+});
+
+revalidatePath('/settings/members');
+return ok({ emailSent: sent.ok });
+`}>
+  <AnnotatedStep meta={`{1-3} "getRandomValues"`} color="green">
+    Mint the new token and window in memory first, before touching the database: a fresh 32-byte token and `expiresAt` pushed a full TTL out. Nothing is committed yet.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{6-13} "status, 'pending'"`} color="green">
+    Read the row first, inside the transaction; that read is the guard. The `where` matches only a still-pending invite, so a `null` means there's nothing live to resend. Grabbing `expiresAt` here, before the update, lets the audit record the genuine old window; an `UPDATE … RETURNING` would hand back the new value.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{15-18} "tokenHash"`} color="green">
+    The rotation: one UPDATE keyed by the primary key, overwriting `tokenHash` and pushing `expiresAt` to the new window. Reading then updating the same row by id inside one transaction is safe, since no other writer can slip between them the way two inserts could race on the email uniqueness.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{20-30} "invitation.resent"`} color="green">
+    The audit write, in the same transaction. `'invitation.resent'` carries both `oldExpiresAt` and `newExpiresAt`, so the rotation becomes an auditable fact: this invite's window moved from here to there. Row and audit share one commit.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{34-53} "signedInviteUrl"`} color="green">
+    After COMMIT, refuse or send. A `null` means the row wasn't pending, so return `err('not_found', …)` and send no email. Otherwise rebuild the signed URL with the new token, send the new email, revalidate, and return. COMMIT is the pivot: the new hash is durable before the email carrying the new token goes out.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+That last step is the atomicity rule from the send lesson.
+The new `tokenHash` commits first, then the email carrying the matching raw token sends.
+Flip the order and the link 404s, because the email arrives with a token whose hash isn't in the database yet.
+COMMIT sits between the write and the send for exactly this reason.
+
+:::note
+A resend is the same abuse vector as a send: an attacker on a compromised admin account can hammer "resend" to spam an inbox.
+The fix is rate limiting through the same middleware that guards the send action, a later chapter's job.
+:::
+
+## Revoking cancels the invite row instead of deleting it
+
+Revoke teaches the tombstone idea most directly.
+A tombstone is a row you flip to a dead state instead of deleting, so it survives as a record that the thing once existed and was ended.
+Alice killing Dave's typo'd invite is the whole motivating case.
+
+The action is `revokeInvitation`, with the same wrapper and the same one-field schema:
+
+```ts
+const revokeInvitationSchema = z.object({ invitationId: z.uuid() });
+
+export const revokeInvitation = authedAction(
+  'admin',
+  revokeInvitationSchema,
+  async ({ invitationId }, ctx) => {
+    // ...
+  },
+);
+```
+
+The body is one guarded UPDATE, one audit row, one revalidate.
+
+```ts {3-8}
+const row = await withTenant(ctx.orgId, async (tx) => {
+  const [updated] = await tx
+    .update(invitation)
+    .set({ status: 'canceled' })
+    .where(
+      and(eq(invitation.id, invitationId), eq(invitation.status, 'pending')),
+    )
+    .returning({ email: invitation.email, role: invitation.role });
+
+  if (!updated) return null;
+
+  await logAudit(tx, {
+    action: 'invitation.revoked',
+    subjectType: 'invitation',
+    subjectId: invitationId,
+    payload: { email: updated.email, role: updated.role },
+  });
+  return updated;
+});
+
+if (!row) return err('not_found', 'This invite is no longer pending.');
+
+revalidatePath('/settings/members');
+return ok({ revoked: true });
+```
+
+Two decisions are baked into those lines, both from the tombstone idea.
+
+The first: **the status flips to `'canceled'` and the row is never deleted.**
+The row is the record that "Alice offered Dave admin on this date, and it was revoked."
+Delete it and you lose two things.
+You lose the audit trail's answer to "did we ever invite this address?"
+And you break the accept side: the previous lesson wired the accept page's `canceled` branch to render an honest "this invite was revoked" message, so if Dave's typo'd link reaches a real inbox and someone clicks it after the revoke, the surviving row is what lets the page say "revoked" instead of a generic error.
+Keeping the row is nearly free and the record is irreplaceable, the same cost asymmetry the first lesson used to justify keeping accepted rows forever.
+
+The second: **no "your invite was canceled" email goes to the invitee.**
+
+:::note
+Why send nothing?
+Privacy first.
+Emailing an address that never engaged, whether Dave's typo reached a stranger or Bob just ignored you, confirms to whoever is on the other end that the address is watched, the exact signal you don't want to hand an unknown recipient.
+Then noise: someone who ignored your first email cares even less about a second one saying the first no longer matters.
+The invitee finds out organically, only if they click the now-dead link, and the recovery is a fresh invite to the right address.
+:::
+
+The `where … and status = 'pending'` guard does the same job it did on resend.
+Revoking an invite Bob already accepted refuses, because you can't un-invite a member by canceling their old invitation; removing a member is member management, which lives next to this on the settings page and runs through its own action.
+Revoking an already-canceled or already-expired row is a harmless no-op: the guard matches nothing, the action returns `not_found`, and nothing changes.
+
+You might wonder why you're hand-rolling this.
+Better Auth's organization plugin ships `auth.api.cancelInvitation({ invitationId })`, which flips the status to `'canceled'` for you.
+It works, but it writes outside your `withTenant` transaction, so the audit row wouldn't ride the same commit as the status flip.
+Revoke stays consistent with the send and accept paths: a direct `UPDATE … + logAudit(tx)` inside `withTenant`, so the cancellation and its audit record share one fate.
+
+## Re-inviting a pending address: let the index throw, then translate
+
+Now the collision.
+Alice goes to fix Dave, but in her haste she re-types `bob@acme.com`, and Bob already has a pending invite.
+The send action runs again.
+What happens?
+
+Be precise about which collision this is.
+A second pending invitation hitting the same address is not the same as Bob already being a member because he accepted weeks ago; that case needs a membership check before the invite even tries to write, and it belongs to the next lesson.
+This section owns only the pending-on-pending collision, which is purely a database-constraint story.
+
+The naive instinct is to guard it with a check: `SELECT` to see if a pending invite exists, and only `INSERT` if it doesn't.
+Reach for that and you've written a race condition.
+
+<CodeVariants maxLines={16}>
+  <CodeVariant label="Pre-check, then insert">
+    <div data-mark-color="red">
+
+    ```ts {7-8}
+    const existing = await tx.query.invitation.findFirst({
+      where: and(
+        eq(invitation.organizationId, orgId),
+        eq(invitation.status, 'pending'),
+        sql`lower(${invitation.email}) = ${email}`,
+      ),
+    });
+    // ── a second click can land right here, before the insert ──
+    if (existing) return err('conflict', 'Already invited.');
+    await tx.insert(invitation).values({ /* ... */ });
+    ```
+
+    </div>
+    **There's a race in the gap.** Two fast clicks, or two admins acting at once, both run the SELECT, both see nothing, and both fall through to the INSERT. You get two pending rows for one address. The window between checking and inserting is the bug, and no amount of careful reading closes it, because the two statements aren't atomic.
+  </CodeVariant>
+
+  <CodeVariant label="Let the index throw, then translate">
+    <div data-mark-color="green">
+
+    ```ts {3-12}
+    try {
+      await tx.insert(invitation).values({ /* ... */ });
+    } catch (error) {
+      const e = ensureError(error);
+      if (
+        e.cause instanceof DatabaseError &&
+        e.cause.code === '23505' &&
+        e.cause.constraint === 'invitation_org_email_pending_unique'
+      ) {
+        return err('conflict', 'This address already has a pending invite.');
+      }
+      throw e;
+    }
+    ```
+
+    </div>
+    **The database decides, atomically.** No pre-check: just INSERT, and let the partial unique index from the first lesson reject the duplicate. The second INSERT fails race-free, because the constraint check and the write are one operation. Your job shrinks to translation: catch the unique violation, turn it into a typed `conflict`, and rethrow anything else.
+  </CodeVariant>
+</CodeVariants>
+
+The right column works because of the partial unique index you built in the first lesson, `invitation_org_email_pending_unique`.
+It encodes the business rule, at most one pending invite per address per org, as a database constraint.
+So the pattern is not "check, then write"; it's **don't pre-check, let the write fail, and catch-and-translate.**
+The send action deliberately left this collision uncaught so you'd handle it here, where the recovery UI lives.
+
+You've done the generic half of this catch before.
+Since the create-invoice action in chapter 047, the project has shipped `isUniqueViolation(e)` in `lib/result.ts`, the helper that answers "is this a Postgres <Term definition="Postgres's SQLSTATE code for a row that violates a unique constraint — a duplicate where a UNIQUE index demanded distinctness.">unique violation (23505)</Term>?" so a duplicate maps to a `conflict` instead of a 500.
+It already handles the detail that bites people: Drizzle doesn't surface the Postgres error flat.
+It wraps it, so the thrown value is a `DrizzleQueryError` and the real Postgres error sits on its `.cause`, a `DatabaseError` carrying the `.code`.
+That's why the helper reads `e.cause.code === '23505'` rather than a top-level `error.code`, which would be `undefined`.
+
+This collision needs one extra narrowing on top.
+A bare `23505` could come from any unique index on the table, and `isUniqueViolation` only knows that some constraint fired, not which one.
+Translating every unique violation into "already invited" would mislabel an unrelated collision.
+So you key this branch to the constraint name, `e.cause.constraint === 'invitation_org_email_pending_unique'`: match that and you've confirmed the pending-email rule tripped; anything else rethrows.
+Reading `.constraint` is also why the catch can't just delegate to the boolean helper, and why the caught `unknown` goes through `ensureError` first.
+`ensureError` returns the already-`Error` value untouched, but typed, so you can read `.cause` and `.constraint` off it instead of a loose `any`.
+
+:::note
+Better Auth's organization plugin offers a `cancelPendingInvitationsOnReInvite` option that auto-cancels the existing pending invite instead of erroring.
+It's a reasonable posture, but this chapter hand-rolls the send path so it owns its own token, hash, signature, and audit, and the plugin's invite lifecycle isn't in play.
+Catch-and-translate also teaches the transferable skill: this exact shape recurs for any unique constraint you'll hit, including slugs, seat reservations, and idempotency keys.
+:::
+
+Now close the loop on the UX, because a raw "conflict" is a dead end.
+When the action returns it, the screen already has everything it needs to recover: Bob's pending row is right there with its Resend and Revoke buttons.
+So surface the conflict as an actionable prompt, "Bob already has a pending invite. Resend it, or revoke and start over?", wiring those two buttons to the actions you just built.
+The whole lesson folds together here: the read renders Bob's row, the collision detects the duplicate, and resend and revoke are the way out.
+
+The database is the source of truth for the collision; the action's job is translation.
+That's the transferable shape, reached for any time a unique constraint guards a rule and a naive pre-check would race.
+Now write the translation yourself.
+
+<ScriptCoding
+  runner="sandpack"
+  instructions="Implement tryCreateInvite. Call the provided insertInvite(email) — it resolves with { id } on a fresh address and rejects on a duplicate. Return { ok: true, invitationId } on success. On a unique violation (the caught error's code === '23505'), return { ok: false, error: { code: 'conflict', existingInvitationId } }. Any other error must rethrow — narrow on the code, don't treat every throw as a conflict. The provided isDuplicateError guard narrows the caught unknown for you. Note: to keep this sandbox self-contained, the fake insertInvite throws a flat error object; in production Postgres the same error arrives wrapped in a DrizzleQueryError at .cause, which you narrow exactly the same way (the shape shown in the variants above)."
+  starter={`// The DB error shape, flattened for this sandbox. Real Postgres wraps
+// this in a DrizzleQueryError at \`.cause\` — narrow the same way.
+type DuplicateError = {
+  code: string;
+  constraint: string;
+  existingInvitationId: string;
+};
+
+// Provided by the harness. Rejects with a DuplicateError on a duplicate
+// address; resolves with the new id otherwise.
+declare function insertInvite(email: string): Promise<{ id: string }>;
+
+// Provided. Narrows an unknown caught value to a DuplicateError.
+function isDuplicateError(e: unknown): e is DuplicateError {
+  return typeof e === 'object' && e !== null && 'code' in e;
+}
+
+type InviteResult =
+  | { ok: true; invitationId: string }
+  | { ok: false; error: { code: 'conflict'; existingInvitationId: string } };
+
+export async function tryCreateInvite(email: string): Promise<InviteResult> {
+  // your code here
+}
+`}
+  tests={`
+// ── hidden harness ── stands in for the real INSERT against the partial
+// unique index. Rejects with a flat 23505 for an address that already has
+// a pending invite, a 23503 (foreign-key) for the unrelated-error case,
+// and resolves with a fresh id for anything else.
+function insertInvite(email) {
+  if (email === 'bob@acme.com') {
+    return Promise.reject({
+      code: '23505',
+      constraint: 'invitation_org_email_pending_unique',
+      existingInvitationId: 'inv_bob_123',
+    });
+  }
+  if (email === 'fk@acme.com') {
+    return Promise.reject({
+      code: '23503',
+      constraint: 'invitation_inviter_fk',
+      existingInvitationId: '',
+    });
+  }
+  return Promise.resolve({ id: 'inv_' + Math.random().toString(36).slice(2, 8) });
+}
+
+test('fresh address inserts and returns ok', async () => {
+  const r = await tryCreateInvite('carol@acme.com');
+  expect(r.ok).toBe(true);
+});
+
+test('duplicate address returns a conflict with the existing id', async () => {
+  const r = await tryCreateInvite('bob@acme.com');
+  expect(r.ok).toBe(false);
+  if (!r.ok) {
+    expect(r.error.code).toBe('conflict');
+    expect(r.error.existingInvitationId).toBe('inv_bob_123');
+  }
+});
+
+test('a non-23505 error is rethrown, not swallowed', async () => {
+  // insertInvite rejects with { code: '23503', ... } for 'fk@acme.com'
+  await expect(tryCreateInvite('fk@acme.com')).rejects.toBeTruthy();
+});
+`}
+/>
+
+<details>
+<summary>Reveal solution</summary>
+
+```ts
+export async function tryCreateInvite(email: string): Promise<InviteResult> {
+  try {
+    const { id } = await insertInvite(email);
+    return { ok: true, invitationId: id };
+  } catch (error) {
+    // Narrow on the code, not on "something threw". A 23505 is the
+    // pending-email unique index firing — translate it to a typed
+    // conflict the UI turns into "resend or revoke?". Anything else
+    // (a 23503, a dropped connection) is a real failure: rethrow it.
+    if (isDuplicateError(error) && error.code === '23505') {
+      return {
+        ok: false,
+        error: { code: 'conflict', existingInvitationId: error.existingInvitationId },
+      };
+    }
+    throw error;
+  }
+}
+```
+
+In production the Postgres error is wrapped, so you'd narrow on `error.cause instanceof DatabaseError && error.cause.code === '23505'` (and key on `error.cause.constraint === 'invitation_org_email_pending_unique'`) instead of the flat `error.code`. The branch logic is identical; only the path to the code changes.
+
+</details>
+
+## Expired invites get a fresh send, not a resend
+
+Carol's invite expired last Tuesday: `status` is still `'pending'`, but `expiresAt` slid into the past, so your read filtered it out of the main list.
+Alice still needs to see it and act on it, so it can't just vanish.
+
+The answer is a collapsed "Recently expired" list under the main one, read by a sibling helper, `listExpiredInvitations(orgId)`.
+It runs the live query with the inequality flipped and a floor added so it doesn't trawl all of history.
+
+```ts {3-4}
+where: and(
+  eq(invitation.status, 'pending'),
+  lt(invitation.expiresAt, now),
+  gt(invitation.expiresAt, thirtyDaysAgo),
+),
+```
+
+The `status` is still `'pending'`, but `expiresAt` is now in the past, bounded below by a 30-day floor so the shelf shows recent expirations, not invites that died last year.
+Same column, opposite side of the clock.
+
+Each expired row's button reads "Send new invite," and it routes to `sendInvitation`, a brand-new row with a brand-new token, never to `resendInvitation`.
+An expired invite has nothing live to rotate and its old token is dead, so it must be replaced, not extended.
+
+:::caution
+Never wire the expired shelf's button to `resendInvitation`.
+Resend rotates a live token in place; an expired invite has no live token to rotate.
+Two states, two verbs: a live invite gets rotated, a dead one gets replaced.
+Keeping the two lists visually separate encodes that, so a "Resend" button never implies a dead token can be revived.
+:::
+
+## Don't edit a pending invite in place
+
+Two more decisions, both about a control you should not build.
+
+First, changing the role on a pending invite.
+Alice invited Bob as `member`, then realized she meant `admin`.
+The instinct is an "edit role" button that flips `invitation.role` from `member` to `admin` in place.
+Don't build it.
+Bob's email already said "you've been invited as a member," and quietly rewriting the row to `admin` makes the email and the accept screen disagree.
+The honest fix is two clicks: revoke the `member` invite, then send a fresh `admin` one, so each invite carries one coherent promise.
+
+Second, a related boundary.
+Once Bob accepts, his role lives on the `member` row, and changes to it go through `changeMemberRole` from the last chapter, not through the invitation.
+From then on `invitation.role` is frozen history: it answers "what role was Bob invited as?", and the audit log reads from it.
+Never sync `invitation.role` and `member.role` after acceptance.
+They describe two different moments, the offer and the standing membership, and conflating them corrupts both records.
+
+Resend, revoke, and a blocked re-invite all preserve the row's record of what was promised and when.
+Here they are side by side.
+
+<Figure caption="Three actions on a pending row. Only resend sends an email, only resend rotates the token, and the blocked re-invite touches nothing. Every path preserves the row's record.">
+  <ActionsSummaryGrid />
+</Figure>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Better Auth — Organization plugin"
+    href="https://www.better-auth.com/docs/plugins/organization"
+    icon="simple-icons:betterauth"
+    iconColor="#000000"
+    description="The plugin's built-in invitation lifecycle — cancelInvitation and the re-invite auto-cancel option this chapter hand-rolls around."
+  />
+  <ExternalResource
+    title="PostgreSQL — Partial Indexes"
+    href="https://www.postgresql.org/docs/current/indexes-partial.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="UNIQUE plus a WHERE clause — the exact mechanism behind the one-pending-invite-per-address rule that the database enforces for you."
+  />
+  <ExternalResource
+    title="PostgreSQL — Error Codes (Appendix A)"
+    href="https://www.postgresql.org/docs/current/errcodes-appendix.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The full SQLSTATE table — 23505 unique_violation is the code your catch-and-translate narrows on."
+  />
+  <ExternalResource
+    title="OWASP — Session Management Cheat Sheet"
+    href="https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html"
+    icon="simple-icons:owasp"
+    iconColor="#000000"
+    description="The security principle behind resend: rotate a still-valid secret so any leaked copy dies. The same reflex for sessions, API keys, and resets."
+  />
+</CardGrid>

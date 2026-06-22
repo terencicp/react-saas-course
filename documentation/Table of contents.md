@@ -503,12 +503,12 @@
 - 6 API keys for machine callers (Teaches issuing and verifying the app's own API keys for non-browser callers — a high-entropy secret stored as a SHA-256 hash and shown once, a second `Authorization: Bearer` identity branch in `authedRoute` that resolves to the same `ctx`, org-scoped keys gated by `roleAtLeast` with `api-key.created` / `api-key.revoked` audit events and scopes as the key's ceiling, the personal-access-token variant, and Better Auth's `apiKey` plugin as the production path.)
 - 7 Quiz
 
-### Chapter 058 — Invitations and the seat-handoff lifecycle
-- 1 The seat reservation that outlives the request (Model Better Auth's `invitation` table with `tokenHash` and `acceptedAt` additions, the `pending` -> `accepted` / `canceled` state machine, the seven-day expiry as a security primitive, and the partial unique index on `(orgId, lower(email))` where `status = 'pending'`.)
+### Chapter 058 — The invitation lifecycle
+- 1 The invitation table that holds a seat open (Model Better Auth's `invitation` table with `tokenHash` and `acceptedAt` additions, the `pending` -> `accepted` / `canceled` state machine, the seven-day expiry as a security primitive, and the partial unique index on `(orgId, lower(email))` where `status = 'pending'`.)
 - 2 Minting the signed accept link (Build `sendInvitationAction` with a 32-byte Web Crypto token, SHA-256 hash at rest, HMAC-signed accept URL, Resend dispatch after the DB transaction commits, and the `'invitation.sent'` audit event.)
-- 3 Four arrival shapes on one accept URL (Route signed-in same-email, signed-in different-email, signed-out with account, and signed-out without account through one accept route with a verify order, an explicit Accept-button consent gate, auto-`emailVerified` for invite-sourced signups, and an active-org switch on accept.)
-- 4 Pending invites: list, resend, revoke, collide (Build the admin's pending-invites surface with an expiry-filtered list, `resendInvitationAction` that rotates the token, `revokeInvitationAction` that sets `status = 'canceled'`, and a catch-and-translate of the unique-pending constraint into `'already-invited'`.)
-- 5 Orphans, mismatches, and the double-click race (Make the senior calls on inviter-removed-before-accept (honor the invite), strict email-mismatch refusal, the double-click race against the `WHERE status='pending'` filter, and the already-a-member short-circuit.)
+- 3 The invitation accept flow (Route signed-in same-email, signed-in different-email, signed-out with account, and signed-out without account through one accept route with a verify order, an explicit Accept-button consent gate, auto-`emailVerified` for invite-sourced signups, and an active-org switch on accept.)
+- 4 The pending-invites surface: list, resend, revoke, collide (Build the admin's pending-invites surface with an expiry-filtered list, `resendInvitationAction` that rotates the token, `revokeInvitationAction` that sets `status = 'canceled'`, and a catch-and-translate of the unique-pending constraint into `'already-invited'`.)
+- 5 Invitation edge cases and the senior call (Make the senior calls on inviter-removed-before-accept (honor the invite), strict email-mismatch refusal, the double-click race against the `WHERE status='pending'` filter, and the already-a-member short-circuit.)
 - 6 Quiz
 
 ### Chapter 059 — Project: org, RBAC, and invitations end-to-end
