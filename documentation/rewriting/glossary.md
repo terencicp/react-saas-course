@@ -2287,3 +2287,26 @@ refetchIntervalInBackground | - | useInfiniteQuery/useQuery flag; false pauses t
 getPreviousPageParam | - | useInfiniteQuery function returning the previous page's cursor; mandatory whenever maxPages caps retention so dropped pages re-fetch on scroll-back. | first defined: Chapter 076 L2
 isFetchingNextPage | - | TanStack Query flag: true only while a useInfiniteQuery paging fetch is in flight, distinct from a background poll's isFetching. | first defined: Chapter 076 L2
 InfiniteData | - | TanStack Query's cache shape for an infinite query: a { pages, pageParams } object holding every fetched page. | first defined: Chapter 077 L4
+selector (Zustand) | store selector | Function reading just the store slice a component needs, so it re-renders only when that slice changes. | first defined: Chapter 078 L1
+pmndrs | Poimandres | Open-source collective maintaining Zustand, Jotai, Valtio, React Three Fiber. | first defined: Chapter 078 L1
+Redux Toolkit | RTK | Incumbent state manager built on reducers, actions, and a dispatcher; heavier ceremony than Zustand. | first defined: Chapter 078 L1
+Jotai | - | Atom-based state library: state built bottom-up from small independent atoms with a derivation graph. | first defined: Chapter 078 L1
+Valtio | - | Proxy-based state library; mutate state directly through a proxy, smaller ecosystem. | first defined: Chapter 078 L1
+command palette | - | Global keyboard-driven action menu whose open state is read by disjoint subtrees. | first defined: Chapter 078 L1
+per-feature store | - | A Zustand store with a single feature owner, co-located beside that feature; never one global useAppStore. | first defined: Chapter 078 L1
+create (Zustand) | - | Zustand's React-bound factory; returns a ready-to-use hook backed by one module-scoped store. Wrong for SSR. | first defined: Chapter 078 L2
+createStore (Zustand) | zustand/vanilla | Vanilla store factory with no React binding; getState/setState/subscribe. Wrap in Context for per-request stores. | first defined: Chapter 078 L2
+set (Zustand) | - | The store's write function passed into the creator; functional, absolute, or replace form. | first defined: Chapter 078 L2
+get (Zustand) | - | Reads the store's current state from inside an action. | first defined: Chapter 078 L2
+useStore (Zustand) | - | Zustand's generic React hook; binds a vanilla store to a component via a selector. | first defined: Chapter 078 L2
+slice (Zustand) | - | A self-contained factory for one feature area of a store, composed into the whole. | first defined: Chapter 078 L2
+StateCreator | - | Zustand's type for a store or slice initializer; its generics wire set/get to the full store. | first defined: Chapter 078 L2
+useShallow | zustand/react/shallow | Wraps a selector to compare its result shallowly, so object/array returns don't re-render on every change. | first defined: Chapter 078 L2
+persist (Zustand) | - | Middleware mirroring store state to browser storage so it survives a refresh. | first defined: Chapter 078 L2
+data-isolation bug | data-isolation failure | One tenant's data rendered into another's response; the most serious multi-tenant failure. | first defined: Chapter 078 L2
+createContext | - | React API opening a provider/consumer channel; only runs inside Client Components. | first defined: Chapter 016 L2
+creator (Zustand) | creator function | The function passed to create/createStore; receives set/get and returns the initial state with its actions. | first defined: Chapter 078 L2
+routed wizard | - | Multi-step flow where each step is its own URL/route segment, so back/forward and deep links work. | first defined: Chapter 078 L3
+draft (state) | - | Data the user is editing that isn't persisted yet; here, the in-progress customer until step 4 submits. | first defined: Chapter 078 L3
+tenancy boundary | - | The moment the active tenant changes (org-switch), after which any per-tenant client cache must be cleared. | first defined: Chapter 078 L3
+composite schema | composite submit schema | One Zod schema derived from the per-step schemas, validating the whole multi-step payload at submit. | first defined: Chapter 078 L3

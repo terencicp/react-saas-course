@@ -671,9 +671,9 @@
 - 4 Optimistic add and rollback with useMutation
 
 ### Chapter 078 — Zustand
-- 1 When Zustand earns its weight (The three triggers that justify reaching for Zustand past the five client-state defaults, the per-feature rule, and the "client-only, never global ambient" framing for SaaS codebases.)
+- 1 When to reach for Zustand (The three triggers that justify reaching for Zustand past the five client-state defaults, the per-feature rule, and the "client-only, never global ambient" framing for SaaS codebases.)
 - 2 Primitives and the per-request provider (The v5 API surface — `createStore`, the slices pattern with `StateCreator`, selector subscriptions with `useShallow`, the `useRef`-pinned Context provider for App Router SSR, and the middleware lineup named once.)
-- 3 The routed wizard, end to end (The four-step customer-onboarding wizard as the in-app trigger — the four-slice store shape, per-step Zod gates, the Server-Action submit boundary, back/forward preserves vs. refresh loses, and reset discipline at submit-success and org-switch.)
+- 3 The routed customer wizard (The four-step customer-onboarding wizard as the in-app trigger — the four-slice store shape, per-step Zod gates, the Server-Action submit boundary, back/forward preserves vs. refresh loses, and reset discipline at submit-success and org-switch.)
 - 4 Quiz
 
 ### Chapter 079 — Project: routed customer wizard with Zustand
