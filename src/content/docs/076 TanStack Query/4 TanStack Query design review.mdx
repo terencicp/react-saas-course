@@ -1,0 +1,487 @@
+---
+title: A worked TanStack Query design review
+chapter-id: 76
+course-progress: 0.7174
+tagline: Run the four-trigger funnel against one real screen, then split TanStack Query's cached reads from the Server Action that owns the writes.
+sidebar:
+  order: 4
+  label: TanStack Query design review
+rewrites: 2
+---
+
+import Figure from '../../../components/figures/Figure.astro';
+import ArrowDiagram from '../../../components/figures/ArrowDiagram.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import InvoiceScreenMock from '../../../components/lessons/076/4/InvoiceScreenMock.astro';
+import TwoCacheLanes from '../../../components/lessons/076/4/TwoCacheLanes.astro';
+import BoundaryMap from '../../../components/lessons/076/4/BoundaryMap.astro';
+import { Steps, CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+TanStack Query has been abstract so far: a threshold for when to reach for it, four primitives at the call site, the App Router wiring that keeps its cache from leaking across requests.
+This lesson aims all of it at one real screen, the per-invoice comment thread, and reviews the design before any code is written.
+
+You learned that TanStack Query earns its place only when the platform defaults stop pulling their weight.
+This screen meets that condition; the next chapter is where you build it.
+
+## The screen: a comment thread on every invoice
+
+Picture the invoice detail page at `/invoices/[id]`.
+On the left is the static summary: who it's billed to, the line items, the total, the status.
+On the right runs a comment thread, where coworkers hash out a dispute, leave an internal note, or paste in what a customer said on the phone.
+
+This is the standard "activity on a record" pattern, the same shape as comments under a support ticket or the timeline on a CRM deal.
+Build it here and you can build it on any record in any product.
+
+<Figure caption="The invoice detail page: a static summary on the left, a live comment thread on the right. Every decision in this lesson is about which half gets which tool.">
+  <InvoiceScreenMock />
+</Figure>
+
+A user does three things on this thread, and each becomes a decision later: **read the latest** comments, since someone may have just posted, **scroll back** through the history, and **post** a new comment.
+
+## Running the four-trigger funnel on the comment thread
+
+An inexperienced engineer learns a powerful library, sees a screen that looks "live and interactive," and reaches for it on instinct.
+The experienced move is to run the funnel.
+A trigger only counts if you can name the cheaper default it beats: "this is real-time-ish" is not a trigger, "`router.refresh()` re-renders the whole route segment every ten seconds and that's too heavy" is.
+
+The four triggers from the start of this chapter: **polling** (server changes the client must learn on a tight cadence, no user action), **optimistic mutations** that land in a **cached query**, **infinite scroll** that **reuses** loaded pages, and **cross-view caching** across mounts.
+Hold each against the thread and name the default it beats.
+
+**Polling.** A coworker posts from their own session, and the user expects the comment to appear without refreshing, every ten seconds or so while the tab is focused.
+The cheap default, a `setInterval` calling `router.refresh()`, re-renders the *entire route segment* every tick: summary, line items, banner, all to surface maybe one comment.
+Too heavy, too jarring. **Met.**
+
+**Optimistic into a cached query.** When the user posts, the comment should appear instantly and a `500` should roll it back with an error.
+`useOptimistic` does that for a local list, but the comment has to land at the top of the *first page of the cached infinite query*, the same cache the thread reads and the poll refreshes.
+`useOptimistic` has no idea that cache exists, let alone its `pages` shape. **Met.**
+
+**Infinite scroll with reuse.** A busy invoice can have hundreds of comments; the user scrolls back to an old exchange, then forward to the bottom.
+The Server-Component cursor pagination from the list-view chapter produces the right URLs but refetches every page on each navigation.
+`useInfiniteQuery` with `maxPages` keeps loaded pages in the client cache all session, so scrolling back is instant. **Met.**
+
+**Cross-view caching.** A "recent activity" sidebar peeks at the same thread as it mounts and unmounts, and a populated cache renders it instantly on re-mount.
+**Met, but weakest of the four:** on its own it would never justify a library, only ride on the three strong triggers.
+
+Three strong triggers, one weak. One screen hitting three at once is rare; most surfaces hit zero, which is why most stay Server Components and Server Actions.
+This thread is the unusual case the library was built for, and why this chapter chose it.
+
+Now make the call yourself.
+The funnel below commits you to the answers in order, one question at a time, as you'd reason through a real screen.
+The value isn't the verdict; it's the *sequence* of cheaper defaults you rule out reaching it.
+
+<StateMachineWalker kind="decision" title="Does the comment thread earn TanStack Query?">
+  <Question
+    id="is-server-state"
+    prompt="Is the comment thread server state?"
+    description="Comments live in Postgres; every session reads the same rows back through the API."
+  >
+    <Branch
+      label="No — it's UI, URL, or form state"
+      to="leaf-not-server"
+      rationale="Then useState, nuqs, or useActionState owns it — not a query cache."
+    />
+    <Branch
+      label="Yes — it's rows in the database"
+      to="refresh-cadence"
+    />
+  </Question>
+
+  <Question
+    id="refresh-cadence"
+    prompt="Would Server Components + router.refresh() cover the refresh cadence?"
+    description="A coworker can post from another session, and the user expects to see it without hitting refresh."
+  >
+    <Branch
+      label="Yes — an occasional, user-triggered refresh is fine"
+      to="leaf-router-refresh"
+      rationale="router.refresh() on demand is cheaper than standing up a client cache."
+    />
+    <Branch
+      label="No — ~10s polling would re-render the whole segment"
+      to="optimism"
+      rationale="A per-tick full-segment re-render is too heavy and too jarring for one new comment."
+    />
+  </Question>
+
+  <Question
+    id="optimism"
+    prompt="Would useOptimistic cover the optimistic post?"
+    description="Posting should show the comment instantly, and a 500 should roll it back with an error."
+  >
+    <Branch
+      label="Yes — it's a single local list"
+      to="leaf-use-optimistic"
+      rationale="useOptimistic handles single-list inline rollback just fine."
+    />
+    <Branch
+      label="No — the optimism must land in the infinite-query cache"
+      to="pagination"
+      rationale="useOptimistic can't write into data.pages[0] of the cached infinite query."
+    />
+  </Question>
+
+  <Question
+    id="pagination"
+    prompt="Would Server-Component cursor pagination cover scrolling back?"
+    description="The thread can be hundreds deep; the user scrolls back to read an old exchange, then forward again."
+  >
+    <Branch
+      label="Yes — re-fetching each page is acceptable"
+      to="leaf-server-pagination"
+      rationale="Cursor pagination is fine when loaded pages needn't be reused."
+    />
+    <Branch
+      label="No — scroll-back must reuse already-loaded pages"
+      to="leaf-tanstack"
+      rationale="Only a client cache keeps loaded pages sitting around for the whole session."
+    />
+  </Question>
+
+  <Leaf id="leaf-not-server" verdict="Not a query">
+    If it isn't server state, no query cache applies.
+    Re-check the premise: `useState`, `nuqs`, or `useActionState` is the owner here.
+  </Leaf>
+
+  <Leaf id="leaf-router-refresh" verdict="Server Components + router.refresh()">
+    An occasional, user-triggered refresh doesn't justify a second cache.
+    Let the Server Component own the read and call `router.refresh()` when the user asks for fresh data.
+  </Leaf>
+
+  <Leaf id="leaf-use-optimistic" verdict="useOptimistic">
+    A single-list optimistic add with rollback is React's job, not the library's.
+    Reach for `useOptimistic` and keep the screen on platform defaults.
+  </Leaf>
+
+  <Leaf id="leaf-server-pagination" verdict="Server-Component cursor pagination">
+    If scroll-back can refetch, the URL-driven server pagination you already have is enough.
+    No client cache earns its weight yet.
+  </Leaf>
+
+  <Leaf id="leaf-tanstack" verdict="TanStack Query earns its weight">
+    Three strong triggers (**polling**, **optimistic-into-cache**, and **infinite scroll with reuse**), and every cheaper default fell through on the way here.
+    This is exactly the surface the library was built for.
+  </Leaf>
+</StateMachineWalker>
+
+## The read/write seam: query for reads, Server Action for writes
+
+You've proven the thread needs TanStack Query.
+Now the central call: the library owns the **read**, not the write, even though it ships a perfectly good `useMutation`.
+
+The read is the thread itself: a `useInfiniteQuery` against a route handler, `GET /api/invoices/[id]/comments?cursor=…`, polled, capped, and SSR-prefetched.
+This is the live, cached surface the four triggers described.
+
+The write is posting a comment, and it stays a Server Action, `addCommentAction`.
+Once the action resolves, the client calls `queryClient.invalidateQueries({ queryKey: commentKeys.lists(invoiceId) })` to mark the thread stale so it refetches.
+
+Why a Server Action when `useMutation` is right there?
+Because the action already owns a stack of things a route-handler `useMutation` would force you to rebuild by hand: the <Term definition={"FormData + native HTML <form> form contract. Submits without JavaScript and degrades gracefully — the page works before hydration."}>progressive-enhancement form contract</Term>, server-side Zod validation, the **audit-log write** (posting a comment is an auditable event, recorded inside the action where session and tenant context already live), and the canonical `Result` your forms already read.
+
+So the two systems cooperate instead of competing for the mutation.
+The <Term definition={"The Server Action that owns the mutation: parse, authorize, write, audit, return Result."}>write seam</Term> mutates and triggers invalidation; the <Term definition={"The single endpoint where the client crosses into server data — here, the GET route handler the query reads from."}>read seam</Term> owns the cache that gets invalidated.
+They meet at the invalidate call.
+
+This is "trigger before tool" applied to the write: `useMutation`'s surface doesn't beat the Server Action here, so the action stays.
+The two panels below are complementary halves of the seam, not options to choose between.
+
+<TabbedContent>
+  <TabbedItem label="Read side (the thread)" caption="TanStack Query owns the read cache.">
+    - **Hook:** `useInfiniteQuery`
+    - **Endpoint:** `GET /api/invoices/[id]/comments?cursor=…`
+    - **Owns:** the live, scrollable, polled thread, the cached reads
+    - **Cache:** the TanStack client cache, keyed by `commentKeys.lists(invoiceId)`
+    - **Refresh:** `refetchInterval: 10_000`; `maxPages: 10`; SSR-prefetched first page
+  </TabbedItem>
+
+  <TabbedItem label="Write side (posting)" caption="The Server Action owns the mutation; it hands off to the cache at the invalidate seam.">
+    - **Mechanism:** a Server Action, `addCommentAction`, on a native `<form>` via `useActionState`
+    - **Owns:** the form contract, Zod validation, the audit-log write, the `Result`
+    - **After it resolves:** the client fires `queryClient.invalidateQueries({ queryKey: commentKeys.lists(invoiceId) })`
+  </TabbedItem>
+</TabbedContent>
+
+A quick check on whether the seam decision landed.
+
+<MultipleChoice>
+  A teammate proposes: "Let's drop the Server Action and just `POST` the comment from a `useMutation`, then `invalidateQueries` — one system, fewer moving parts." What's the strongest reason this is the worse design on *this* screen?
+
+  <McqChoice correct>It throws away the form contract, the server-side validation, and the audit-log write that the action already owns — work you'd have to rebuild by hand to dodge an `invalidateQueries` call you'd make anyway.</McqChoice>
+  <McqChoice>`useMutation` can't call `invalidateQueries`, so the thread would never refetch after the post.</McqChoice>
+  <McqChoice>A route-handler `POST` can't reach the database, so the comment would never persist.</McqChoice>
+  <McqChoice>The optimistic page-zero write only works from inside a Server Action's `onMutate`, so `useMutation` couldn't show the comment instantly.</McqChoice>
+
+  <McqWhy>The "one system" pitch loses everything the action already owns for free: the progressive-enhancement form contract, Zod validation, the audit-log write, and the canonical `Result`. You'd reimplement all of it just to avoid a single `invalidateQueries` call — an upside-down trade. The other options are simply false: `useMutation` invalidates fine, route handlers reach the database, and the page-zero `onMutate` write lives in the *client* mutation, not the action. The senior split holds: **reads through TanStack, the mutation through the Server Action, and the two meet at the invalidate seam.**</McqWhy>
+</MultipleChoice>
+
+## One route handler, two callers
+
+The read goes through `GET /api/invoices/[id]/comments?cursor=…`, wrapped in the organizations chapter's `authedRoute(role, schema, fn)` helper for the auth and tenancy check, and returns a Zod-validated `{ comments, nextCursor }`.
+That response schema lives in `/lib`, imported by both the handler (to validate what it sends) and the `queryFn` (to parse what it receives), so code enforces the contract rather than a convention two files agree to follow.
+
+Why a route handler, and not a `/lib` function the client calls directly or a Server Action like the write side? Three reasons.
+
+First, **the client cannot import `/lib` directly.**
+Those functions reach for Drizzle, which pulls your database driver and `DATABASE_URL` into the bundle, so importing one into a Client Component ships your connection string to the browser.
+The route handler is the network boundary that keeps the database server-side, and client reads must cross it.
+
+Second, the route handler is also your public contract.
+Because the read is plain HTTP, a future mobile app, Zapier integration, or one-off script reaches the thread through the same surface the browser uses.
+TanStack Query layered a client cache on top of that API without replacing or forking it: **the architecture stayed open.**
+
+Third, the dual fetcher from the wiring lesson.
+On the server, inside `prefetchInfiniteQuery`, calling `fetch()` to your own host is a wasteful loopback to read data the server can already touch directly.
+So the read function branches on `typeof window`: in the browser it `fetch`es the handler; on the server it runs the Drizzle query (`listInvoiceComments`) in-process.
+Both branches parse the same schema, so the shape is identical, and the handler stays the seam for external callers.
+
+Here is the handler's signature and the shape it returns.
+
+<div data-mark-color="blue">
+
+```ts title="src/app/api/invoices/[id]/comments/route.ts" {6}
+export const GET = authedRoute(
+  'member',
+  commentsQuerySchema,
+  async ({ params, query }, { orgId }) => {
+    const page = await listInvoiceComments(orgId, params.id, query.cursor);
+    return Response.json({ comments: page.rows, nextCursor: page.nextCursor });
+  },
+);
+```
+
+</div>
+
+## Adding the optimistic comment to the first cache page
+
+This is the lesson's one new mechanism.
+The primitives lesson named two optimistic shapes: via-variables, which renders the in-flight value inline with no cache write, and cache-update, which writes the value into the cache yourself.
+Here the new comment must appear at the top of the first page of a `useInfiniteQuery`, which lives in the cache at `data.pages[0]`.
+That is a structured cache write, not an inline render, so it's the cache-update shape.
+The rule that picks it: **the shape of what you're updating dictates the technique.** Inline render means via-variables; a cache write means cache-update.
+
+The cache-update shape runs in a fixed order inside `onMutate`:
+
+<Steps>
+1. **Cancel** in-flight queries with `cancelQueries`, so a mid-flight poll can't land and clobber your optimistic row.
+
+2. **Snapshot** the current cache with `getQueryData`, so you have something to roll back to.
+
+3. **Write** the optimistic comment into page zero with `setQueryData`.
+
+4. **Return** the snapshot as context, so the error handler can reach it.
+
+5. **Restore** from that snapshot in `onError` if the post fails.
+
+6. **Invalidate** in `onSettled` so the cache reconciles with the server, win or lose.
+</Steps>
+
+The step that's easy to skip is **cancel first**.
+This thread polls every ten seconds, so without `cancelQueries` an in-flight poll lands carrying the *old* server state, overwrites your cache, and your comment vanishes until the next refetch.
+A non-polling screen might survive without it; this one doesn't.
+
+A second hazard: a coworker's comment could arrive via the poll while your action is still resolving, and you'd risk showing your own comment twice once its persisted row returns.
+The fix is the reconcile-by-key trick from the Server Actions chapter.
+The optimistic comment carries the **same client-generated UUID** you send to the action, so the persisted row **replaces it by key** instead of stacking a duplicate beside it.
+
+Walk the skeleton below in order.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const addComment = useMutation({
+  mutationFn: (input: NewComment) => postComment(invoiceId, input),
+  onMutate: async (input) => {
+    await queryClient.cancelQueries({ queryKey: commentKeys.lists(invoiceId) });
+    const previous = queryClient.getQueryData(commentKeys.lists(invoiceId));
+    queryClient.setQueryData<InfiniteData<CommentPage>>(
+      commentKeys.lists(invoiceId),
+      (old) => prependToFirstPage(old, optimisticComment(input)),
+    );
+    return { previous };
+  },
+  onError: (_err, _input, context) => {
+    queryClient.setQueryData(commentKeys.lists(invoiceId), context?.previous);
+  },
+  onSettled: () => {
+    queryClient.invalidateQueries({ queryKey: commentKeys.lists(invoiceId) });
+  },
+});
+`}>
+  <AnnotatedStep meta="{4}" color="orange">
+    **Cancel first.** Without this line, an in-flight poll lands a beat later and overwrites your optimistic row. The step most easily missed.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5}" color="blue">
+    **Snapshot** the cache and stash it. This `previous` value is the only thing you can roll back to if the post fails.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6-9}" color="green">
+    **The page-zero write.** Typed as `InfiniteData<CommentPage>`, the updater clones `old.pages` and prepends the optimistic comment to `pages[0].comments`, so it shows at the top of the thread instantly. The comment carries the same client UUID sent to the action, so it reconciles by key later.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13}" color="blue">
+    **On error, restore** the snapshot from context. The optimistic row disappears and the user sees the error.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{16}" color="blue">
+    **On settled, invalidate**, win or lose, so the cache refetches. The persisted row replaces the optimistic one by UUID, so there's no duplicate.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+:::caution
+Don't drop `refetchInterval` to one second "for snappiness."
+A tighter poll multiplies the cancel/overwrite race, hammers the database connection pool, and drains mobile battery for no real gain, and a ten-second thread already feels live.
+Ten seconds is a deliberate call, not a placeholder.
+:::
+
+<VideoCallout videoId="cypK50wBCZs" videoTitle="Frontend System Design Essentials: Optimistic updates">
+  Juntao Qiu builds this cache-update shape on a live comment feed, framed as a system-design call: `onMutate` snapshots with `getQueryData`, `setQueryData` writes the optimistic row, and `onError` rolls it back (19 min).
+</VideoCallout>
+
+## Paying for two caches: invalidation after a post
+
+TanStack Query leaves this invoice page holding comment data in **two** caches.
+The Server Component cache holds the summary side, the layout's cards and any server-rendered count; the TanStack client cache holds the live thread.
+One post changes data in both, so one post has to refresh both.
+
+When `addCommentAction` succeeds, two invalidations fire against the two caches:
+
+- **`updateTag(invoiceTag(invoiceId))`**, *inside the action*, refreshes the **Server Component** layer with read-your-writes, so the poster sees their own write in the summary and the server-rendered count at once.
+  (Reach for the `revalidateTag(tag, 'max')` sibling when nothing is waiting on the write, as in a webhook or background job.)
+- **`queryClient.invalidateQueries({ queryKey: commentKeys.lists(invoiceId) })`**, *on the client* once the action's `Result` resolves, marks the **TanStack** thread stale and refetches it.
+
+Forgetting one is the design's most common bug: **`updateTag` cannot reach a `useQuery`, and `invalidateQueries` cannot reach a Server Component.**
+Fire only `updateTag` and the live thread goes stale; fire only `invalidateQueries` and the summary count does.
+That is the "list fresh, detail stale" bug, the cost of the second cache, paid on every post.
+
+Step through one post below and watch each cache go stale as its own API fires.
+
+<DiagramSequence>
+  <DiagramStep>
+    <TwoCacheLanes step={1} />
+    <Fragment slot="caption">
+      **Submit.** The optimistic comment already sits in `pages[0]` from `onMutate`. Neither server cache is touched yet; the user just sees their row instantly.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <TwoCacheLanes step={2} />
+    <Fragment slot="caption">
+      **Server.** `addCommentAction` writes the row, writes the audit log, and calls `updateTag(invoiceTag)`. The **Server Component cache** goes stale; the TanStack cache is untouched.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <TwoCacheLanes step={3} />
+    <Fragment slot="caption">
+      **Resolve.** The action returns `Result.ok`; the client awaits it and fires `invalidateQueries(commentKeys.lists(id))`. Now the **TanStack cache** is stale too: a *second* API hitting a *second* cache.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <TwoCacheLanes step={4} />
+    <Fragment slot="caption">
+      **Reconcile.** Both layers refetch. The persisted row replaces the optimistic one by UUID, and the summary card's count ticks up. Two caches, two APIs, one consistent screen.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+Sort each refresh job into the cache that owns it, and watch for the trap.
+
+<Buckets twoCol instructions="Sort each refresh job into the cache that owns it — and the API that invalidates it.">
+  <Bucket name="sc" label="Server Component cache" description="Invalidated with updateTag" />
+  <Bucket name="tq" label="TanStack client cache" description="Invalidated with invalidateQueries" />
+
+  <Item bucket="sc">The invoice summary card's comment count, rendered in the Server Component layout</Item>
+  <Item bucket="sc">A server-rendered "X comments" badge in the page header</Item>
+  <Item bucket="tq">The live thread the user is currently scrolled through</Item>
+  <Item bucket="tq">The optimistic row the poster just added</Item>
+  <Item bucket="tq">A comment count rendered *inside* the `'use client'` thread component itself</Item>
+</Buckets>
+
+## Only the comment thread crosses the client boundary
+
+Inventory the invoice page.
+The header, customer card, line-items table, and status-and-version banner are all Server Components with zero `useQuery`.
+Only the comment thread (`comment-thread.tsx`, marked `'use client'`) touches TanStack Query.
+The page itself (`app/(app)/invoices/[id]/page.tsx`) stays a Server Component: it prefetches the thread's first page and wraps that one leaf in a `<HydrationBoundary>`.
+
+A client-state library does not have to turn the whole page into a Client Component.
+Put `'use client'` at the top and add `useQuery` for the comments, and the summary, line items, and banner all ship as client JavaScript and lose their server-fast first paint, all to feed one thread.
+Draw the boundary at the leaf instead: the static regions stay server-fast, and you pay TanStack Query's cost only where it earns its place.
+Server Components own the first paint; TanStack owns the live cache.
+
+<Figure expandable={false}>
+  <ArrowDiagram arrows={[
+    { from: 'bm-prefetch', to: 'bm-leaf', label: 'prefetched + hydrated', color: '#2563eb', startSocket: 'bottom', endSocket: 'right', startSocketGravity: [80, 30], endSocketGravity: [90, 0], labelOffset: [12, -8] },
+  ]}>
+    <BoundaryMap />
+  </ArrowDiagram>
+  <Fragment slot="caption">
+    Only the thread crosses the client boundary; every other region ships zero client JavaScript for its data.
+  </Fragment>
+</Figure>
+
+Because the page prefetches with `prefetchInfiniteQuery` and hydrates, the thread's first page paints server-rendered with no skeleton, identical to the static regions around it.
+Only the scroll-back and the polling hit the network afterward.
+
+## What the next chapter builds
+
+This lesson was the design review: you ran the funnel, drew the read/write seam, and counted the two-cache cost, but wrote no files.
+The next chapter implements this exact surface end to end:
+
+<Steps>
+1. The seeded comments and the route handler behind `GET /api/invoices/[id]/comments`.
+
+2. The `<Providers>` shell and per-request `getQueryClient()` from the wiring lesson, and the page's `<HydrationBoundary>` prefetching the first page.
+
+3. The `useInfiniteQuery` with ten-second polling and `maxPages: 10`.
+
+4. The `addCommentAction` plus `useActionState` form, and the full `useMutation` optimistic add with its cache update.
+
+5. The verify recipe: a comment arriving from another session, the optimistic comment showing instantly, and a forced `500` rolling it back.
+</Steps>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="TanStack Query — Optimistic Updates"
+    href="https://tanstack.com/query/latest/docs/framework/react/guides/optimistic-updates"
+    icon="simple-icons:reactquery"
+    iconColor="#FF4154"
+    description="The cache-update vs via-variables patterns and the cancel-snapshot-rollback sequence."
+  />
+  <ExternalResource
+    title="TanStack Query — Advanced Server Rendering"
+    href="https://tanstack.com/query/latest/docs/framework/react/guides/advanced-ssr"
+    icon="simple-icons:reactquery"
+    iconColor="#FF4154"
+    description="Server-side prefetch + dehydrate + HydrationBoundary for the App Router — the SSR-hydrated initial-data shape."
+  />
+  <ExternalResource
+    title="Concurrent Optimistic Updates in React Query"
+    href="https://tkdodo.eu/blog/concurrent-optimistic-updates-in-react-query"
+    icon="lucide:flame"
+    iconColor="#0EA5E9"
+    description="TkDodo, a TanStack maintainer, on the in-flight race behind this lesson's load-bearing cancelQueries call."
+  />
+</CardGrid>

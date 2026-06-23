@@ -1,11 +1,12 @@
 ---
-title: Wiring TanStack Query without leaking the cache across requests
-tagline: Integrate TanStack Query into the Next.js App Router with a per-request client and SSR hydration, so the first paint is server-rendered and no tenant's cache leaks into another's.
+title: Wiring TanStack Query without cache leaks
+tagline: Wire TanStack Query into the Next.js App Router with a per-request client and SSR hydration, so the first paint is server-rendered and no tenant's cache leaks into another's.
 chapter-id: 76
 course-progress: 0.7154
 sidebar:
   order: 3
   label: Wiring without cache leaks
+rewrites: 2
 ---
 
 import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
@@ -32,23 +33,23 @@ import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-The `CommentThread` you wrote last lesson works, but the first time it loads it flashes a skeleton while a cold request resolves, because nothing has filled its cache yet.
-It also has no provider, so dropped into a real app it throws before it renders a single comment.
-This lesson closes both gaps, and it answers the question the call site couldn't: how do you wire TanStack Query into the App Router so the first paint is server-rendered, *and* the server-side client never leaks one tenant's cache into another tenant's render?
-There are four moving parts: a provider, a per-request client, SSR-hydrated initial data, and a second invalidation surface to keep in sync. The per-request rule is the one everything else depends on, so we build toward it.
+The `CommentThread` from last lesson works, but on first load it flashes a skeleton while a cold request resolves, because nothing has filled its cache yet.
+It also has no provider, so in a real app it throws before rendering anything.
+This lesson closes both gaps: it wires TanStack Query into the App Router so the first paint is server-rendered, *and* so the server-side client never leaks one tenant's cache into another tenant's render.
+There are four parts: a provider, a per-request client, SSR-hydrated initial data, and a second invalidation surface to keep in sync. The rest depends on the per-request client, so we build toward it.
 
-## Install, and the one provider
+## Install and mount the one provider
 
-Install both packages together, because the devtools are part of your daily loop, not a tool you reach for only when something breaks:
+Install both packages together, since you'll want the devtools on hand:
 
 ```bash
 pnpm add @tanstack/react-query @tanstack/react-query-devtools
 ```
 
-Every `useQuery` and `useMutation` in your app reads from one shared cache, and that cache is exposed through React context.
-Context needs a provider somewhere above the components that consume it, so the first thing to set up is a <Term definition="The React context provider that exposes the TanStack cache to every useQuery and useMutation rendered below it.">`QueryClientProvider`</Term> wrapping the app.
+Every `useQuery` and `useMutation` reads from one shared cache, and that cache reaches components through React context.
+Context needs a provider above its consumers, so start by wrapping the app in a <Term definition="The React context provider that exposes the TanStack cache to every useQuery and useMutation rendered below it.">`QueryClientProvider`</Term>.
 
-Because context is a client-only feature, that provider has to live in a Client Component:
+Because context is client-only, that provider has to live in a Client Component:
 
 <AnnotatedCode lang="tsx" maxLines={12} code={`
 // app/_components/providers.tsx
@@ -68,15 +69,15 @@ export const Providers = ({ children }: { children: React.ReactNode }) => {
 };
 `}>
   <AnnotatedStep meta="{2}" color="blue">
-    The `'use client'` directive. Leaving it out is a common setup mistake: `QueryClientProvider` is built on React context, and context exists only in Client Components, so a server-side provider file throws `createContext is not a function` at render. The directive is what makes the rest of the file work.
+    The `'use client'` directive. Leave it out and `QueryClientProvider`, which is built on React context, throws `createContext is not a function` at render, since context exists only in Client Components.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{8}" color="blue">
-    `getQueryClient()` obtains the client. How it obtains one, fresh on the server and a singleton in the browser, is the entire point of the next section. For now, read it as "get me the right client for wherever this is running."
+    `getQueryClient()` returns the client, fresh on the server and a singleton in the browser. How it does that is the next section; for now, read it as "the right client for wherever this is running."
   </AnnotatedStep>
 
   <AnnotatedStep meta="{11}" color="blue">
-    `<QueryClientProvider client={...}>` wraps `children`. Everything rendered inside it can now reach the cache. This is the one provider for the whole app.
+    `<QueryClientProvider client={...}>` wraps `children`, so everything inside can reach the cache. This is the one provider for the whole app.
   </AnnotatedStep>
 </AnnotatedCode>
 
@@ -96,49 +97,39 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 }
 ```
 
-That is the whole provider story: one Client Component, mounted once.
-The interesting part is the line we passed over, `getQueryClient()`.
+That's the whole provider: one Client Component, mounted once. Next, the line we passed over, `getQueryClient()`.
 
-## The per-request client, and the leak it prevents
+## The per-request client and the leak it prevents
 
-This is the heart of the lesson. It is the one place where a setup detail that looks harmless on a toy app turns into a data leak on a real one.
-Before walking through the fix, it helps to see the bug it prevents.
+Here a setup detail that looks harmless on a toy app becomes a data leak on a real one.
 
-### The bug, in production terms
+### Why a module-scoped client leaks across requests
 
-The obvious way to make a client is to write it once at the top of a module:
+The obvious way to make a client is once, at the top of a module:
 
 ```ts
 export const queryClient = new QueryClient();
 ```
 
-On a single-user app running on your laptop, that line is fine and nothing ever goes wrong.
-On a multi-tenant SaaS deployed to a server, it is a *data-isolation bug*, and the reason comes down to where module scope lives.
+On a single-user app on your laptop, that is fine. On a multi-tenant SaaS, it is a *data-isolation bug*, because of where module scope lives.
 
 A module's top-level code runs **once per process**, not once per request.
-Your server process handles request after request, tenant A, then tenant B, then tenant C, all sharing the same loaded modules and therefore the same single `queryClient`.
-So when the page for tenant A prefetches their comments into that client, those rows sit in the cache.
-Then tenant B's request comes in, renders against the *same* client, and can read tenant A's rows out of it.
+One server process handles request after request, tenant A then tenant B, all sharing the same loaded modules and so the same single `queryClient`.
+When tenant A's page prefetches their comments into it, those rows stay in the cache, and tenant B then renders against the *same* client and can read them.
 
-This is the same failure as forgetting the org filter in a database query, one tenant seeing another tenant's data, except it happens at the cache layer, where it is easy to miss because no individual query looks wrong.
-That is why the per-request rule exists.
-It is not a performance tweak you can skip; it is the line between a working UI library and a leak.
+This is the cache-layer version of forgetting the org filter on a database query: no individual query looks wrong, yet one tenant sees another's data.
+The per-request rule is not an optional performance tweak; it is the line between a working library and a leak.
 
-### The fix you already know
+### A fresh client per request, a singleton in the browser
 
-The fix has two halves, because the two runtimes have genuinely different needs.
+The two runtimes need different things.
 
-The **browser** has exactly one user for the whole session.
-There, a module singleton is not just acceptable, it is *correct*: you want one cache that persists as the user navigates between pages, so returning to a screen they already visited reads from cache instead of refetching.
+The **browser** has one user per session, so a module singleton is *correct*: one cache that persists across navigation, so returning to a screen reads from cache instead of refetching.
 
-The **server** has a different user on every request.
-There, you need a *fresh* client per request so one request's cache can never reach another's render.
+The **server** has a different user on every request, so it needs a *fresh* client per request, with no request's cache reaching another's render.
 
-One file handles both by branching on whether it is running on the server.
-The server half is something you have already built before, under a different name: it is the same request-scoped memoization you met for deduping reads, React's <Term definition="Wraps a function so all calls to it within a single server request return the same result, then resets for the next request.">`cache()`</Term>.
-Earlier you wrapped a database read in `cache()` so a layout and a page that both needed the same row triggered one query instead of two.
-Here you wrap the *client factory* in `cache()` for the same reason: a layout and a page that both prefetch into "the" client need to get the *same* client within one request, but a different one on the next request.
-You are not learning a new tool; you are pointing one you already trust at a new target.
+One file handles both by branching on where it runs.
+The server half is the same React <Term definition="Wraps a function so all calls to it within a single server request return the same result, then resets for the next request.">`cache()`</Term> you used to dedupe reads, applied to the client factory: a layout and a page that both prefetch into "the" client get the *same* client within one request, and a different one on the next.
 
 <AnnotatedCode lang="ts" maxLines={18} code={`
 // src/lib/query-client.ts
@@ -175,34 +166,34 @@ export function getQueryClient() {
 }
 `}>
   <AnnotatedStep meta="{9}" color="blue">
-    `makeQueryClient` is the single factory both branches call. The config lives here, in one place, so the server client and the browser client are configured identically, with no way for them to drift apart.
+    `makeQueryClient` is the single factory both branches call, so server and browser clients are configured identically and cannot drift.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{25}" color="blue">
-    `cache(makeQueryClient)` wraps the factory in React's request-scoped memoization. Within one server request every call returns the *same* client; the next request gets a fresh one. This is the `cache()` you already used to dedupe reads, now memoizing a client instead of a row.
+    `cache(makeQueryClient)` wraps the factory in React's request-scoped memoization: within one request every call returns the *same* client, and the next request gets a fresh one. Same `cache()` you used to dedupe reads, memoizing a client instead of a row.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{27, 31}" color="blue">
-    `let browserQueryClient`, paired with the `??=` on the last line, is a lazy module singleton. The first call in the browser creates the client; every call after returns that same one, so it persists across client navigations for the whole session.
+    `let browserQueryClient` plus the `??=` on the last line is a lazy module singleton: the first call in the browser creates the client, every call after returns it, so it persists across navigations for the session.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{30}" color="blue">
-    The `isServer` branch. `isServer` is TanStack Query's own exported boolean: `true` during a server render, `false` in the browser. It is equivalent to writing `typeof window === 'undefined'` yourself, just clearer about intent.
+    The `isServer` branch. `isServer` is TanStack Query's exported boolean, `true` during a server render and `false` in the browser, equivalent to `typeof window === 'undefined'` but clearer.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{18-19}" color="blue">
-    The `shouldDehydrateQuery` line, extended to include `'pending'`. By default the library only serializes *settled* queries when it ships the cache to the browser; adding the `pending` status lets it serialize *in-flight* ones too, which is what makes streaming work. You will see exactly why in the hydration section two sections from now; hold the detail until then.
+    `shouldDehydrateQuery`, extended to include `'pending'`. By default the library serializes only *settled* queries when shipping the cache to the browser; adding `pending` serializes *in-flight* ones too, which is what makes streaming work. The hydration section explains why.
   </AnnotatedStep>
 </AnnotatedCode>
 
-Put the trap and the fix side by side, since this contrast is the thing to carry out of the lesson:
+The trap and the fix, side by side:
 
 <CodeVariants>
   <CodeVariant label="Leaks across requests">
     ```ts del={1}
     export const queryClient = new QueryClient();
     ```
-    **One client for the whole server process.** Module scope runs once, not once per request, so every tenant's render shares this single client, and tenant A's prefetched rows are sitting in the cache when tenant B's request renders against it. On a multi-tenant deploy this is a data-isolation bug, not a style nit.
+    **One client for the whole process.** Module scope runs once, not per request, so every tenant shares this client and tenant A's prefetched rows sit in the cache when tenant B renders. On a multi-tenant deploy that is a data-isolation bug, not a style nit.
   </CodeVariant>
 
   <CodeVariant label="Fresh per request">
@@ -211,76 +202,47 @@ Put the trap and the fix side by side, since this contrast is the thing to carry
 
     const queryClient = getQueryClient();
     ```
-    **Fresh on the server, singleton in the browser.** `getQueryClient` returns a request-scoped client when it runs on the server, so no request can read another's cache, and the one persistent client when it runs in the browser. Same helper, two behaviors, no cross-request leak.
+    **Fresh on the server, singleton in the browser.** `getQueryClient` returns a request-scoped client on the server, so no request reads another's cache, and the one persistent client in the browser. Same helper, two behaviors, no leak.
   </CodeVariant>
 </CodeVariants>
 
 That `isServer` branch is the whole defense.
-Everything else in this lesson, the prefetch, the hydration, the devtools, assumes you obtain the client through `getQueryClient()` and never through a module-scoped `new QueryClient()`.
+Everything downstream, the prefetch, the hydration, the devtools, assumes you obtain the client through `getQueryClient()`, never through a module-scoped `new QueryClient()`.
 
 :::caution
 The helper at `src/lib/query-client.ts` is deliberately *not* `server-only`.
-Most files that touch infrastructure get marked `server-only` so they can never slip into a client bundle, but this one is imported by both the Server Component prefetch *and* the browser-side provider, and its browser branch has to ship.
-If a reviewer adds `import 'server-only'` to "harden" it, the client build breaks. This is one of the rare modules that genuinely runs in both places.
+Most infrastructure files get that marker so they can never slip into a client bundle, but this one is imported by both the Server Component prefetch *and* the browser-side provider, and its browser branch has to ship.
+Adding `import 'server-only'` to "harden" it breaks the client build, because this module genuinely runs in both places.
 :::
 
-Two of the config values in that factory are worth defining, since their names suggest the wrong thing:
+## Tuning the QueryClient defaults
 
-<CodeTooltips tooltips={{
-  gcTime: 'Garbage-collect time — how long an unused cache entry survives before eviction. Distinct from staleTime, which is about freshness while the entry is in use.',
-  isServer: "TanStack Query's exported boolean — true during a server render, false in the browser. Equivalent to typeof window === 'undefined'.",
-}}>
-```ts
-queries: {
-  staleTime: 60_000,
-  gcTime: 5 * 60_000,
-  refetchOnWindowFocus: false,
-},
-// ...
-export function getQueryClient() {
-  if (isServer) return getServerQueryClient();
-  return (browserQueryClient ??= makeQueryClient());
-}
-```
-</CodeTooltips>
+TanStack Query assumes always-live data: `staleTime: 0` plus a refetch on every window focus.
+That suits a trading dashboard, where a two-second-stale number is wrong, but not a typical web app, where an invoice or comment thread stays current for a minute and refetching on every glance is wasted work.
+The factory sets three saner defaults once, and every query inherits them:
 
-## The senior defaults, justified
+- `staleTime: 60_000` treats data as fresh for a minute, so a remount or refocus within that window reads the cache instead of refetching.
+- `gcTime: 5 * 60_000` keeps unused entries for five minutes, so navigating away and back is instant rather than a cold fetch.
+- `refetchOnWindowFocus: false` stops the screen reloading its data every time the user alt-tabs back, the default that most surprises newcomers.
 
-The factory sets three options on the client, and each is worth a moment, because the library's *own* defaults are tuned for a workload most SaaS screens are not.
+Raise freshness per query only where live data matters, the way a comment thread polls with `refetchInterval` instead of dropping its `staleTime` to zero.
 
-Out of the box, TanStack Query assumes always-live data: `staleTime: 0`, plus an aggressive refetch on every window focus.
-That is the right call for a trading dashboard, where a number that is two seconds stale is a number that is wrong.
-It is the wrong call for a SaaS app, where most reads, an invoice, a customer record, a comment thread, stay current for a minute at a time, and refetching them on every glance is wasted work.
+## Prefetch on the server, hydrate on the client
 
-So you set saner defaults *once*, on the client, and every query in the app inherits them.
-Three values do the work:
+This is where "no skeleton on first paint" comes from.
 
-- `staleTime: 60_000` treats data as fresh for a minute, so remounting a component or refocusing the tab within that window reads straight from the cache instead of firing a wave of refetches.
-- `gcTime: 5 * 60_000` keeps *unused* entries around for five minutes before evicting them, so navigating away and coming back is instant rather than a cold fetch.
-- `refetchOnWindowFocus: false` means alt-tabbing back to the app does not trigger a wave of refetches. This is the most surprising default for newcomers: leave it on, and every time the user returns from their email the whole screen quietly reloads its data.
+The page stays a **Server Component**.
+Inside it you grab the per-request client with `getQueryClient()`, fill its cache with <Term definition="Runs a query's fetcher and stores the result in the cache without rendering a hook — the server-side way to populate the cache before the client reads it.">`prefetchInfiniteQuery`</Term> for the data the leaf will read, then wrap the Client Component in a <Term definition="A Client Component that injects a dehydrated cache snapshot into the browser's QueryClient before the components inside it render.">`HydrationBoundary`</Term>.
+<Term definition="Serializes a QueryClient's cache into a plain object that can travel inside the server's response.">`dehydrate`</Term> serializes the filled cache into the response, and `<HydrationBoundary>` rehydrates it into the *browser's* client before the leaf's `useInfiniteQuery` runs.
+So the hook reads a warm cache on its first render: no loading state, no client round-trip, and the network read happened once, on the server.
 
-Set this baseline at the provider, and raise freshness *per query* only where live data genuinely matters, the way the comment thread reaches for `refetchInterval` to poll rather than dropping its `staleTime` to zero.
-This is the same "60 seconds is the SaaS default" you met at the call site last lesson; here it becomes the app-wide baseline, so it is no longer a line you have to remember to paste.
-When a single query does need different freshness, you override it at that one call site and leave a comment explaining why.
-
-## SSR-hydrated initial data
-
-This section is where "no skeleton on first paint" actually comes from.
-
-The shape, stated up front: the page stays a **Server Component**.
-Inside it, you grab the per-request client with `getQueryClient()`, fill its cache with <Term definition="Runs a query's fetcher and stores the result in the cache without rendering a hook — the server-side way to populate the cache before the client reads it.">`prefetchInfiniteQuery`</Term> for the data the leaf will read, then render a <Term definition="A Client Component that injects a dehydrated cache snapshot into the browser's QueryClient before the components inside it render.">`HydrationBoundary`</Term> wrapping the Client Component.
-<Term definition="Serializes a QueryClient's cache into a plain object that can travel inside the server's response.">`dehydrate`</Term> serializes the freshly filled cache into the response, and `<HydrationBoundary>` rehydrates it into the *browser's* client before the leaf's `useInfiniteQuery` runs.
-So the hook reads a warm cache on its very first render: no loading state, no client round-trip.
-The network read happened exactly once, on the server, in-process.
-
-That handoff is the one genuinely non-obvious runtime sequence in the whole setup. The natural objection, "doesn't the client just refetch anyway?", is best answered by watching the cache fill on one side and get inherited on the other.
-Scrub through it:
+Scrub through the handoff:
 
 <DiagramSequence>
   <DiagramStep>
     <SsrHydrationStage active="server-fill" />
     <Fragment slot="caption">
-      **Server render.** The Server Component calls `getQueryClient()` for the request-scoped instance, and `prefetchInfiniteQuery` runs `fetchComments` in-process: a direct database read, no HTTP. The server-side cache fills with page 1.
+      **Server render.** `getQueryClient()` returns the request-scoped instance, and `prefetchInfiniteQuery` runs `fetchComments` in-process: a direct database read, no HTTP. The cache fills with page 1.
     </Fragment>
   </DiagramStep>
 
@@ -294,28 +256,24 @@ Scrub through it:
   <DiagramStep>
     <SsrHydrationStage active="wire" />
     <Fragment slot="caption">
-      **The wire.** The response, HTML plus the dehydrated cache, crosses to the browser. This is the only network trip for the first page.
+      **The wire.** The response, HTML plus the dehydrated cache, crosses to the browser. The only network trip for the first page.
     </Fragment>
   </DiagramStep>
 
   <DiagramStep>
     <SsrHydrationStage active="hydrate" />
     <Fragment slot="caption">
-      **Hydrate.** `<HydrationBoundary>` injects the dehydrated snapshot into the browser's singleton client. The browser cache now holds page 1 without ever having fetched it.
+      **Hydrate.** `<HydrationBoundary>` injects the snapshot into the browser's singleton client. The browser cache now holds page 1 without ever having fetched it.
     </Fragment>
   </DiagramStep>
 
   <DiagramStep>
     <SsrHydrationStage active="leaf" />
     <Fragment slot="caption">
-      **Leaf renders warm.** `CommentThread`'s `useInfiniteQuery` mounts, finds page 1 already in the cache, and paints immediately, with no `isPending` skeleton on first load. Only later interactions (`fetchNextPage`, the poll) go over HTTP.
+      **Leaf renders warm.** `CommentThread`'s `useInfiniteQuery` mounts, finds page 1 in the cache, and paints with no skeleton. Only later interactions (`fetchNextPage`, the poll) go over HTTP.
     </Fragment>
   </DiagramStep>
 </DiagramSequence>
-
-The thing the diagram makes concrete is that the client does *not* re-fetch what was prefetched.
-The browser's `useInfiniteQuery` looks in the cache, finds page 1 already there, put there by hydration rather than by a fetch, and renders it.
-The skeleton never flashes on the initial load, and there is no duplicate request for data the server already read.
 
 Here is the page that does it:
 
@@ -345,51 +303,47 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
 }
 `}>
   <AnnotatedStep meta="{10}" color="blue">
-    `getQueryClient()` returns the per-request instance, the server branch of the helper. It is the same function the provider calls; here it lands on the `cache()`-wrapped server client.
+    `getQueryClient()` returns the per-request instance, the same helper the provider calls; here it lands on the `cache()`-wrapped server client.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{12-16} "commentKeys.lists"`} color="blue">
-    `prefetchInfiniteQuery` runs with the *exact same `queryKey` and `queryFn`* the leaf's `useInfiniteQuery` uses. This key match is the whole contract: it is what lets the leaf find the prefetched data instead of refetching. The next paragraph spells out what happens when it goes wrong.
+    `prefetchInfiniteQuery` runs with the *exact same `queryKey` and `queryFn`* the leaf's `useInfiniteQuery` uses. This key match is the whole contract: it lets the leaf find the prefetched data instead of refetching.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{9}" color="blue">
-    `await params`. In Next.js 16 `params` is a Promise you await before reading, the same async-params shape you have used since the App Router unit. One line, nothing new.
+    `await params`. In Next.js 16 `params` is a Promise you await before reading, the same async-params shape from the App Router unit.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{19}" color="blue">
-    `dehydrate(queryClient)` snapshots the filled cache, and `<HydrationBoundary state={...}>` carries it to the browser. The boundary wraps only the part of the tree that needs the cache.
+    `dehydrate(queryClient)` snapshots the filled cache, and `<HydrationBoundary state={...}>` carries it to the browser, wrapping only the part of the tree that needs the cache.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{20}" color="blue">
-    `<CommentThread>` is the only `'use client'` component on this page. The page itself ships zero query JavaScript for everything around the thread; the surrounding invoice surface stays a Server Component.
+    `<CommentThread>` is the only `'use client'` component here. The surrounding invoice surface stays a Server Component and ships zero query JavaScript.
   </AnnotatedStep>
 
   <AnnotatedStep color="blue">
-    Notice what is missing: there is no `'use client'` at the top of this file. The page is a Server Component that prefetches; only the leaf is interactive.
+    Note the missing `'use client'` at the top: the page is a Server Component that prefetches, and only the leaf is interactive.
   </AnnotatedStep>
 </AnnotatedCode>
 
-The key match in step 2 is worth pulling out, because getting it slightly wrong wastes the whole prefetch and gives you no sign that it happened.
-If you prefetch with one key and the leaf reads with a *different* one, even an array that differs by a single element, the leaf finds nothing in the cache and cold-fetches on mount.
-No error, no warning; the prefetch just did nothing.
-This is exactly why `commentKeys` exists.
-Both the page and the leaf import the one key helper, so their keys are identical by construction, with no hand-typed array on either side to drift.
-The discipline you set up last lesson pays off right here.
+The key match in step 2 is worth pulling out, because getting it slightly wrong wastes the whole prefetch silently.
+Prefetch with one key and read with a *different* one, even an array off by a single element, and the leaf finds nothing and cold-fetches on mount, with no error or warning.
+That is why `commentKeys` exists: both the page and the leaf import the one key helper, so their keys are identical by construction, with no hand-typed array to drift.
 
 <VideoCallout videoId="XcUpTPbY4Wg" videoTitle="Combining React Query With Server Components (Next.js)">
   Cosden Solutions walks the same `getQueryClient` + prefetch + `HydrationBoundary` flow end to end (17 min), including why the server client must be fresh per request.
 </VideoCallout>
 
-## One fetcher, two call sites
+## One fetcher for server and browser
 
-Look back at that prefetch and there is a gap in the story.
-On the client, `fetchComments` calls `fetch('/api/invoices/${id}/comments')`, your route handler. That is correct on the client: the route handler is the public contract, the same URL a future mobile app or third-party integration would hit.
-But on the *server*, inside `prefetchInfiniteQuery`, calling `fetch()` to your own host is wasteful.
-The server would open an HTTP connection back to itself to retrieve data it could read straight from the database in the same process.
+That prefetch hides a problem.
+On the client, `fetchComments` calls `fetch('/api/invoices/${id}/comments')`, the route handler, which is correct: that route is the public contract, the URL any HTTP client hits.
+But on the *server*, inside `prefetchInfiniteQuery`, `fetch`ing your own host opens an HTTP connection back to itself for data it could read straight from the database in the same process.
 
-The fix is one function with a branch.
-`fetchComments` runs the Drizzle query directly when it is on the server, and `fetch`es the route handler when it is in the browser. Both branches return the *same Zod-validated shape*, the schema that the route handler's response writer and this fetcher's parser both import.
-One function, two call sites, one contract, enforced by structure rather than a convention you have to remember:
+So `fetchComments` branches: run the Drizzle query directly on the server, `fetch` the route handler in the browser.
+Both branches return the *same Zod-validated shape*, from one schema that the route handler's response writer and this fetcher's parser both import.
+One function, two call sites, one contract, enforced by structure rather than convention:
 
 <AnnotatedCode lang="ts" maxLines={16} code={`
 // src/lib/comments/fetch.ts
@@ -410,7 +364,7 @@ export async function fetchComments(invoiceId: string, cursor: string | null) {
 }
 `}>
   <AnnotatedStep meta="{2}" color="blue">
-    One `commentPageSchema`, imported from the shared schema file. Both branches below parse against it, so both paths are typed by the exact same contract, with no second shape to fall out of sync.
+    One `commentPageSchema`, imported from the shared schema file. Both branches parse against it, so there is no second shape to fall out of sync.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{6-9}" color="blue">
@@ -418,33 +372,28 @@ export async function fetchComments(invoiceId: string, cursor: string | null) {
   </AnnotatedStep>
 
   <AnnotatedStep meta="{11-15}" color="blue">
-    The browser branch: in the client, `fetch` the route handler. This is the same public endpoint any HTTP client uses, and the only path the browser has to this data.
+    The browser branch: `fetch` the route handler, the only path the browser has to this data.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`"commentPageSchema.parse"`} color="blue">
-    Both branches end in the same `.parse`. A shape mismatch on either path throws, and that throw surfaces as a `useInfiniteQuery` error, so server and client reads cannot drift apart unnoticed.
+    Both branches end in the same `.parse`. A mismatch on either path throws as a `useInfiniteQuery` error, so server and client reads cannot drift apart unnoticed.
   </AnnotatedStep>
 </AnnotatedCode>
 
-One detail in that server branch is worth a sentence of care.
-The browser must never be able to *bundle* the Drizzle code: the `typeof window` guard makes the database call dead code in the client, but the `import { listInvoiceComments }` at the top, which pulls in `server-only` Drizzle modules, would break the client build if it were reachable.
-In practice the route handler stays the browser's only path to this data, so the server-only imports tree-shake out. The full bundling rules are a topic of their own, but the rule of thumb is simple: keep the direct database read behind the guard, and let the route handler be the client's seam.
+The server branch carries one risk: the browser must never *bundle* the Drizzle code.
+The `typeof window` guard makes the database call dead code in the client, but `import { listInvoiceComments }` pulls in `server-only` modules that would break the client build if reachable.
+Because the route handler stays the browser's only path to this data, those imports tree-shake out.
+The rule: keep the direct database read behind the guard, and let the route handler be the client's seam.
 
-:::note
-The chapter outline considered passing `fetchComments` an explicit *fetcher* argument instead of branching internally. That would be slightly more testable, since you could unit-test each path in isolation.
-This course takes the `typeof window` branch as the default because it keeps the one-function-one-contract story tight.
-If your team wants to test the two paths separately, injecting the fetcher is the move; otherwise, the branch is the simpler shape.
-:::
+## Mounting the devtools panel in development
 
-## Devtools in the daily loop
+The devtools you installed earlier are a floating panel listing every query by key: whether each is stale or fetching, when it last updated, and a button to invalidate or refetch it by hand.
+Make it part of your loop: while building the thread, open it, watch the comment query tick from fresh to stale at the 60-second mark, click *Invalidate*, and watch the refetch fire.
+The cache's otherwise invisible behavior becomes something you can see.
 
-The devtools you installed earlier are a floating panel that lists every query by key, shows whether each is stale or fetching and when it last updated, and gives you a button to invalidate or refetch any of them by hand.
-Treat it as part of your everyday loop, not a tool you open only in emergencies: while building the thread, open it, watch the comment query tick from fresh to stale at the 60-second mark, click *Invalidate*, and watch the refetch fire.
-It makes the cache's behavior, which is otherwise invisible, something you can see.
-
-Mount it inside `<Providers>`, but gate it so it never reaches your users.
-You need two conditions together: render it only when not in production, *and* load it with a dynamic import so the devtools code tree-shakes out of the production bundle entirely.
-Gating the render alone still ships the bytes; the dynamic import is what keeps them out:
+Mount it inside `<Providers>`, gated on two conditions: render it only outside production, *and* load it with a dynamic import.
+The `NODE_ENV` check keeps it from rendering for users; the dynamic import keeps the devtools code out of the production bundle.
+A bare top-level `import { ReactQueryDevtools }` mounted unconditionally ships the panel, and its weight, to every user.
 
 ```tsx title="app/_components/providers.tsx" ins={1-3, 6}
 const ReactQueryDevtools = dynamic(() =>
@@ -455,27 +404,19 @@ const ReactQueryDevtools = dynamic(() =>
 {process.env.NODE_ENV !== 'production' && <ReactQueryDevtools />}
 ```
 
-A bare top-level `import { ReactQueryDevtools }` mounted unconditionally ships the panel, and its weight, straight to production.
-The gate on `NODE_ENV` keeps it from rendering for users; the dynamic import keeps it from being bundled at all.
-You want both.
-
 ## Two caches, two invalidations
 
-This is the cost the chapter's first lesson warned about when it noted that bringing TanStack Query in adds *a second invalidation surface*.
-This is where that bill comes due, and the right move is to make it visible rather than discover it as a bug.
+This chapter's first lesson warned that TanStack Query adds *a second invalidation surface*.
+Here is where that comes due.
 
-The setup: a Server Action mutates shared data, say `addCommentAction`, posting a new comment on the invoice.
-The full write side is the next lesson's job; here, treat the action as a known thing that returns the canonical `Result`.
-That action does its own <Term definition="Next.js read-your-writes cache invalidation by tag, callable only inside a Server Action. The user who made the change sees it on their very next render. Its eventual-consistency sibling revalidateTag(tag, 'max') is for webhooks and background jobs.">`updateTag(invoiceTag(invoiceId))`</Term> so the **Server Component** parts of the page re-render: the invoice summary cards, and the server-rendered comment count in the surrounding layout.
-The writer just posted and is watching the page, so read-your-writes is the right shape: `updateTag`, not `revalidateTag`.
-That handles one cache.
+Picture a Server Action that mutates shared data, say `addCommentAction`, posting a comment on the invoice.
+The write side is the next lesson; treat the action as returning the canonical `Result`.
+Internally it calls <Term definition="Next.js read-your-writes cache invalidation by tag, callable only inside a Server Action. The user who made the change sees it on their very next render. Its eventual-consistency sibling revalidateTag(tag, 'max') is for webhooks and background jobs.">`updateTag(invoiceTag(invoiceId))`</Term> so the **Server Component** parts of the page re-render: the invoice summary cards and the server-rendered comment count.
+The writer is watching the page, so read-your-writes is the right shape: `updateTag`, not `revalidateTag`.
 
-But it does *not* touch the thread.
-The `useInfiniteQuery` reading the comment list lives in the **browser cache**, a completely separate cache that the server's `updateTag` cannot reach.
-So after the action resolves, the Client Component has to invalidate that cache itself, with `queryClient.invalidateQueries({ queryKey: commentKeys.lists(id) })`, to mark the thread stale and refetch it.
-Both calls fire, because both layers are holding the same data, and each layer has its own way to be told it is out of date.
-
-These are two distinct caches, not one, and the picture is worth seeing:
+But `updateTag` does *not* touch the thread.
+The `useInfiniteQuery` reading the comment list lives in the **browser cache**, which the server cannot reach.
+Once the action resolves, the Client Component must invalidate that cache itself with `queryClient.invalidateQueries({ queryKey: commentKeys.lists(id) })` to mark the thread stale and refetch.
 
 <Figure>
   <TwoCachesInvalidation />
@@ -484,40 +425,32 @@ These are two distinct caches, not one, and the picture is worth seeing:
   </Fragment>
 </Figure>
 
-Here is the rule to carry away:
-
-`updateTag` (and its eventual-consistency sibling `revalidateTag(tag, 'max')`, the one you reach for from a webhook or background job) speaks to the Server Component cache.
-`queryClient.invalidateQueries` speaks to the TanStack cache.
 **A mutation that touches data both layers show must invalidate both.**
-Forget one side and you ship the classic bug: the list paints fresh while the detail stays stale, or the other way around, depending on which cache you forgot.
-
-The client-side half hangs off the action resolving:
+Forget one side and you ship the classic bug: the list paints fresh while the detail stays stale.
 
 ```tsx ins={2}
 await addCommentAction(formData);
 queryClient.invalidateQueries({ queryKey: commentKeys.lists(id) });
 ```
 
-The action handles its own `updateTag` internally; the client adds the `invalidateQueries` on top, once the write has landed.
-The optimistic version of this, prepending the comment before the server confirms and then reconciling, is the next lesson's whole subject. Here it is enough to see that the client-side invalidation hangs off the action resolving.
+The action handles `updateTag` internally; the client adds `invalidateQueries` once the write lands.
+The optimistic version, prepending the comment before the server confirms, is the next lesson.
 
 :::caution
 The most common mental-model error when these two systems coexist is expecting `updateTag` (or `revalidateTag`) to refresh a `useQuery`.
-It cannot.
-Those verbs invalidate the Server Component cache; the TanStack cache is a different cache, reachable only through the query client.
-If a `useQuery` is stale after a mutation, the fix is a client-side `invalidateQueries`, never another `updateTag`.
+It cannot: those verbs invalidate the Server Component cache, while the TanStack cache is reachable only through the query client.
+When a `useQuery` is stale after a mutation, the fix is a client-side `invalidateQueries`, never another `updateTag`.
 :::
 
 ## The tenant boundary
 
-The lesson opened with a leak at the *server's* request boundary. It closes with the same leak at the *client's* tenant boundary, because the cache that is correct to keep across navigations is exactly wrong to keep across a tenant switch.
+The server leak lived at the request boundary; the same leak lives here at the *client's* tenant boundary.
+A cache that is right to keep across navigations is wrong to keep across a tenant switch.
 
-When the user switches their active organization, the browser's TanStack cache is still full of the *previous* org's data: its comments, its lists, its records.
-The cache carries no org filter of its own; it holds whatever the last org loaded.
-Leave it populated across the switch and org A's data renders into org B's session. This is the same data-isolation failure as the server-side leak, now on the client, now triggered by a user action instead of a new request.
+On an org switch, the browser's TanStack cache still holds the *previous* org's data: its comments, lists, records.
+Leave it populated and org A's data renders into org B's session, the same isolation failure as the server leak, now client-side.
 
-The fix is to throw the cache away on the switch.
-When `activeOrganizationId` changes, call `queryClient.clear()` before navigating into the new org:
+The fix: when `activeOrganizationId` changes, call `queryClient.clear()` before navigating into the new org.
 
 ```tsx ins={3}
 const switchOrg = async (organizationId: string) => {
@@ -527,18 +460,12 @@ const switchOrg = async (organizationId: string) => {
 };
 ```
 
-`queryClient.clear()` drops everything, which is the safe default at a tenant boundary, where you would rather lose a cache hit than risk a leak.
-When only *some* of your queries are org-scoped, `removeQueries({ queryKey })` is the more precise option, clearing just the affected subtrees.
-At a hard tenant boundary, reach for `clear()` and refetch from scratch in the new org's context, since the cache cannot survive a tenant change.
+`queryClient.clear()` drops everything, the safe default where you would rather lose a cache hit than risk a leak.
+When only *some* of your queries are org-scoped, `removeQueries({ queryKey })` is more precise, clearing just the affected subtrees.
 
-This bookends the leak theme.
-The server leak lives at the request boundary and is solved by a per-request client; the client leak lives at the tenant boundary and is solved by clearing on switch.
-The principle is the same, the cache must be scoped to the tenant, enforced at two different points.
+## The whole wiring in five files
 
-## Putting it together
-
-Five files, and the whole wiring runs through them.
-Here is the map, with the detail that matters most marked: *where the `'use client'` boundary falls*.
+Five files carry the wiring. The detail that matters most is marked: *where the `'use client'` boundary falls*.
 
 <FileTree>
 - src/
@@ -551,20 +478,16 @@ Here is the map, with the detail that matters most marked: *where the `'use clie
         - `[id]/`
           - page.tsx Server Component, prefetch + `<HydrationBoundary>`
           - _components/
-            - **comment-thread.tsx** `'use client'`, the leaf, now reading a warm cache
+            - **comment-thread.tsx** `'use client'`, the leaf, reads a warm cache
   - lib/
     - query-client.ts `getQueryClient()`, per-request on the server, singleton in the browser
     - comments/
-      - fetch.ts the dual-fetcher `fetchComments` (server reads Drizzle, client fetches the route)
+      - fetch.ts `fetchComments` dual-fetcher (server reads Drizzle, client fetches the route)
 </FileTree>
 
-The page in the middle of that tree is a Server Component, with no `'use client'`.
-The two bold files are the only Client Components: the provider at the top, the leaf at the bottom.
-Everything between them, the page, the prefetch, and the surrounding invoice surface, renders on the server.
-That is the integration shape promised two lessons ago, now made concrete: Server Components own the first paint, TanStack owns the live cache, and the boundary between them is two lines.
+The two bold files are the only Client Components: the provider at the top, the leaf at the bottom. Everything between them, the page and its prefetch, renders on the server. Server Components own the first paint, TanStack owns the live cache, and the boundary between them is two lines.
 
-The one sequence worth being able to reconstruct on your own is the dehydrate-to-hydrate handoff, since it is the trickiest part of the model.
-Put it back in order:
+The dehydrate-to-hydrate handoff is the trickiest step. Put it back in order:
 
 <Sequence instructions="Order the steps that take page 1 of the comment thread from a server-side database read to a warm first paint in the browser.">
   <Step>The Server Component calls `getQueryClient()` to get the request-scoped client</Step>
@@ -575,7 +498,7 @@ Put it back in order:
   <Step>`CommentThread`'s `useInfiniteQuery` mounts and reads page 1 from the warm cache</Step>
 </Sequence>
 
-And one check on the central idea, since it is the one mistake that turns a UI library into a data leak:
+And one check on the mistake that turns a UI library into a data leak:
 
 <MultipleChoice>
   On your multi-tenant server you find one tenant's comments rendering inside another tenant's page. Which line is the cause?
@@ -601,12 +524,10 @@ And one check on the central idea, since it is the one mistake that turns a UI l
     ```
   </McqChoice>
 
-  <McqWhy>A `new QueryClient()` at module scope is built once when the module loads — once per *process*, not once per *request*. Every tenant's render then shares that one client, so the rows one request prefetched are still sitting in the cache when the next tenant renders against it. The `cache()`-wrapped helper exists precisely to hand each request its own client; the `isServer` line just routes the server to it; and the browser `??=` singleton is correct because the browser serves a single user for the whole session.</McqWhy>
+  <McqWhy>A `new QueryClient()` at module scope is built once per *process*, not once per *request*. Every tenant's render shares that one client, so rows one request prefetched still sit in the cache when the next tenant renders against it. The `cache()`-wrapped helper hands each request its own client; the `isServer` line routes the server to it; and the browser `??=` singleton is correct because the browser serves one user for the whole session.</McqWhy>
 </MultipleChoice>
 
-The read side is now wired and server-fast: the thread paints from a warm cache on first load, polls itself live, and never leaks one tenant's cache into another's render.
-What is still missing is the *write* side: the optimistic add that prepends a comment before the server confirms it, and the two-system invalidation that reconciles afterward.
-The next lesson frames that write side and walks the whole comment-thread screen against the chapter's four triggers; the chapter after builds it for real.
+The read side is wired: the thread paints from a warm cache, polls itself live, and never leaks one tenant's cache into another's render. Next comes the write side, the optimistic add and the invalidation that reconciles afterward.
 
 ## External resources
 

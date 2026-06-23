@@ -658,10 +658,10 @@
 ## Unit 15 — TanStack Query and Zustand
 
 ### Chapter 076 — TanStack Query
-- 1 When TanStack Query earns its weight (The four named triggers (polling, cross-view caching, optimistic with rollback into cached queries, infinite scroll with reuse) that justify reaching past Server Components, Server Actions, `useState`, and `nuqs` for a client-side server-state library.)
+- 1 When to reach for TanStack Query (The four named triggers (polling, cross-view caching, optimistic with rollback into cached queries, infinite scroll with reuse) that justify reaching past Server Components, Server Actions, `useState`, and `nuqs` for a client-side server-state library.)
 - 2 The four primitives the project reaches for (`useQuery` (with `staleTime` and the `isPending`/`isFetching` split), `useMutation` (the five-callback lifecycle), the v5 optimistic-update two-shape decision (via-variables vs. cache-update), and `useInfiniteQuery` with `maxPages` — plus query keys as the cache contract, `refetchInterval` polling, and the `invalidateQueries`/`setQueryData`/`removeQueries` trio.)
 - 3 Wiring without leaking the cache across requests (The `'use client'` `<Providers>` shell, the per-request `getQueryClient()` helper via React's `cache()` (the multi-tenant isolation trap), SSR-hydrated initial data through `prefetchQuery` plus `<HydrationBoundary>`, the senior `staleTime`/`gcTime` defaults, the two-system invalidation reality after a Server Action, and the org-switch `queryClient.clear()` discipline.)
-- 4 The per-invoice comment thread clears the bar (Running the four-trigger funnel against one concrete screen, splitting the read side (`useInfiniteQuery` with 10s polling, `maxPages: 10`, SSR-prefetched first page) from the write side (Server Action plus client-side `invalidateQueries`), and the cache-update optimistic-add shape — framing the 77 build.)
+- 4 A worked TanStack Query design review (Running the four-trigger funnel against one concrete screen, splitting the read side (`useInfiniteQuery` with 10s polling, `maxPages: 10`, SSR-prefetched first page) from the write side (Server Action plus client-side `invalidateQueries`), and the cache-update optimistic-add shape — framing the 77 build.)
 - 5 Quiz
 
 ### Chapter 077 — Project: TanStack Query on optimistic comments

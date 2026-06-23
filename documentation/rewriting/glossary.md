@@ -966,7 +966,7 @@ pointer capture | setPointerCapture | Routes all further pointer events to one e
 initializer function | lazy initializer | The () => … form passed to useState; React calls it once on mount to produce the initial state. | first defined: Chapter 024 L1
 useRef | - | Returns a mutable .current box that persists across renders without triggering one; for values the JSX doesn't read. | first defined: Chapter 024 L1
 useEffect | effect | Hook running a callback after React commits a render, re-running when a dependency changes. | first defined: Chapter 024 L2
-server state | - | Data whose canonical home is the server or database; the component only holds a cached copy. | first defined: Chapter 024 L2
+server state | server-state | Data whose canonical home is the server or database; the component only holds a cached copy. | first defined: Chapter 024 L2
 source of truth | - | The single authoritative location a value is read from and written to; every other place shows a copy. | first defined: Chapter 024 L3
 colocation | colocate | Placing state at the narrowest component above everyone who reads it, not high in the tree by default. | first defined: Chapter 024 L3
 lifting state up | lift state | Moving state to the closest common ancestor of the components that need it, flowed back down as props. | first defined: Chapter 024 L3
@@ -2239,4 +2239,46 @@ ephemeralCache | - | In-process map a Ratelimit keeps so repeated reads of a hot
 getRemaining | - | Ratelimit read that returns a key's remaining budget without consuming a token. | first defined: Chapter 075 L2
 fail-open | - | On limiter error (e.g. Redis unreachable), allow the request through rather than block, so an outage cannot lock everyone out. | first defined: Chapter 075 L2
 secondaryStorage | secondary storage | Better Auth config slot for a second key-value store (e.g. Redis) backing rate-limit counters and sessions, so the built-in limiter shares state across instances. | first defined: Chapter 075 L3
+client-side server-state library | - | Library that caches server data in the browser and manages its refetch/invalidation lifecycle; TanStack Query, SWR. | first defined: Chapter 076 L1
+Router Cache | - | Next.js in-browser cache of prefetched route segments, so soft navigations are instant. | first defined: Chapter 076 L1
+infinite scroll | - | Accumulate-and-reuse paging: scroll down to load more, scroll back up with already-loaded pages still cached, no refetch. | first defined: Chapter 076 L1
+SWR (library) | - | Vercel's smaller client-side server-state library, built on the stale-while-revalidate pattern; the alternative to TanStack Query. | first defined: Chapter 076 L1
 enumeration-uniform | enumeration-safe response | Return the identical response whether or not the email belongs to a real account, so an attacker can't tell registered addresses apart. | first defined: Chapter 075 L5
+useQuery | - | TanStack Query read hook: takes a query key and queryFn, returns data plus lifecycle flags. | first defined: Chapter 076 L2
+useMutation | - | TanStack Query write hook: takes a mutationFn and lifecycle callbacks (onMutate/onError/onSuccess/onSettled), returns mutate/mutateAsync. | first defined: Chapter 076 L2
+useInfiniteQuery | - | TanStack Query read hook for cursor-paginated data; data is an array of pages, paged via getNextPageParam. | first defined: Chapter 076 L2
+query key | queryKey | Serializable array that is a query's cache address; invalidation matches by prefix. | first defined: Chapter 076 L2
+queryFn | query function | Async function a query runs to fetch its data; resolves to the data or throws into error. | first defined: Chapter 076 L2
+staleTime | - | How long cached data counts as fresh; while fresh no refetch fires on mount or focus. | first defined: Chapter 076 L2
+isFetching | - | TanStack Query flag: true while any request for the query is in flight, including background refetches. | first defined: Chapter 076 L2
+isPending (TanStack Query) | - | TanStack Query flag: true until a query first resolves (no cached data yet). | first defined: Chapter 076 L2
+query key factory | key factory | Typed per-feature helper object that builds query keys once, so read and write sides can't drift. | first defined: Chapter 076 L2
+mutate vs mutateAsync | mutate, mutateAsync | mutate is fire-and-forget (errors go to onError); mutateAsync returns an awaitable Promise that rejects on failure. | first defined: Chapter 076 L2
+optimistic update (via variables) | - | TanStack v5 shape rendering the in-flight mutation variables inline while isPending, no cache write or rollback. | first defined: Chapter 076 L2
+optimistic update (cache update) | - | TanStack shape writing the optimistic value into the cache via cancel-snapshot-write-restore-invalidate. | first defined: Chapter 076 L2
+useQueryClient | queryClient | Hook returning the provider's QueryClient, the imperative cache handle; client-only. | first defined: Chapter 076 L2
+invalidateQueries | - | QueryClient call marking matching queries stale and refetching the active ones. | first defined: Chapter 076 L2
+setQueryData | - | QueryClient call writing a value straight into the cache with no fetch. | first defined: Chapter 076 L2
+removeQueries | - | QueryClient call evicting matching cache entries entirely; used on org-switch and sign-out. | first defined: Chapter 076 L2
+pageParam | - | The cursor for the page a useInfiniteQuery queryFn is currently fetching. | first defined: Chapter 076 L2
+getNextPageParam | - | useInfiniteQuery function returning the next page's cursor, or undefined to signal no more pages. | first defined: Chapter 076 L2
+maxPages | - | useInfiniteQuery cap on cached pages; the oldest drops past the limit to bound memory. | first defined: Chapter 076 L2
+data.pages | - | useInfiniteQuery shape: an array of fetched pages, flattened at the render site. | first defined: Chapter 076 L2
+refetchInterval | - | useQuery option polling on a fixed interval; a function return of false stops the loop. | first defined: Chapter 076 L2
+derived value (TanStack Query) | - | A value computed with useMemo over query data, not its own query with a synthetic key. | first defined: Chapter 076 L2
+QueryClientProvider | - | React context provider exposing the TanStack cache to every useQuery/useMutation below it; client-only. | first defined: Chapter 076 L3
+getQueryClient | per-request client | Helper returning a fresh request-scoped client on the server and a module singleton in the browser, preventing cross-request cache leaks. | first defined: Chapter 076 L3
+prefetchInfiniteQuery | - | Runs an infinite query's fetcher and stores the result in the cache without rendering a hook; server-side cache warming. | first defined: Chapter 076 L3
+HydrationBoundary | - | Client Component injecting a dehydrated cache snapshot into the browser's QueryClient before children render. | first defined: Chapter 076 L3
+dehydrate | - | Serializes a QueryClient's cache into a plain object that rides inside the server's response. | first defined: Chapter 076 L3
+gcTime | garbage-collection time | How long unused cache entries are kept before eviction. | first defined: Chapter 076 L3
+refetchOnWindowFocus | - | QueryClient option; when false, the screen does not refetch every time the window regains focus. | first defined: Chapter 076 L3
+isServer | - | TanStack Query's exported boolean, true during a server render; equivalent to typeof window === 'undefined'. | first defined: Chapter 076 L3
+queryClient.clear() | clear() | QueryClient call dropping the entire cache; the safe default at a tenant boundary on org-switch. | first defined: Chapter 076 L3
+cancelQueries | - | QueryClient call aborting in-flight queries so a mid-flight refetch can't clobber an optimistic cache write; the mandatory first onMutate step. | first defined: Chapter 076 L2
+getQueryData | - | QueryClient call reading the current cached value for a key, with no fetch; used to snapshot before an optimistic write. | first defined: Chapter 076 L2
+cross-view caching | cross-view cache | Same server data re-rendered instantly across mount/unmount of different views from a shared client cache; the weakest of the four TanStack triggers. | first defined: Chapter 076 L1
+dual fetcher | - | A read function branching on typeof window: fetch the route handler in the browser, run the Drizzle query in-process on the server, parsing the same schema either way. | first defined: Chapter 076 L3
+read seam | - | The single endpoint where the client crosses into server data; here the GET route handler the query reads from. | first defined: Chapter 076 L4
+write seam | - | The Server Action that owns the mutation: parse, authorize, write, audit, return Result, then trigger invalidation. | first defined: Chapter 076 L4
+progressive-enhancement form contract | form contract | The FormData + native HTML <form> contract that submits without JavaScript and degrades gracefully, working before hydration. | first defined: Chapter 076 L4
