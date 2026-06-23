@@ -2202,3 +2202,11 @@ check-then-insert race | check-then-insert | Two concurrent fires both read "not
 fire-after-commit | dispatch after commit, fire after commit | Call the dispatcher only after the transaction commits, so work that rolls back never notifies anyone. | first defined: Chapter 070 L1
 dual write (notifications) | dual write | One action writing two tables for two audiences: an audit row for compliance plus a notification row for the user. | first defined: Chapter 071 L4
 pendingDispatches | pending dispatches array | In-memory NotificationEvent[] a webhook fills inside the tx and the route drains after commit; the v1 stand-in for a transactional outbox table. | first defined: Chapter 071 L4
+hit rate | cache hit rate | Share of reads served from cache instead of recomputed; near-zero means caching that read buys nothing. | first defined: Chapter 072 L1
+read-to-write ratio | read/write ratio | Read frequency over write frequency; a high ratio (read by many, written rarely) is what makes a cache worth it. | first defined: Chapter 072 L1
+route class | route classes, caching posture | Where a route sits on the caching gradient: fully dynamic, fully static, or partially cached (PPR). | first defined: Chapter 072 L1
+tag union | - | A cached entry carries several tags; invalidating any one invalidates the whole entry, so a read attaches every tag a writer might use. | first defined: Chapter 072 L1
+fetchedAt | - | Timestamp computed once inside a cached read and frozen into the entry; stable across loads means the cache is hitting. | first defined: Chapter 072 L1
+in-band redirect | - | A Server Action mutates, invalidates, then redirects in one request, so the redirect's render reads freshly-expired data; the mechanism behind read-your-writes. | first defined: Chapter 072 L2
+fan-out (invalidation) | invalidation fan-out | Firing one narrow tag per cached read a single mutation changed, so no affected read goes silently stale. | first defined: Chapter 072 L2
+multi-recipient invalidation | multi-recipient pattern | One action fires tags scoping several people's data, since who triggered a change and whose data changed are different questions. | first defined: Chapter 072 L2

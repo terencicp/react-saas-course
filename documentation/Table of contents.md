@@ -629,9 +629,9 @@
 
 ## Unit 14 — Cache and Rate Limiting
 
-### Chapter 072 — Cache decisions as architecture
-- 1 Route classes and the tag scheme (Classify every route as fully dynamic, partially cached, or fully static, then design an org-scoped tag scheme (entity, record, org, user) funneled through a `tags.ts` helper so read-side and write-side strings always align.)
-- 2 Picking the right invalidation call (Resolve `updateTag`, `revalidateTag`, `revalidatePath`, and `router.refresh` on two axes (read-your-writes vs. eventual, tag vs. path) and trace the decision tree through worked flows: post-edit lists, post-purchase plan flips, membership changes, webhooks, and background jobs.)
+### Chapter 072 — Caching strategy and invalidation
+- 1 Route classes and the tag scheme (Classify every route as fully dynamic, partially cached, or fully static, then design an org-scoped tag scheme (list, record, org, user) funneled through a `tags.ts` helper so read-side and write-side strings always align.)
+- 2 Choosing an invalidation call (Resolve `updateTag`, `revalidateTag`, `revalidatePath`, and `router.refresh` on two axes (read-your-writes vs. eventual, tag vs. path) and trace the decision tree through worked flows: post-edit lists, post-purchase plan flips, membership changes, and webhooks.)
 - 3 Quiz
 
 ### Chapter 073 — Project: caching the invoices list with tag-driven invalidation
