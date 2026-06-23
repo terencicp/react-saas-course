@@ -1,7 +1,8 @@
 ---
-title: Channels and preferences live
+title: Implement channels and preferences
 chapter-id: 71
 course-progress: 0.6852
+rewrites: 2
 sidebar:
   order: 3
   label: Channels and preferences
@@ -17,17 +18,30 @@ import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-Last lesson the dispatcher fanned out over channels that did nothing but tick a counter, and `resolveChannels` handed back every channel no matter what the user had toggled. The spine was real, but the limbs were stubs. This lesson replaces those stubs so every button in the inspector produces its real effect: an inbox row that lands in the database, an email that moves the mock's send counter, and a preference that actually decides which of the two runs.
+Last lesson the dispatcher fanned out over stub channels that only ticked a counter, and `resolveChannels` returned every channel regardless of the user's toggles.
+This lesson replaces both stubs, so every inspector button takes its real effect: an inbox row that lands in the database, an email that moves the mock's send counter, and a preference that decides which of the two runs.
 
-By the end, firing `invite-sent` as the seeded `bob` — who has `team → email` switched off — writes one inbox row, leaves the email counter flat, and returns `suppressedByPrefs: 1`. Firing the same event as `alice`, who has no preferences row at all, sends through both channels. Toggle a single channel off and only that channel goes quiet; the other keeps running. And firing `billing-past-due` with `billing → email` switched off *still* increments the email counter, because the registry marks email the one channel a past-due notice cannot skip.
+By the end, firing `invite-sent` as seeded `bob` — who has `team → email` off — writes one inbox row, leaves the email counter flat, and returns `suppressedByPrefs: 1`.
+As `alice`, who has no preferences row, it sends through both channels.
+Switch off one channel and only that channel goes quiet.
+Firing `billing-past-due` with `billing → email` off still increments the email counter, because the registry marks email a channel a past-due notice cannot skip.
 
 ## Your mission
 
-Two halves of the dispatcher go live at once. The first is the pair of channel functions that actually write — `writeInboxChannel` inserts a row into the `notifications` table, and `sendEmailChannel` resolves the recipient's address and hands a rendered template to the email wrapper. The second is preference resolution: a batched read of every recipient's per-category toggles, and a `resolveChannels` that decides which channels survive for each one. They ship together because neither is verifiable alone — a live channel with stubbed preferences can never demonstrate suppression, and live preferences with stubbed channels can never demonstrate a send. End-to-end proof needs both ends real.
+Both halves of the dispatcher go live together, because neither is verifiable alone: proving a send and a suppression end to end needs both ends real.
+The first half is the two channel functions that write: `writeInboxChannel` inserts a row into the `notifications` table, and `sendEmailChannel` resolves the recipient's address and hands a rendered template to the email wrapper.
+The second is preference resolution: a batched read of every recipient's per-category toggles, and a `resolveChannels` that decides which channels survive for each one.
 
-The shape of the solution is governed by a handful of constraints, and getting them right is the whole point of the lesson. Preferences are read **once per dispatch**, batched across every recipient in a single `WHERE userId IN (...) AND category = ?` query — never one read per recipient inside the loop. That is the N+1 discipline from [Spotting N+1](/039-indexes-plans-and-transactions/2-spotting-n1/), and the dispatcher is exactly the place it bites: a burst to fifty owners would otherwise mean fifty round-trips for data you could fetch in one. A user with no preferences row defaults to **on** — the `?? true` rule is load-bearing, because a SaaS that goes silent the moment a row is missing is far worse than one that occasionally over-notifies; silence-by-default is the failure mode you are designing against. The critical-channel override lives **inside** `resolveChannels`, not bolted on at the call site, so every reason a channel might run or not run sits in one function you can read top to bottom.
+Four constraints carry the lesson:
 
-The inbox content is rendered **once**, before the recipient loop, and frozen onto each row. The inbox channel writes the title and body it was handed and joins nothing — render-at-dispatch, so the feed stays a pure read that never drifts when an actor later renames themselves or a plan label changes. And these are transactional notifications, so the email carries **no unsubscribe header**: opt-out is the per-category toggle, and a critical channel ignores even that. The one thing explicitly out of scope is firing the dispatcher from real product code — `sendInvitation`, `changeMemberRole`, and the Stripe webhook stay stubbed until the next lesson. The inbox page, the inspector's preferences panel, its `setPref` action, and every fire button are already built; you are filling in the engine, not the dashboard.
+- Read preferences **once per dispatch**, batched across all recipients in a single `WHERE userId IN (...) AND category = ?` query — never one read per recipient inside the loop. That is the N+1 discipline from [Spotting N+1](/039-indexes-plans-and-transactions/2-spotting-n1/), and the dispatcher is where it bites.
+- A user with no preferences row defaults to **on**. The `?? true` rule keeps the app from going silent the moment a row is missing.
+- The critical-channel override lives **inside** `resolveChannels`, so every reason a channel runs or not sits in one function.
+- Render the inbox content **once**, before the recipient loop, and freeze it onto each row. The inbox channel writes the title and body it was handed, so the feed never drifts when an actor later renames itself.
+
+These are transactional notifications, so the email carries **no unsubscribe header**: opt-out is the per-category toggle, and a critical channel ignores even that.
+Firing the dispatcher from real product code is out of scope; `sendInvitation`, `changeMemberRole`, and the Stripe webhook stay stubbed until the next lesson.
+The inbox page, the preferences panel, its `setPref` action, and every fire button are already built, so you are filling in the engine, not the dashboard.
 
 <Checklist id="mission">
   <ChecklistItem chip="tested">As `bob` (seeded `team → email` off), `Fire invite-sent` writes one new inbox row, leaves the email counter unchanged, and returns `suppressedByPrefs: 1`.</ChecklistItem>
@@ -41,16 +55,20 @@ The inbox content is rendered **once**, before the recipient loop, and frozen on
 
 ## Coding time
 
-Implement `prefs.ts`, `get-user-email.ts`, `channels/inbox.ts`, and `channels/email.ts`, then finish the dispatcher's `// TODO(L3)` block — the batched preferences read, the `resolveChannels` call per recipient, and the render-once step. Build against the brief and the Lesson 3 tests. The inspector's preferences panel and its `setPref` action are already wired, so you can drive every scenario from the UI without touching it.
+Implement `prefs.ts`, `get-user-email.ts`, `channels/inbox.ts`, and `channels/email.ts`, then finish the dispatcher's `// TODO(L3)` block — the batched preferences read, the `resolveChannels` call per recipient, and the render-once step.
+Build against the brief and the Lesson 3 tests; the preferences panel and `setPref` action are already wired, so you can drive every scenario from the UI.
 
 <details>
 <summary>Reference solution and walkthrough</summary>
 
 ### Preferences: read once, default to on
 
-Start with `prefs.ts`. There are two exports, and they split cleanly along an async boundary: `readPrefsForCategory` touches the database, `resolveChannels` is a pure synchronous function the dispatcher calls per recipient against the rows the first one fetched.
+Start with `prefs.ts`.
+Its two exports split along an async boundary: `readPrefsForCategory` touches the database, while `resolveChannels` is a pure synchronous function the dispatcher calls per recipient against the rows the read fetched.
 
-The batched read is the N+1 guard made concrete. One query pulls every recipient's row for the relevant category, and the result is shaped into a `Map` keyed by `userId`. The early return on an empty `userIds` matters — an `IN ()` against zero ids is a query you should never send. A recipient who has no row simply never gets a key set, so `map.get(userId)` returns `undefined`, and that `undefined` is what carries the default-on behavior downstream.
+The batched read is the N+1 guard made concrete: one query pulls every recipient's row for the category into a `Map` keyed by `userId`.
+The early return on empty `userIds` avoids an `IN ()` against zero ids, a query you should never send.
+A recipient with no row never gets a key, so `map.get(userId)` returns `undefined` — and that `undefined` carries the default-on behavior downstream.
 
 ```ts
 import 'server-only';
@@ -95,7 +113,8 @@ export const readPrefsForCategory = async (
 
 `NotificationPrefRow` is `typeof userNotificationPreferences.$inferSelect` — the row type Drizzle infers from the table, so it tracks the schema and you never hand-write the column list.
 
-Now `resolveChannels`. It is the smallest function in the module and the one that earns its keep the most, because every preference decision the project makes lives in this one filter. Read both clauses through the annotations.
+Now `resolveChannels`. It is the smallest function in the module and carries every preference decision the project makes in one filter.
+Read both clauses through the annotations.
 
 <AnnotatedCode lang="ts" code={`
 export const resolveChannels = (
@@ -118,11 +137,10 @@ export const resolveChannels = (
   </AnnotatedStep>
 </AnnotatedCode>
 
-Keeping the override here, inside the resolver, rather than as a special case in the dispatcher, is the design decision worth holding onto: a future reader who wants to know "could this channel ever be suppressed?" reads one function and is done.
-
 ### Resolving the recipient's email
 
-`get-user-email.ts` is a single lookup against Better Auth's `user` table. Two details are worth a beat. First, the import is from `@/db/schema/auth` — the `user` table belongs to the auth schema, not the notifications one. Second, the function returns `string | null`, and the `null` is a real signal: it is what the email channel turns into a `RECIPIENT_NOT_FOUND`, the case where a recipient id no longer resolves to a user.
+`get-user-email.ts` is a single lookup against Better Auth's `user` table — note the import from `@/db/schema/auth`, since `user` belongs to the auth schema, not the notifications one.
+It returns `string | null`, and the `null` is a real signal: the email channel turns it into a `RECIPIENT_NOT_FOUND` for a recipient id that no longer resolves to a user.
 
 ```ts
 import 'server-only';
@@ -144,11 +162,12 @@ export const getUserEmail = async (userId: string): Promise<string | null> => {
 };
 ```
 
-The `columns: { email: true }` projection is deliberate — you need exactly one field, so you select exactly one field rather than hydrating the whole user row.
+The `columns: { email: true }` projection selects the one field you need rather than hydrating the whole user row.
 
 ### The inbox channel
 
-`channels/inbox.ts` is one insert. It reads `rendered.inbox.title` and `rendered.inbox.body` — the strings the dispatcher rendered once, before the loop — and writes them verbatim. No join, no second query, no formatting at write time.
+`channels/inbox.ts` is one insert.
+It reads `rendered.inbox.title` and `rendered.inbox.body` — the strings the dispatcher rendered once, before the loop — and writes them verbatim, with no join or formatting.
 
 ```ts
 import 'server-only';
@@ -180,15 +199,17 @@ export const writeInboxChannel: ChannelFn = async ({
 };
 ```
 
-The alternative — render at display, storing only ids and joining the user and org tables every time the inbox loads — is the one to reject on sight. It re-runs a join on every read, and worse, the notification's text would silently rewrite itself when an actor renames themselves or a plan label changes, so "Alice invited you" becomes "Alexandra invited you" weeks later. Freezing the text at dispatch keeps the row an accurate record of what was true when it fired.
+The alternative — storing only ids and joining the user and org tables on every read — lets the text rewrite itself when an actor renames itself or a plan label changes, so "Alice invited you" becomes "Alexandra invited you" weeks later.
+Freezing the text at dispatch keeps the row an accurate record of what was true when it fired.
 
 :::note
-`writeInboxChannel` is the **only** code in the project that writes the `notifications` table. That is an invariant, not a coincidence: the inbox feed has exactly one writer, so there is exactly one place a bad row can come from. In the next lesson a grep for `db.insert(notifications)` outside `lib/notifications/` is part of the seam check — anything it finds is a leak.
+`writeInboxChannel` is the **only** code in the project that writes the `notifications` table — an invariant, not a coincidence. With exactly one writer, there is exactly one place a bad row can come from. The next lesson's seam check greps for `db.insert(notifications)` outside `lib/notifications/`; anything it finds is a leak.
 :::
 
 ### The email channel
 
-`channels/email.ts` does three things in order: resolve the address, render the template, send. The `sendEmail` wrapper you built for transactional email already owns the `from`, the `replyTo`, and the suppression-list check, so this channel passes none of them — it supplies only what is specific to this send.
+`channels/email.ts` resolves the address, renders the template, and sends, in that order.
+The `sendEmail` wrapper already owns the `from`, `replyTo`, and suppression-list check, so this channel passes none of them and supplies only what is specific to this send.
 
 ```ts
 import 'server-only';
@@ -246,17 +267,19 @@ export const sendEmailChannel: ChannelFn = async ({
 };
 ```
 
-A few choices to call out:
+Three choices to call out:
 
-- **`createElement` instead of JSX.** This is a `.ts` file resolving the template component from the registry at runtime, not a `.tsx` file rendering a known component literally. `createElement(eventDef.templates.email, rendered.emailProps)` is the plain-function form of what JSX compiles to. The cast `const eventDef: NotifiableEvent = notifiableEvents[event.type]` is load-bearing: the registry is `as const`, so each entry's email template has its own precise prop type, and handing that raw union to `createElement` fails to typecheck because the prop types do not unify into one callable signature. Reading the entry through the `NotifiableEvent` field type — whose `email` field is the permissive `(props: any) => ReactElement` — is what makes it callable. That permissive field, and the parameter-contravariance reason it has to be permissive, was settled when you wrote the registry in [Registry, dispatcher, and dedup](/071-project---notification-dispatcher/2-registry-dispatcher-and-dedup/) — revisit the `NotifiableEvent` note there if it still surprises you.
-- **The idempotency key is deterministic.** `` `${event.type}:${event.subjectId}:${recipient.userId}` `` is the same string every time the same event fires for the same recipient, so a retried send is collapsed by the provider rather than delivered twice.
-- **`RECIPIENT_NOT_FOUND` is thrown, not handled here.** A null address throws, and the throw is *meant* to escape this function — it surfaces in the dispatcher's per-channel `try/catch`, gets logged, and is swallowed there so the inbox channel still runs. A `sendEmail` that returns a non-ok `Result` is logged and re-thrown for the same reason: the channel's job is to fail loudly upward, and isolating that failure is the dispatcher's job, not the channel's. Suppression-list handling stays entirely inside the wrapper.
+- **`createElement` instead of JSX.** This is a `.ts` file resolving the template from the registry at runtime, and `createElement(eventDef.templates.email, rendered.emailProps)` is the plain-function form of what JSX compiles to. The cast `const eventDef: NotifiableEvent = notifiableEvents[event.type]` is load-bearing: the registry is `as const`, so each entry's email template has its own precise prop type, and handing that raw union to `createElement` fails to typecheck because the prop types don't unify into one callable signature. Reading the entry through the `NotifiableEvent` field type — whose `email` field is the permissive `(props: any) => ReactElement` — makes it callable. You settled that permissive field, and the contravariance reason for it, in [Registry, dispatcher, and dedup](/071-project---notification-dispatcher/2-registry-dispatcher-and-dedup/).
+- **The idempotency key is deterministic.** `` `${event.type}:${event.subjectId}:${recipient.userId}` `` is the same string every time the same event fires for the same recipient, so the provider collapses a retried send rather than delivering it twice.
+- **`RECIPIENT_NOT_FOUND` is thrown, not handled here.** The throw is *meant* to escape: it surfaces in the dispatcher's per-channel `try/catch`, gets logged, and is swallowed there so the inbox channel still runs. A non-ok `sendEmail` `Result` is logged and re-thrown for the same reason. The channel fails loudly upward; isolating that failure is the dispatcher's job.
 
-The React Email templates themselves ship complete in `src/emails/`; authoring that JSX belongs to [JSX for the email DOM](/049-authoring-email-templates/1-email-templates-with-react-email/), not here.
+The React Email templates ship complete in `src/emails/`; authoring that JSX belongs to [JSX for the email DOM](/049-authoring-email-templates/1-email-templates-with-react-email/).
 
 ### Finishing the dispatcher
 
-The dispatcher already has its L2 skeleton — registry lookup, the per-recipient loop, the dedup check, the fan-out, `recordDedup`. The `// TODO(L3)` resolves into three edits, and they are not adjacent, so step through the finished file. The order is the one thing to hold steady: **preferences resolve, then dedup, then channels**.
+The dispatcher already has its L2 skeleton — registry lookup, the per-recipient loop, the dedup check, the fan-out, `recordDedup`.
+The `// TODO(L3)` resolves into three non-adjacent edits, so step through the finished file.
+One order stays fixed: **preferences resolve, then dedup, then channels**.
 
 <AnnotatedCode lang="ts" maxLines={18} code={`
 import 'server-only';
@@ -380,7 +403,9 @@ export const dispatch = async (
   </AnnotatedStep>
 </AnnotatedCode>
 
-Two things the `try/catch` placement decides. The catch is **per channel**, so an email failure never touches the inbox write for the same recipient. And `REGISTRY_MISS` is thrown *before* the loop and is never inside any `try/catch` — an unknown event type is a programmer error that must surface loudly, the opposite of an expected channel failure you log and continue past.
+Two things the `try/catch` placement decides.
+The catch is **per channel**, so an email failure never touches the inbox write for the same recipient.
+And `REGISTRY_MISS` is thrown *before* the loop, outside any `try/catch` — an unknown event type is a programmer error that must surface loudly, the opposite of an expected channel failure you log and move past.
 
 </details>
 
@@ -409,7 +434,9 @@ Run the lesson's gate:
 pnpm test:lesson 3
 ```
 
-The suite drives your `dispatch()` against the same local Postgres and email mock the app uses, reading the `notifications` table and the email-sent counter directly to confirm what each channel actually did. It needs the Lesson 2 migration applied and `pnpm db:seed` run — `bob`'s `team → email` off row and `alice`'s missing row are the fixtures it leans on. A green run looks like this:
+The suite drives your `dispatch()` against the same local Postgres and email mock the app uses, reading the `notifications` table and the email-sent counter to confirm what each channel did.
+It needs the Lesson 2 migration applied and `pnpm db:seed` run — it leans on `bob`'s `team → email` off row and `alice`'s missing row.
+A green run looks like this:
 
 ```bash
  ✓ tests/lessons/Lesson 3.test.ts (6)
@@ -424,7 +451,7 @@ The suite drives your `dispatch()` against the same local Postgres and email moc
       Tests  6 passed (6)
 ```
 
-The suite reads the database and the counter, but it never opens the inspector — so walk the UI once by hand to confirm the panels you actually built render the same outcomes, and verify the one requirement no test reaches:
+The suite never opens the inspector, so walk the UI once by hand to confirm the panels render the same outcomes and to check the one requirement no test reaches:
 
 <Checklist id="verify">
   <ChecklistItem chip="untested">As `bob`, `Fire invite-sent` adds a row to the inbox panel, leaves the email counter unchanged, and the dispatch result shows `suppressedByPrefs: 1`.</ChecklistItem>
@@ -435,6 +462,5 @@ The suite reads the database and the counter, but it never opens the inspector �
   <ChecklistItem chip="untested">The `security → email` toggle is rendered disabled and toggling it changes nothing server-side — the critical-channel affordance, illustrative since no `security` event ships.</ChecklistItem>
 </Checklist>
 
-That last item is the one the suite cannot see: it is a UI affordance demonstrating what a hard-locked critical channel looks like, not a behavior driven by any registered event.
-
-This lesson closes runnable. Every inspector button now produces its real effect — inbox rows land, the `EMAIL_MOCK` counter is load-bearing, and preferences decide which channels run. What is still missing is the dispatcher firing from real product code rather than the inspector's direct-fire buttons; wiring it into `sendInvitation`, `changeMemberRole`, and the Stripe webhook is the next lesson.
+Every inspector button now fires its real effect: inbox rows land, the `EMAIL_MOCK` counter moves, and preferences decide which channels run.
+What is still missing is the dispatcher firing from real product code instead of the inspector's buttons — wiring it into `sendInvitation`, `changeMemberRole`, and the Stripe webhook is the next lesson.

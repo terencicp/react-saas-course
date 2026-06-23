@@ -2197,3 +2197,8 @@ dedup window | windowSeconds | Short look-back span (default 60s, per-event in t
 dedup key | dedupKey, keyBy | Per-event field list that defines what counts as the same notification; built into a composite key with eventType and recipientUserId. | first defined: Chapter 070 L4
 notification_dedup | dedup table | Table recording (eventType, dedupKey, recipientUserId, firedAt) per delivery; the dispatcher's short-term send memory, pruned on a schedule. | first defined: Chapter 070 L4
 coalesce (notifications) | coalescing | Collapsing several distinct-but-related events into one summarized notification rather than dropping any. | first defined: Chapter 070 L4
+parameter contravariance | contravariance, TS2322 | A function demanding a specific param shape can't stand in where any object is accepted; why the template field is typed `any`. | first defined: Chapter 071 L2
+check-then-insert race | check-then-insert | Two concurrent fires both read "not duplicate" before either records, so both send; accepted, hardened with a unique key. | first defined: Chapter 071 L2
+fire-after-commit | dispatch after commit, fire after commit | Call the dispatcher only after the transaction commits, so work that rolls back never notifies anyone. | first defined: Chapter 070 L1
+dual write (notifications) | dual write | One action writing two tables for two audiences: an audit row for compliance plus a notification row for the user. | first defined: Chapter 071 L4
+pendingDispatches | pending dispatches array | In-memory NotificationEvent[] a webhook fills inside the tx and the route drains after commit; the v1 stand-in for a transactional outbox table. | first defined: Chapter 071 L4
