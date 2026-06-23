@@ -38,18 +38,34 @@ The chapter title doubles as a table of contents so it should be plain and descr
 Draft a few options less than ~36 characters, pick the most descriptive. No teasers, slogans, metaphors, personification, or hype.
 Rename the chapter folder name using the new title.
 
-## Step 5 - Update project files
+## Step 5 - Fix inbound links
+
+Skip this step in Blitz mode.
+
+Renaming the chapter folder in step 4 changed the chapter slug shared by every lesson, and any lesson a rewriter reported renaming in step 3 changed its own slug; links pointing to the old URLs from across the course are now broken.
+Skip the rest of this step when nothing was renamed.
+
+A slug is a folder or lesson file name (drop the `.mdx`) run through:
+
+    tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9 _-]//g; s/ /-/g'
+
+Build every old → new URL pair and pass them all to a single prose-link-fixer:
+  - The chapter, when its folder name changed: `/<old-chapter-slug>` and `/<new-chapter-slug>`, which repoints the shared segment of every inbound lesson link.
+  - Each renamed lesson: `/<old-chapter-slug>/<old-lesson-slug>` and `/<new-chapter-slug>/<new-lesson-slug>`, using the old chapter slug on the old side to match the links as they currently read.
+Repointing the shared chapter segment fixes every inbound lesson link in one pass.
+
+## Step 6 - Update project files
 
 Update the relevant section of 'documentation/Table of contents.md' to be coherent with the updated chapter title and content.
 
-## Step 6 - Commit
+## Step 7 - Commit
 
 Skip commits in Blitz mode.
 
 Make sure every relevant file has been edited.
-Commit changes to files in your chapter plus any `documentation/rewriting/glossary.md` edits, with the message `Prose rewrite: Chapter <XXX>`.
+Commit changes to files in your chapter, the link fixes in other files, plus any `documentation/rewriting/glossary.md` edits, with the message `Prose rewrite: Chapter <XXX>`.
 
-## Step 7 — Final message
+## Step 8 — Final message
 
 Return the message 'Chapter <X> rewritten'.
 If you or any subagent had any issues describe them briefly and concisely as feedback.
