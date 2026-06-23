@@ -2302,11 +2302,17 @@ useStore (Zustand) | - | Zustand's generic React hook; binds a vanilla store to 
 slice (Zustand) | - | A self-contained factory for one feature area of a store, composed into the whole. | first defined: Chapter 078 L2
 StateCreator | - | Zustand's type for a store or slice initializer; its generics wire set/get to the full store. | first defined: Chapter 078 L2
 useShallow | zustand/react/shallow | Wraps a selector to compare its result shallowly, so object/array returns don't re-render on every change. | first defined: Chapter 078 L2
+atomic selector | - | A selector returning one primitive (field or action), so the component re-renders only when that exact value changes; the per-field default. | first defined: Chapter 078 L2
 persist (Zustand) | - | Middleware mirroring store state to browser storage so it survives a refresh. | first defined: Chapter 078 L2
 data-isolation bug | data-isolation failure | One tenant's data rendered into another's response; the most serious multi-tenant failure. | first defined: Chapter 078 L2
 createContext | - | React API opening a provider/consumer channel; only runs inside Client Components. | first defined: Chapter 016 L2
 creator (Zustand) | creator function | The function passed to create/createStore; receives set/get and returns the initial state with its actions. | first defined: Chapter 078 L2
+replace flag (Zustand) | replace mode | set's second arg (true); replaces the whole state instead of shallow-merging the partial. | first defined: Chapter 079 L2
 routed wizard | - | Multi-step flow where each step is its own URL/route segment, so back/forward and deep links work. | first defined: Chapter 078 L3
 draft (state) | - | Data the user is editing that isn't persisted yet; here, the in-progress customer until step 4 submits. | first defined: Chapter 078 L3
 tenancy boundary | - | The moment the active tenant changes (org-switch), after which any per-tenant client cache must be cleared. | first defined: Chapter 078 L3
 composite schema | composite submit schema | One Zod schema derived from the per-step schemas, validating the whole multi-step payload at submit. | first defined: Chapter 078 L3
+Next-gate | next-gate | Client check greying out Next so a user can't advance with an invalid step; UX only, not security. | first defined: Chapter 079 L3
+authedInputAction | authedInputAction(role, schema, fn) | Direct-object sibling of authedAction; takes a plain parsed object (no FormData), re-parses it, runs fn with parsed input plus ctx. | first defined: Chapter 079 L4
+correctness boundary | - | The server-side re-parse that actually guarantees a valid write; distinct from a bypassable client gate. | first defined: Chapter 079 L4
+consumeForceFailure | force-failure (action) | Verification scaffolding: reads-and-clears a per-user force-failure flag so a submit returns the real err() failure shape on demand. | first defined: Chapter 079 L4
