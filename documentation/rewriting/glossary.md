@@ -2210,3 +2210,4 @@ fetchedAt | - | Timestamp computed once inside a cached read and frozen into the
 in-band redirect | - | A Server Action mutates, invalidates, then redirects in one request, so the redirect's render reads freshly-expired data; the mechanism behind read-your-writes. | first defined: Chapter 072 L2
 fan-out (invalidation) | invalidation fan-out | Firing one narrow tag per cached read a single mutation changed, so no affected read goes silently stale. | first defined: Chapter 072 L2
 multi-recipient invalidation | multi-recipient pattern | One action fires tags scoping several people's data, since who triggered a change and whose data changed are different questions. | first defined: Chapter 072 L2
+'max' (revalidateTag profile) | max profile | Recommended revalidateTag second arg; marks the tag stale for plain stale-while-revalidate on the next visit. | first defined: Chapter 073 L4

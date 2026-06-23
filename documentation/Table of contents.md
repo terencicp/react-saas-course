@@ -634,7 +634,7 @@
 - 2 Choosing an invalidation call (Resolve `updateTag`, `revalidateTag`, `revalidatePath`, and `router.refresh` on two axes (read-your-writes vs. eventual, tag vs. path) and trace the decision tree through worked flows: post-edit lists, post-purchase plan flips, membership changes, and webhooks.)
 - 3 Quiz
 
-### Chapter 073 — Project: caching the invoices list with tag-driven invalidation
+### Chapter 073 — Project: tag-driven invoice caching
 - 1 Project Overview
 - 2 Cache the reads
 - 3 Read-your-writes invalidation

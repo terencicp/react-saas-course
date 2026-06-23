@@ -1,0 +1,223 @@
+---
+title: Eventual invalidation
+chapter-id: 073
+course-progress: 0.6954
+sidebar:
+  order: 4
+  label: Eventual invalidation
+rewrites: 1
+---
+
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import { Aside } from '@astrojs/starlight/components';
+import Term from '../../../components/ui/Term.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson you wired the read-your-writes path: a user edits an invoice, lands on the list, and sees their own change on that render because the action calls `updateTag` after commit.
+That primitive fits when someone is on the redirect waiting for the result.
+This lesson handles the one read in the project where nobody is.
+
+Here, the per-org totals are recomputed on a background job.
+No specific user is blocked on that recompute, so blocking a render to refresh the number would pay a cost for nothing.
+Instead, let the fresh total land on the user's next visit.
+
+You can watch this from the inspector.
+"Run summary task" recomputes against the active org and redirects to `/inspector`; on that render `summaryFetchedAt` is unchanged, because the cache still served the stale value.
+Refresh `/inspector` again and `summaryFetchedAt` advances to show the recomputed totals.
+Stable on one render, fresh on the next: that is stale-while-revalidate.
+
+## Your mission
+
+The summary aggregate is the one read in this project owned by a background job rather than a user action, and that fact picks the invalidation primitive.
+Last lesson, the four actions called `updateTag` because a user sat on the redirect demanding read-your-writes.
+No user is waiting here: the recompute job runs on its own, and whoever next opens the dashboard can read a slightly stale total for one render.
+So the job calls `revalidateTag`, which serves the cached value to the in-flight render and refreshes on the next read.
+
+You'll implement the recompute as a plain server-only async function.
+In production it would be a Trigger.dev `schemaTask` with its own queue and concurrency limit, so a burst of recomputes can't stampede the database, the shape from [Defining and triggering Trigger.dev tasks](/066-background-work/4-defining-and-triggering-triggerdev-tasks).
+That shape is named here, not built: the in-process function stands in for it, with no Trigger.dev account, `tasks.trigger`, or env key.
+One piece carries forward regardless: the job validates its `{ orgId }` payload against a Zod schema at the boundary, so a misconfigured caller surfaces as a parse error instead of silently recomputing the wrong org.
+As everywhere in this chapter, the invalidation tag comes only through the `tags.ts` helper, never a hand-written string.
+
+The runtime enforces this split for you.
+Call `updateTag` outside a Server Action and the framework throws; `revalidateTag` works in background work.
+The inspector's "Force `updateTag` from a Route Handler" island is provided proof of that throw, to observe, not build.
+
+Out of scope: scheduling the job on a real cron, and any change to last lesson's action-side invalidation.
+This lesson adds only the eventual counterpart.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Running the recompute returns the correct active-invoice count and summed total for the org, excluding archived and soft-deleted rows.</ChecklistItem>
+  <ChecklistItem chip="tested">Running the recompute upserts the org's one summary row — creating it when absent, replacing it in place when present — with the recomputed totals and a fresh `updatedAt`.</ChecklistItem>
+  <ChecklistItem chip="tested">A payload with a malformed or empty `orgId` is rejected at the job boundary, before any recompute, write, or log, rather than recomputing the wrong org.</ChecklistItem>
+  <ChecklistItem chip="tested">Running the recompute records exactly one summary-tag invalidation entry sourced as `job`, distinct from the `action` entries the previous lesson emits.</ChecklistItem>
+  <ChecklistItem chip="untested">From the inspector, "Run summary task" redirects to `/inspector` with `summaryFetchedAt` unchanged on that render — the stale value is served.</ChecklistItem>
+  <ChecklistItem chip="untested">A manual refresh of `/inspector` after the job advances `summaryFetchedAt` and shows the recomputed totals.</ChecklistItem>
+  <ChecklistItem chip="untested">The "Force `updateTag` from a Route Handler" island shows a thrown framework error with a clear message — `updateTag` is unavailable outside a Server Action.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Only `src/server/jobs/summary-recompute.ts` changes.
+Replace its `throw` with the real body: validate the payload, recompute over the active rows, upsert the aggregate row, and invalidate the summary tag.
+Build it against the brief above and the test suite, then open the reference.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The job is one short file — four decisions, in order, no glue. Here it is in full, then the walkthrough.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import 'server-only';
+
+import { revalidateTag } from 'next/cache';
+import { z } from 'zod';
+import { logCacheInvalidation } from '@/lib/cache/log';
+import { invoiceTags } from '@/lib/cache/tags';
+import { scopedInvoices } from '@/lib/invoices/scoped-query';
+import { upsertSummaryRow } from '@/server/store';
+
+// The in-process summary-recompute "background job". In the DB-backed framing this
+// is a Trigger.dev \`schemaTask\` with a Zod payload schema and its own queue —
+// named, not built. The only concept it carries is \`revalidateTag\` from a
+// non-action context, where \`updateTag\` would throw. The inspector's "Run
+// summary task" button invokes it directly.
+
+const inputSchema = z.strictObject({ orgId: z.string().min(1) });
+
+export const recomputeOrgSummary = async (input: {
+  orgId: string;
+}): Promise<{ orgId: string; totalCount: number; totalAmount: number }> => {
+  const { orgId } = inputSchema.parse(input);
+
+  // Recompute count + sum(total) over the active (non-archived, non-deleted)
+  // rows for this org, then upsert the aggregate row.
+  const active = scopedInvoices(orgId).active().take(Number.MAX_SAFE_INTEGER);
+  const totalCount = active.length;
+  const totalAmount = active.reduce((sum, inv) => sum + Number(inv.total), 0);
+  upsertSummaryRow({
+    orgId,
+    totalCount,
+    totalAmount,
+    updatedAt: new Date().toISOString(),
+  });
+
+  // \`revalidateTag\` (not \`updateTag\`) because no user is waiting — the eventual,
+  // stale-while-revalidate primitive is correct here. The required \`'max'\` profile
+  // arg is the second argument (the single-arg form is deprecated). The tag string
+  // comes only through the \`tags.ts\` helper.
+  const summaryTag = invoiceTags.summary(orgId);
+  revalidateTag(summaryTag, 'max');
+  // Log AFTER the real invalidation returns so a throwing call never leaves a
+  // log row claiming success; \`'job'\` distinguishes it from the \`action\` rows.
+  logCacheInvalidation(summaryTag, 'job');
+
+  return { orgId, totalCount, totalAmount };
+};
+`}>
+  <AnnotatedStep meta={`"import 'server-only'"`} color="green">
+    The server-only guard. This job touches the store and the cache scope, so it must never reach a client bundle. The bare `import 'server-only'` turns an accidental client import into a build error instead of a runtime leak.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"inputSchema.parse(input)" "z.strictObject({ orgId: z.string().min(1) })"`} color="orange">
+    The boundary parse, first thing in the body. `parse` runs before any recompute, write, or log, so a typoed or empty `orgId` from a misconfigured caller throws here and the store is never touched with bad input. This stands in for the `schemaTask` payload contract.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"scopedInvoices(orgId).active().take(Number.MAX_SAFE_INTEGER)" "totalCount" "totalAmount"`} color="blue">
+    Recompute over the active set. `scopedInvoices(orgId).active()` is the tenant-scoped read path the queries use, and `.active()` already drops archived and soft-deleted rows, so the count and sum are correct by construction. `.take(Number.MAX_SAFE_INTEGER)` is the terminal that materializes every row.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"upsertSummaryRow({"`} color="blue">
+    The upsert. One aggregate row per org, created or replaced, stamped with a fresh ISO `updatedAt`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"revalidateTag(summaryTag, 'max')"`} color="violet">
+    The eventual invalidation. `revalidateTag`, not `updateTag`, because no user is waiting; the tag comes through the helper; <Term definition="The recommended revalidateTag profile: it marks the tag stale so the next visit gets the cached value while fresh data loads in the background — plain stale-while-revalidate.">`'max'`</Term> is the required second argument, since the single-argument form is deprecated.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"logCacheInvalidation(summaryTag, 'job')"`} color="green">
+    The log call, after `revalidateTag` returns and sourced as `job` so it stands apart from the interactive `action` entries.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The order is the point.
+`parse` runs before any row is read or written, so a caller that fat-fingers the payload throws at the boundary instead of recomputing and overwriting the *wrong* org's summary — a bug with no error and no symptom until the numbers look off.
+
+One line repays a second look: `scopedInvoices(orgId).active().take(Number.MAX_SAFE_INTEGER)`.
+The builder is lazy, so `.active()` hands back a query, not an array, and `.take(n)` is its terminal — the same call the paginated list uses with a real page size.
+The recompute wants the whole active set, not a page, so the take is the largest safe integer.
+From there the totals are ordinary: a length and a `reduce`.
+
+<Aside type="tip">
+`revalidateTag` marks the tag stale so the *next* read recomputes, while the in-flight render keeps serving the cached value — the eventual, stale-while-revalidate behavior you want when no user is waiting.
+`updateTag` is the read-your-writes counterpart the framework allows only inside a Server Action; call it here and it throws.
+[Choosing a cache invalidation call](/072-caching-strategy-and-invalidation/2-choosing-an-invalidation-call/) owns that decision; this job applies the eventual branch.
+</Aside>
+
+:::note
+`revalidateTag` is synchronous, so there is no `await` — the framework marks the tag against the current cache scope inline.
+Material that predates the final API writes it with `await`; follow the source.
+:::
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="revalidateTag"
+    href="https://nextjs.org/docs/app/api-reference/functions/revalidateTag"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The exact call this job makes — the 'max' profile and why the single-argument form is deprecated."
+  />
+  <ExternalResource
+    title="updateTag"
+    href="https://nextjs.org/docs/app/api-reference/functions/updateTag"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The Server-Action-only counterpart that throws here — the contrast this lesson is built on."
+  />
+  <ExternalResource
+    title="cacheLife"
+    href="https://nextjs.org/docs/app/api-reference/functions/cacheLife"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The profiles 'max' draws from — stale, revalidate, and expire spelled out."
+  />
+  <ExternalResource
+    title="Trigger.dev schemaTask"
+    href="https://trigger.dev/docs/tasks/schemaTask"
+    icon="lucide:zap"
+    iconColor="#A78BFA"
+    description="The production shape this in-process function stands in for — a Zod-validated payload at the task boundary."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```bash
+pnpm test:lesson 4
+```
+
+Expect every assertion green.
+The suite imports your `recomputeOrgSummary` and runs it directly against the in-memory store, deriving each expected answer from the raw seeded rows so a bug in your query path can't hide a bug in the recompute.
+
+Then confirm by hand what the suite can't see: the cache and render timing in the live app, and the force-throw surface.
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Inspector "Run summary task": the redirect to `/inspector` shows `summaryFetchedAt` unchanged on that render — the stale value is served.</ChecklistItem>
+  <ChecklistItem chip="untested">Refresh `/inspector` again: `summaryFetchedAt` advances and the recomputed totals are visible.</ChecklistItem>
+  <ChecklistItem chip="untested">The invalidation log tail shows the summary tag sourced as `job`, distinct from the `action` rows.</ChecklistItem>
+  <ChecklistItem chip="untested">The "Force `updateTag` from a Route Handler" island shows a thrown framework error with a clear message — `updateTag` is unavailable outside a Server Action.</ChecklistItem>
+</Checklist>
+
+With this job wired, both invalidation paths run end to end: `updateTag` from the actions for read-your-writes, and `revalidateTag` from the recompute job for the eventual path.
+The next chapter swaps the local cache backend for a cross-process one on Vercel, backed by Upstash Redis, so a `revalidateTag` fired on one instance reaches the caches on every other.
