@@ -2233,3 +2233,10 @@ delta-seconds | - | A count of seconds from now until an event; a relative durat
 p50 | median latency | The median latency; half of requests are faster. | first defined: Chapter 074 L2
 lockout vector | - | Denying a victim access to their own account by tripping a limit keyed on the victim's identifier; the defense becomes the attack. | first defined: Chapter 074 L3
 dual-keying rule | dual key, dual gate | Run a per-IP and a per-victim-identifier gate independently and require a request to clear both; catches single-source floods and distributed campaigns without enabling lockout. | first defined: Chapter 074 L3
+RateLimit-* headers | RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset | IETF-standard rate-limit response headers conveying a client's budget and reset time. | first defined: Chapter 075 L1
+429 | Too Many Requests | HTTP status returned when a client trips a rate limit. | first defined: Chapter 075 L1
+ephemeralCache | - | In-process map a Ratelimit keeps so repeated reads of a hot key are served from memory, skipping a Redis round-trip. | first defined: Chapter 075 L2
+getRemaining | - | Ratelimit read that returns a key's remaining budget without consuming a token. | first defined: Chapter 075 L2
+fail-open | - | On limiter error (e.g. Redis unreachable), allow the request through rather than block, so an outage cannot lock everyone out. | first defined: Chapter 075 L2
+secondaryStorage | secondary storage | Better Auth config slot for a second key-value store (e.g. Redis) backing rate-limit counters and sessions, so the built-in limiter shares state across instances. | first defined: Chapter 075 L3
+enumeration-uniform | enumeration-safe response | Return the identical response whether or not the email belongs to a real account, so an attacker can't tell registered addresses apart. | first defined: Chapter 075 L5

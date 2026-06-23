@@ -1,0 +1,193 @@
+---
+title: Project overview
+chapter-id: 75
+course-progress: 0.7041
+rewrites: 1
+sidebar:
+  order: 1
+  label: Overview
+---
+
+import { FileTree, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+import GatedActionFlow from '../../../components/lessons/075/1/GatedActionFlow.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The starter is the email+password auth surface you built in *Email+password auth with verification* — sign-in, sign-up, and password reset, all running through Better Auth — with one thing missing that no public auth endpoint should ship without: a rate limit.
+Nothing stops a script from posting the sign-in form thousands of times a minute, walking a password list against one address, or hammering a victim's email until their inbox drowns in reset mail.
+Over this chapter you close that gap with `@upstash/ratelimit`, wrapped at the Server Action boundary so the auth core never moves.
+
+A rate limiter has no production UI — a gate either fires or it doesn't, silently — so the starter ships an `/inspector` that makes the gates visible.
+It reads live token budgets straight from Redis, fires a burst of sign-in calls on demand, and tails the responses and structured logs an operator would watch.
+Every later lesson verifies its work against this page.
+
+<Figure caption="The /inspector after a Spam sign-in: the per-IP budget counts 9 → 0 across ten unauthorized calls, the eleventh flips to the opaque rate_limited message, and the structured-log tail records the rate_limit_rejected row.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/075/l3-desktop-1280.png"
+      alt="The /inspector page after a Spam sign-in: the 'Remaining tokens' panel shows signin ip and signin email:alice@example.com both at 0/10; the 'Recent responses' log shows a rate_limited row ('Too many attempts. Please try again later.') above ten unauthorized rows ('Invalid email or password.'); and the 'Structured log (rate_limit_log)' tail shows a rate_limit_rejected row keyed on the per-IP limiter."
+    />
+  </Screenshot>
+</Figure>
+
+You build none of that this lesson.
+The goal is narrower: get the starter running, confirm the auth flows still work end to end, and open the inspector to see which gates are missing before you fill them.
+
+## What we'll practice
+
+- Wrapping an existing auth surface with an application-level rate limiter at the Server Action boundary, without touching the auth core.
+- Designing limiter keys: keying sign-in by IP and by email, and choosing per endpoint whether email belongs in the key.
+- Making a rejection observable and safe: a budget carried in the action `Result`, one opaque user message, an honest structured log, and the <Term definition="The IETF-standard rate-limit response headers (RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset) that tell a client its budget and when it resets.">`RateLimit-*` headers</Term> for a route handler.
+- Building for resilience: failing open on a Redis outage, declaring limiters at module scope, and flushing analytics off the response path.
+- Swapping Better Auth's built-in limiter for this application-level pattern as a deliberate choice.
+
+This is the limiter shape every other abusable endpoint copies; once it is built here, a new endpoint is one `Ratelimit` instance plus one action wrap.
+
+:::note
+Some neighbouring concerns are out of scope: per-user and per-org limits, WAF rule configuration, captcha, IP blocklists, multi-region replication, and route-handler-level limits as defense-in-depth.
+The `/api/auth/[...all]` catch-all stays unwrapped on purpose, since limits land at the action seam that calls `auth.api.*` directly.
+:::
+
+## The gated-action request flow
+
+Two layers stand between a request and your auth calls: an edge WAF that drops obvious floods before they reach your code (out of scope here), and the application limiter you build, which makes the per-identity decisions the WAF can't.
+
+The diagram traces one gated action through that second layer.
+Everything turns on the gate: if every `safeLimit` check passes, the action runs the real auth call; if one fails, it returns early.
+The figure's caption and notes carry the rest, including how the budget leaves on the `Result` rather than a header.
+
+<GatedActionFlow />
+
+## Starting file tree
+
+The starter ships the auth surface from *Email+password auth with verification*, working end to end, plus the full `/inspector` page and a few supporting modules you read but never write.
+Your work is the nine highlighted files: six stubs holding the limiter infrastructure, and the three auth actions you wrap.
+Each carries an inline `TODO(Lx)` naming the lesson that fills it; everything else is provided as-is.
+
+<FileTree>
+- src/
+  - **env.ts** TODO(L2) — add the two Upstash entries (URL + token)
+  - db/
+    - schema.ts the rate_limit_log table lives here
+    - schema/ Better Auth's four core tables (CLI-generated)
+  - lib/
+    - auth.ts provided from chapter 055 — its built-in limiter is still **on** (lesson 3 flips it off)
+    - **redis.ts** TODO(L2) — Redis.fromEnv() + pingRedis()
+    - **rate-limit.ts** TODO(L2) — three module-scope Ratelimit instances + LIMITER_MAX
+    - **keys.ts** TODO(L3) — getClientIp + normalizeEmail
+    - **safe-limit.ts** TODO(L3) — fail-open wrapper + structured log
+    - **rate-limit-headers.ts** TODO(L3) — rateLimitBudget / rateLimited (+ route-twin header helpers)
+    - redis-mock.ts provided — a down Redis for the fail-open demo
+    - rate-limit-log.ts provided — logRateLimit, writes to rate_limit_log
+    - email.ts provided — mocked in inspector mode; getMockEmailSentCount() is what lesson 5 reads
+  - app/
+    - (auth)/
+      - sign-in/
+        - **actions.ts** TODO(L3) — wrap with dual-keying (ip + email)
+      - sign-up/
+        - **actions.ts** TODO(L4) — wrap per-IP
+      - reset/
+        - **actions.ts** TODO(L5) — wrap per-IP + per-email
+    - api/
+      - auth/[...all]/ Better Auth catch-all — NOT wrapped (limits land at the action seam)
+      - limit-demo/ provided — the route-handler twin: literal RateLimit-* headers + a 429 body
+    - inspector/ provided in full — the verification surface
+- scripts/
+  - seed.ts provided — alice + bob (verified, known password); eve (reset target)
+</FileTree>
+
+Two provided files come up across every lesson.
+`src/app/inspector/` is the verification page you read live budgets and `rate_limit_log` rows from; you write none of it.
+`src/app/api/limit-demo/route.ts` is the route-handler twin, a deliberate counterexample that returns literal `RateLimit-*` headers and a JSON <Term definition="HTTP status 'Too Many Requests' — the standard response when a client has tripped a rate limit.">429</Term> body on a plain `GET`, so you can compare it against the action that has to carry its budget in the `Result` instead.
+
+## Roadmap
+
+<CardGrid>
+  <Card title="Lesson 2 — Declare the Redis client and three limiters">
+    Stand up the Redis client and three module-scope `Ratelimit` instances, so the inspector's "Remaining tokens" panel reads live budgets from Redis instead of `n/a`.
+  </Card>
+  <Card title="Lesson 3 — Gate sign-in and replace Better Auth's built-in limiter">
+    Key the sign-in gate by both IP and email and swap out Better Auth's built-in limiter, so the eleventh call returns `rate_limited` with an opaque message and its remaining budget on the `Result`.
+  </Card>
+  <Card title="Lesson 4 — Gate sign-up per IP">
+    Add a per-IP sign-up gate so one host cannot mass-register accounts, with each call's budget on the `Result`.
+  </Card>
+  <Card title="Lesson 5 — Gate reset per IP and per email">
+    Add a per-IP-and-per-email reset gate that protects a victim's inbox and your Resend cost even when the attacker rotates IPs.
+  </Card>
+</CardGrid>
+
+## Setup
+
+This project runs against a local Postgres in Docker and a free Upstash Redis database.
+The two Upstash variables are the only new environment values since chapter 055; everything else carries in and is already templated in `.env.example`.
+
+<Steps>
+
+1. Get the starter from the [project repository](https://github.com/terencicp/react-saas-course-projects), under `Chapter 075/start/`. Clone just that subdirectory with `degit`:
+
+   ```sh
+   npx degit terencicp/react-saas-course-projects/Chapter\ 075/start rate-limits
+   cd rate-limits
+   ```
+
+   `degit` copies the folder into a fresh `rate-limits` directory with no git history. The repo ships a `start/` and a `solution/` sibling, so you can diff your work against the reference.
+
+2. Install dependencies:
+
+   ```sh
+   pnpm install
+   ```
+
+3. Provision Upstash Redis. Create a free database in the [Upstash console](https://console.upstash.com), then copy the REST URL and token from its **REST API** panel. The free tier comfortably covers this project.
+
+4. Start Postgres (the provided `docker-compose.yml` runs Postgres 18):
+
+   ```sh
+   docker compose up -d
+   ```
+
+5. Copy the env template and fill in the values (the table below covers the two new ones; the rest are documented inline in the file):
+
+   ```sh
+   cp .env.example .env
+   ```
+
+6. Run the migrations:
+
+   ```sh
+   pnpm db:migrate
+   ```
+
+7. Seed the accounts (`alice`, `bob`, `eve`):
+
+   ```sh
+   pnpm db:seed
+   ```
+
+8. Start the dev server:
+
+   ```sh
+   pnpm dev
+   ```
+
+</Steps>
+
+The two new variables to set:
+
+| Variable | Purpose | How to obtain |
+| --- | --- | --- |
+| `UPSTASH_REDIS_REST_URL` | The Upstash REST endpoint the limiters and inspector read through. | The database's **REST API** panel in the Upstash console. |
+| `UPSTASH_REDIS_REST_TOKEN` | The read/write token paired with that URL. | The same **REST API** panel. |
+
+The rest — `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_REPLY_TO`, `NEXT_PUBLIC_APP_NAME`, and `NEXT_PUBLIC_APP_URL` — carry in from chapter 055 with sensible local defaults already filled in.
+`DATABASE_URL` points at the Docker Postgres, and `BETTER_AUTH_SECRET` is the one value you must generate yourself (`openssl rand -base64 32`).
+
+On success, `pnpm dev` serves the chapter 055 auth flows end to end: signing in as `alice` with the seeded password lands you on `/dashboard`, and sign-up and reset behave as before.
+`/inspector` loads cleanly, but every "Remaining tokens" row reads `n/a`, and clicking a "Spam X" button records an `internal` outcome with a "Not implemented" message rather than crashing.
+That is the expected starting state: the inspector is wired but inert, because the limiters and action wrappers don't exist yet.
+You build them starting in the next lesson.

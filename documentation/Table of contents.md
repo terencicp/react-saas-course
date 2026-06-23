@@ -646,12 +646,12 @@
 - 3 Rate-limiting the auth endpoints (Teaches the three module-scope limiters for sign-in, sign-up, and password reset, the per-IP-and-per-email dual-keying rule that defeats credential stuffing without lockout, the gate-first-work-second seam inside the action, the RFC-shape `RateLimit-*` headers, the user-safe 429 body, and the fail-open `safeLimit` wrapper.)
 - 4 Quiz
 
-### Chapter 075 — Project: Upstash rate limits on the auth surface
-- 1 Project Overview
-- 2 Declare the Redis client and three module-scope limiters
-- 3 Gate sign-in with dual-keying and swap out Better Auth's built-in
+### Chapter 075 — Project: Rate limits on the auth surface
+- 1 Project overview
+- 2 Stand up the Redis client and three limiters
+- 3 Gate sign-in per IP and per email
 - 4 Gate sign-up per-IP
-- 5 Gate reset per-IP and per-email
+- 5 Gate the password reset per-IP and per-email
 
 ---
 
