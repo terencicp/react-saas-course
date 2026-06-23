@@ -2282,3 +2282,8 @@ dual fetcher | - | A read function branching on typeof window: fetch the route h
 read seam | - | The single endpoint where the client crosses into server data; here the GET route handler the query reads from. | first defined: Chapter 076 L4
 write seam | - | The Server Action that owns the mutation: parse, authorize, write, audit, return Result, then trigger invalidation. | first defined: Chapter 076 L4
 progressive-enhancement form contract | form contract | The FormData + native HTML <form> contract that submits without JavaScript and degrades gracefully, working before hydration. | first defined: Chapter 076 L4
+two-system invalidation | - | A write invalidating both caches at once: updateTag for the Server Component cache, invalidateQueries for the TanStack client cache. | first defined: Chapter 077 L3
+refetchIntervalInBackground | - | useInfiniteQuery/useQuery flag; false pauses the poll while the tab is hidden, resumes on focus. | first defined: Chapter 076 L2
+getPreviousPageParam | - | useInfiniteQuery function returning the previous page's cursor; mandatory whenever maxPages caps retention so dropped pages re-fetch on scroll-back. | first defined: Chapter 076 L2
+isFetchingNextPage | - | TanStack Query flag: true only while a useInfiniteQuery paging fetch is in flight, distinct from a background poll's isFetching. | first defined: Chapter 076 L2
+InfiniteData | - | TanStack Query's cache shape for an infinite query: a { pages, pageParams } object holding every fetched page. | first defined: Chapter 077 L4

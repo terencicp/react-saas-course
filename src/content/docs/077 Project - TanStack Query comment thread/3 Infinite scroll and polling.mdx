@@ -5,6 +5,7 @@ course-progress: 0.7215
 sidebar:
   order: 3
   label: Infinite scroll and polling
+rewrites: 2
 ---
 
 import Figure from '../../../components/figures/Figure.astro';
@@ -22,13 +23,14 @@ import { CardGrid } from '@astrojs/starlight/components';
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-The read side comes alive: scroll to the bottom of a thread and a "Load older" button pages in earlier comments, and a comment a coworker posts shows up on its own within ten seconds — no refresh.
+The read side goes live.
+The seeded first page still paints instantly, as you wired it last lesson; what's new is everything after that.
+A "Load older" button pages in earlier comments from a real HTTP endpoint, and a background poll refreshes the head of the thread every ten seconds, so a coworker's comment shows up on its own and the poll goes quiet the moment you switch tabs.
+Most of the change is behavioral and shows up in the network tab, but the settled thread looks like this:
 
-The seeded first page still paints instantly, the way you wired it last lesson. What's new is everything after that first paint. "Load older" appends earlier pages by hitting a real HTTP endpoint, a background poll refreshes the head of the thread every ten seconds, and the polling goes quiet the moment you switch to another tab. The visible change is mostly behavioral and lives in the network tab — that's where the seam you're about to build is observable — but the settled thread looks like this:
-
-<Figure caption="The settled thread — seeded rows above the form, with the 'Load older' control at the bottom that pages in earlier comments.">
+<Figure caption="The settled thread — twenty seeded rows above the comment form, with the 'Load older' control beneath them.">
   <TabbedContent syncKey="comment-thread-viewport">
-    <TabbedItem label="Desktop · 1280" caption="The finished surface at desktop width — the customer and total cards above the comment thread, the twenty seeded rows, and the full-width 'Load older' control beneath them.">
+    <TabbedItem label="Desktop · 1280" caption="At desktop width: the customer and total cards sit above the thread.">
       <Screenshot viewport="desktop">
         <img
           src="/screenshots/077/l3-desktop-1280.png"
@@ -37,7 +39,7 @@ The seeded first page still paints instantly, the way you wired it last lesson. 
       </Screenshot>
     </TabbedItem>
 
-    <TabbedItem label="Mobile · 390" caption="The same thread at phone width — the customer and total cards and the comment rows stack into a single full-width column, with 'Load older' still tappable beneath them.">
+    <TabbedItem label="Mobile · 390" caption="At phone width: the cards and comment rows stack into one full-width column.">
       <Screenshot viewport="mobile">
         <img
           src="/screenshots/077/l3-mobile-390.png"
@@ -50,11 +52,18 @@ The seeded first page still paints instantly, the way you wired it last lesson. 
 
 ## Your mission
 
-The seam to respect here is that **client** reads travel through a public route handler — `GET /api/invoices/[id]/comments` — so the very same data is reachable by a future mobile or third-party client, while the Server Component's prefetch keeps reading the store directly through the server-only `listCommentsPage` you used last lesson. Two read functions, one wire shape. The reason they have to stay two functions and not one is concrete: the client fetcher must never import the store, `getSession`, or `queries.ts`, because any transitive reach into `server-only` code fails `next build` the moment a Client Component pulls it in. In a real Postgres app that same mistake would also bundle the database driver into the browser. The handler is wrapped in `authedRoute`, so the tenancy boundary holds at the read seam exactly as it does at the write seam — a request for another org's invoice scopes to the acting org and comes back as an empty page, and a caller below the `member` role is refused with RFC 9457 Problem Details. Both the handler and the fetcher parse the payload through the same shared Zod schema, so if the response ever drifts the client fails loudly instead of rendering broken UI.
+Client reads travel through a public route handler, `GET /api/invoices/[id]/comments`, so a future mobile or third-party client can reach the same data; the Server Component's prefetch keeps reading the store directly through last lesson's server-only `listCommentsPage`.
+Two read functions, one wire shape.
+They stay separate because the client fetcher must never import the store, `getSession`, or `queries.ts`: any transitive reach into `server-only` code fails `next build` once a Client Component pulls it in.
+Wrap the handler in `authedRoute` so the tenancy boundary holds at the read seam, and parse both the handler's and the fetcher's payload through the same Zod schema so a drifted response fails loudly instead of rendering broken UI.
 
-On the client, `useInfiniteQuery` reads the cursor pages newest-first and caps the retained pages at ten — a chat-style thread bounds its memory, unlike a feed-style read-once surface where you'd leave it unbounded — and it polls on a ten-second `refetchInterval` with `refetchIntervalInBackground: false` so the browser pauses polling while the tab is hidden. Ten seconds is a deliberate cadence, not a round number: faster floods the connection pool and burns mobile battery, slower starts to feel stale. Keep "Load older" an explicit button rather than an `IntersectionObserver` that auto-loads on scroll — auto-load is right for an endless feed but wrong for a thread a user might scroll past by accident and not want to keep paging. And surface the poll's in-flight state with an `isFetching` chip that's visually distinct from the per-page "Load older" spinner; that's the `isPending`-versus-`isFetching` distinction you met in the TanStack Query chapter put to work.
+On the client, `useInfiniteQuery` reads cursor pages newest-first, caps retained pages at ten to bound a chat-style thread's memory, and polls on a ten-second `refetchInterval` with `refetchIntervalInBackground: false` so the browser pauses while the tab is hidden.
+Ten seconds is deliberate: faster floods the connection pool and burns mobile battery, slower feels stale.
+Keep "Load older" an explicit button, not an `IntersectionObserver` that auto-loads on scroll, which suits an endless feed but not a thread a user might scroll past by accident.
+Surface the poll's in-flight state with an `isFetching` chip, visually distinct from the per-page "Load older" spinner.
 
-One boundary to hold: posting stays unwired this lesson. The thread is read-only — the form does nothing until the next lesson. And "live" here means polling, not WebSockets or Server-Sent Events. Those are out of scope for this course entirely; polling is the threshold-met case for a comment thread, and it's the only live-update mechanism you need.
+Posting stays unwired this lesson: the thread is read-only until the next lesson.
+And "live" here means polling, not WebSockets or Server-Sent Events; polling is all a comment thread needs.
 
 <Checklist id="mission">
   <ChecklistItem chip="tested">Clicking "Load older" appends the next earlier page below the existing rows, and the already-loaded head stays in place with no refetch or flicker.</ChecklistItem>
@@ -74,11 +83,12 @@ Implement against the brief and the lesson's tests, then open the walkthrough be
 <details>
 <summary>Reference solution and walkthrough</summary>
 
-Three files, in the order the data flows: the client fetcher that builds the request, the route handler that answers it, then the thread component that drives both the paging and the poll.
+Three files, in data-flow order: the client fetcher that builds the request, the route handler that answers it, then the thread component that drives both the paging and the poll.
 
 ### The client-safe fetcher
 
-This is the module the thread imports to read pages, and the one constraint on it is the load-bearing one: it must stay client-safe. It branches on nothing server-ish and imports no `server-only` code — only the shared schema. Build the URL against `window.location.origin`, add the `cursor` as a search param only when there is one, fetch with the cookie attached, throw on a non-ok response so `useInfiniteQuery` surfaces the failure, then parse the `{ data }` envelope through `commentsPageSchema`.
+The thread imports this module to read pages, so it imports no `server-only` code, only the shared schema.
+Build the URL against `window.location.origin`, add `cursor` as a search param only when there is one, fetch with the cookie attached, throw on a non-ok response, then parse the `{ data }` envelope through `commentsPageSchema`.
 
 ```ts title="src/lib/comments/fetcher.ts"
 // The CLIENT-safe fetcher. `comment-thread.tsx` imports this module, so it must
@@ -115,11 +125,16 @@ export const fetchCommentsPage = async ({
 };
 ```
 
-Two lines carry more weight than they look. The `throw new Error` on `!res.ok` is what lets a 500 or a 403 from the handler reach the query as an error instead of resolving to an empty success — without it, a refused read renders as a thread with no comments, which is a silent lie. And `commentsPageSchema.parse(json.data)` is the contract enforcement: the schema is a `strictObject`, so an unexpected field in the response throws right here, on the client, the same way it would on the server. That's the drift-fails-loudly guarantee from requirement 8. The `{ data }` envelope and the boundary parse are the route-handler conventions from the route handlers chapter; the schema lives in `src/lib/comments/schema.ts` and is imported by the handler, the fetcher, and next lesson's action, so a change to the wire shape has exactly one place to change and breaks every consumer at once if you get it wrong.
+Two lines do the real work.
+The `throw new Error` on `!res.ok` lets a 500 or 403 reach the query as an error instead of resolving to an empty success; without it, a refused read renders as a thread with no comments.
+And because `commentsPageSchema` is a `strictObject`, an unexpected field throws on `parse`, so wire-shape drift fails loudly on the client exactly as it would on the server.
+The schema lives in `src/lib/comments/schema.ts` and is imported by the handler, the fetcher, and next lesson's action, so the wire shape changes in one place.
 
 ### The route handler
 
-This is the public read seam. `authedRoute` takes positional arguments — the minimum role, the query schema, and the handler — and hands your function a parsed `query` plus a `ctx` carrying the resolved session, the org, and the dynamic route params. The whole tenancy story is one line: scope `listCommentsPage` to `ctx.orgId`.
+This is the public read seam.
+`authedRoute` takes the minimum role, the query schema, and the handler, and hands your function a parsed `query` plus a `ctx` carrying the session, the org, and the route params.
+The whole tenancy story is one line: scope `listCommentsPage` to `ctx.orgId`.
 
 ```ts title="src/app/api/invoices/[id]/comments/route.ts"
 import { authedRoute } from '@/lib/authed-route';
@@ -141,15 +156,19 @@ export const GET = authedRoute('member', commentsQuerySchema, (query, ctx) => {
 });
 ```
 
-`authedRoute` resolves the session and checks `roleAtLeast('member', ...)` before your handler body ever runs — a caller below `member` gets a 403 Problem Details and never reaches the read. Then, because the read is scoped to `ctx.orgId` and not to the `invoiceId` alone, a request for an invoice that belongs to another org matches no rows and returns an empty page. No 404, no error — just nothing, which is the correct answer to "show me a resource that, as far as you're concerned, doesn't exist." That's defense in depth: the tenancy check sits here at the read seam alongside the same scoping in the data layer and the cache tags, so no single layer is the only thing standing between one tenant and another's data. The `authedRoute` wrapper, the `{ data }` success envelope, and the Problem Details refusal shape are all from the route handlers chapter; the role-and-tenancy gating is the same `authedRoute` you met in the organizations and RBAC chapter. Re-read those if the wrapper feels unfamiliar — here you're just applying it to the comment read.
+`authedRoute` checks `roleAtLeast('member', ...)` before your handler runs, so a caller below `member` gets a 403 Problem Details and never reaches the read.
+Because the read is scoped to `ctx.orgId` and not the `invoiceId` alone, a request for another org's invoice matches no rows and returns an empty page: no 404, no error, the correct answer to "show me a resource that, as far as you're concerned, doesn't exist."
+That tenancy check sits here at the read seam alongside the same scoping in the data layer and the cache tags, so no single layer is the only thing between one tenant and another's data.
 
 :::note
-The handler is read-only. It never writes — no insert, no audit row, no cache invalidation. That's why the inspector's "Insert coworker comment" surfaces through the poll rather than through this endpoint: the insert happens on the server out-of-band, and the thread's next ten-second `GET` is what picks it up.
+The handler is read-only: no insert, no audit row, no cache invalidation.
+That's why the inspector's "Insert coworker comment" surfaces through the poll: the insert happens on the server out-of-band, and the thread's next ten-second `GET` picks it up.
 :::
 
 ### The thread, in full
 
-This is the central file. The page seeds the cache on first paint, but from here on the thread owns the live read — the cursor paging, the poll, the "Load older" control, and the poll indicator. We'll step through the four load-bearing parts.
+The page seeds the cache on first paint; from here on the thread owns the live read: the cursor paging, the poll, the "Load older" control, and the poll indicator.
+Step through the four load-bearing parts.
 
 <AnnotatedCode lang="tsx" maxLines={18} code={`
 'use client';
@@ -347,7 +366,7 @@ export const CommentThread = ({
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{45-50} "getNextPageParam" "getPreviousPageParam" "maxPages"`} color="orange">
-    Cursor paging and the cap. `getNextPageParam` reads `last.nextCursor` for "Load older"; `getPreviousPageParam` reads `first.prevCursor`. `getPreviousPageParam` is mandatory whenever `maxPages` is set (the TanStack Query chapter), so a page the cap drops can re-fetch on scroll-back. `maxPages: 10` bounds retained memory for a chat-style thread.
+    Cursor paging and the cap. `getNextPageParam` reads `last.nextCursor` for "Load older"; `getPreviousPageParam` reads `first.prevCursor` and is mandatory whenever `maxPages` is set (the TanStack Query chapter), so a page the cap drops can re-fetch on scroll-back. `maxPages: 10` bounds retained memory for a chat-style thread.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{47-48} "refetchInterval" "refetchIntervalInBackground"`} color="green">
@@ -355,27 +374,26 @@ export const CommentThread = ({
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{129-186} "poll-indicator" "isFetching" "isFetchingNextPage" "thread-error" "isError"`} color="violet">
-    The render shape. The `isFetching` "Updating…" chip (`data-testid="poll-indicator"`) is true whenever any read is in flight — including a background poll — so it surfaces the poll, distinct from the "Load older" spinner below, which keys off `isFetchingNextPage` (true only during a paging fetch). `data?.pages.flatMap` renders every retained page newest-first; the `data-testid="thread-error"` element is gated on `isError`; and the `disabled={!hasNextPage || isFetchingNextPage}` control reads "Load older" while pages remain and "End of thread" once `hasNextPage` is false.
+    The render shape. The `poll-indicator` "Updating…" chip keys off `isFetching` (any read in flight, including a background poll), distinct from the "Load older" spinner below, which keys off `isFetchingNextPage` (a paging fetch only). `data?.pages.flatMap` renders every retained page newest-first; `thread-error` is gated on `isError`; and the control reads "Load older" while pages remain, "End of thread" once `hasNextPage` is false.
   </AnnotatedStep>
 </AnnotatedCode>
 
-The `useMutation` block is already in the file because the thread is one component, but it's inert this lesson — the form below it is unwired, so nothing calls `mutation.mutate` yet. Leave it; the optimistic post is the next lesson, and wiring the read and the write into one leaf is exactly why they share a file. Ignore everything from `useMutation` down through `onSettled` for now and read only the query, the render, and the two controls.
+The `useMutation` block sits in the file because read and write share one component, but it's inert this lesson: the form is unwired, so nothing calls `mutation.mutate` yet.
+Leave it for next lesson's optimistic post, and read only the query, the render, and the two controls for now.
 
-A few decisions in there deserve a sentence each.
+A few decisions deserve a sentence each.
 
-**The two read paths stay split on purpose.** The page's prefetch reads the store in-process with zero HTTP hop; the client reads go out through the public route handler. It is tempting to unify them into one function and call it from both places — don't. That one function would have to import the store, which drags `server-only` code into the client bundle and fails the build, and it would erase the HTTP contract that a future mobile or third-party client depends on. Two functions, one wire shape, is the whole point.
+**The two read paths stay split on purpose.** Unifying the prefetch and the client read into one function would force it to import the store, dragging `server-only` code into the client bundle and failing the build, and would erase the HTTP contract a future mobile or third-party client depends on.
 
-**`maxPages: 10` is the chat-thread choice.** An unbounded `useInfiniteQuery` keeps every page it has ever loaded in the cache until the tab closes. For a comment thread someone might scroll deep into, that's an unbounded memory cost for pages they'll never look at again, so the cap drops the oldest retained page as new ones load. A feed-style read-once surface — where you scroll forward and never back — can leave it unbounded. The cap is also why `getPreviousPageParam` is mandatory: when the cap drops an older page and the user scrolls back to it, the query needs a backward cursor to re-fetch it, or there's a hole.
+**`maxPages: 10` is the chat-thread choice.** An unbounded `useInfiniteQuery` retains every loaded page until the tab closes, so the cap drops the oldest page as new ones load; a feed you only scroll forward through can leave it unbounded. The cap is also why `getPreviousPageParam` is mandatory: when the user scrolls back to a dropped page, the query needs a backward cursor to re-fetch it.
 
 <VideoCallout videoId="PvcRaMqtEPQ" videoTitle="React Query Tutorial - Polling">
-  Codevolution shows polling in 3 minutes — `refetchInterval` as a millisecond cadence and `refetchIntervalInBackground`, including the hidden-tab pause — the exact two settings driving the ten-second poll and the battery line below.
+  Codevolution covers polling in 3 minutes: `refetchInterval` as a millisecond cadence and `refetchIntervalInBackground` with its hidden-tab pause, the two settings driving the ten-second poll.
 </VideoCallout>
 
-**`refetchIntervalInBackground: false` is the battery line.** With it false, the framework's own `document.hidden` check pauses the poll when the tab is hidden and resumes it when the tab regains focus — no `GET` fires for a thread nobody is looking at. The inspector's "Open thread with polling OFF" link (`?poll=off`) opens the focal invoice as the entry point for demonstrating that pause by hand; the thread hard-wires the background pause, so there's no runtime toggle to flip.
+**`refetchIntervalInBackground: false` is the battery line.** The framework's `document.hidden` check pauses the poll on a hidden tab and resumes it on focus, so no `GET` fires for a thread nobody is looking at. The inspector's "Open thread with polling OFF" link (`?poll=off`) demonstrates that pause by hand.
 
-**The client-side `parse` is the same contract everywhere.** `commentsPageSchema.parse(json.data)` in the fetcher is the Zod boundary parse from the validation and route handlers chapters, applied on the client. Because the one schema is imported by the handler, the fetcher, and next lesson's action, a drifted response can't slip through in any of those three contexts — it throws at the boundary, and in the thread that rejection is what flips `useInfiniteQuery` to `isError` and paints the `thread-error` element.
-
-One thing the brief asks for that the tests can't fully reach: the hidden-tab pause (requirement 5). `document.hidden` and focus behavior aren't deterministic in the node test runner, so that one is on the manual checklist below. The `data-testid` set the thread renders — `poll-indicator`, `comment-thread`, `comment-row` (carrying `data-comment-id`), `load-older`, and `thread-error` — is the contract the tests select against, so keep those exact strings.
+The hidden-tab pause is the one requirement the tests can't reach, since `document.hidden` and focus behavior aren't deterministic in the node runner, so it's on the manual checklist below. The `data-testid` strings the thread renders, `poll-indicator`, `comment-thread`, `comment-row` (carrying `data-comment-id`), `load-older`, and `thread-error`, are the contract the tests select against, so keep them exact.
 
 </details>
 
@@ -403,17 +421,21 @@ Run the lesson's test suite:
 pnpm test:lesson 3
 ```
 
-The suite drives both seams the way the browser would, in a node env. It calls your `GET` handler with a stand-in request and asserts the response: a full first page of twenty rows for an in-org read, an empty page for a cross-org `invoiceId`, a freshly inserted coworker comment leading the head page, and a `member`-level caller admitted by the role gate. It exercises the fetcher against a stubbed `fetch`, asserting the `GET /api/invoices/[id]/comments` URL shape with the cursor as a search param, that a clean body parses, and that both a non-ok response and a drifted body (an extra field the `strictObject` rejects) throw so the query enters its error state. And because the `maxPages` cap and the `thread-error` paint only happen on a live client fetch a static render can't reach, the suite reads the thread source to confirm `maxPages: 10`, its required `getPreviousPageParam`, and a `thread-error` element gated on `isError`. The suite passes when all of those hold; the pass summary ships with the starter.
+The suite drives both seams in a node env.
+It calls your `GET` handler and asserts the response: twenty rows for an in-org read, an empty page for a cross-org `invoiceId`, a freshly inserted coworker comment leading the head page, and a `member`-level caller admitted by the role gate.
+It runs the fetcher against a stubbed `fetch`, asserting the URL shape with the cursor as a search param, that a clean body parses, and that both a non-ok response and a drifted body (an extra field the `strictObject` rejects) throw so the query enters its error state.
+The `maxPages` cap and the `thread-error` paint only happen on a live fetch, so the suite reads the thread source instead to confirm `maxPages: 10`, its required `getPreviousPageParam`, and a `thread-error` element gated on `isError`.
 
-The runner can't open a browser, so a handful of things you confirm by hand — open the network tab and the React Query devtools for these:
+The runner can't open a browser, so confirm the rest by hand with the network tab and the React Query devtools open:
 
 <Checklist id="verify">
   <ChecklistItem chip="untested">Open a focal invoice (for example `/invoices/inv-0001`); first paint shows twenty seeded comments instantly. Click "Load older" — the network tab shows `GET /api/invoices/[id]/comments?cursor=...`, the response renders below the existing rows, the head stays put. Devtools shows `data.pages.length` growing; click again and the next page appends.</ChecklistItem>
   <ChecklistItem chip="untested">From a fresh load, click "Load older" past page ten and confirm `data.pages.length` caps at ten — the oldest retained page drops while the head page is unchanged. With 240 seeded comments (twelve pages at `pageSize: 20`), "End of thread" is only reachable after the cap has dropped earlier pages.</ChecklistItem>
   <ChecklistItem chip="untested">Keep the page open; from the inspector in another tab, click "Insert coworker comment". Within ten seconds a `GET .../comments` fires, the new row appears at the top, and the comment audit tail shows the insert — no manual refresh.</ChecklistItem>
-  <ChecklistItem chip="untested">Switch to another tab for thirty seconds — no `GET .../comments` requests fire while it's hidden. Switch back; a poll fires within ten seconds. (This is requirement 5, the hidden-tab pause the runner can't assert.)</ChecklistItem>
-  <ChecklistItem chip="untested">In devtools, while acting as an acme user, run `fetch('/api/invoices/<a-globex-invoice-id>/comments')`. The handler scopes to the acting org and returns an empty page — no foreign rows leak. The `roleAtLeast('member')` gate runs first; all four seeded identities are admin or member so they pass, but the 403 Problem Details branch is the same `authedRoute` enforcement that would fire for a sub-`member` caller.</ChecklistItem>
+  <ChecklistItem chip="untested">Switch to another tab for thirty seconds — no `GET .../comments` requests fire while it's hidden. Switch back; a poll fires within ten seconds.</ChecklistItem>
+  <ChecklistItem chip="untested">In devtools, while acting as an acme user, run `fetch('/api/invoices/<a-globex-invoice-id>/comments')`. The handler scopes to the acting org and returns an empty page — no foreign rows leak.</ChecklistItem>
   <ChecklistItem chip="untested">Temporarily add a phantom field to the handler's response; the `strictObject` schema rejects it on parse, the client surfaces the error state (`data-testid="thread-error"`), and reverting recovers the thread on the next poll.</ChecklistItem>
 </Checklist>
 
-With the read seam live, the thread now pages and polls against a real public endpoint, and a coworker's comment arrives on its own within the poll window. The last lesson wires the write side: the optimistic post through a Server Action, the row that appears the instant you submit and rolls back cleanly if the server rejects it, and the two-system invalidation that keeps the Server Component cache and the TanStack cache in step.
+The read seam is live: the thread pages and polls against a real public endpoint, and a coworker's comment arrives on its own within the poll window.
+The last lesson wires the write side: an optimistic post through a Server Action that shows the row the instant you submit, rolls back cleanly if the server rejects it, and invalidates both the Server Component cache and the TanStack cache.

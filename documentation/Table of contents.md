@@ -664,9 +664,9 @@
 - 4 A worked TanStack Query design review (Running the four-trigger funnel against one concrete screen, splitting the read side (`useInfiniteQuery` with 10s polling, `maxPages: 10`, SSR-prefetched first page) from the write side (Server Action plus client-side `invalidateQueries`), and the cache-update optimistic-add shape — framing the 77 build.)
 - 5 Quiz
 
-### Chapter 077 — Project: TanStack Query on optimistic comments
+### Chapter 077 — Project: TanStack Query comment thread
 - 1 Project Overview
-- 2 Provider, per-request factory, and the SSR-hydrated first page
+- 2 Provider and the SSR-hydrated first page
 - 3 Infinite scroll, polling, and the route handler
 - 4 Optimistic add and rollback with useMutation
 
