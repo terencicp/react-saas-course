@@ -613,7 +613,7 @@
 ## Unit 13 — Notifications
 
 ### Chapter 070 — The notification dispatcher
-- 1 One seam, many channels (The dispatcher pattern, the `notifiable_events` registry, the dispatcher's contract, and the line between user-facing notifications and operator-facing audit logs.)
+- 1 The notification dispatcher (The dispatcher pattern, the `notifiable_events` registry, the dispatcher's contract, and the line between user-facing notifications and operator-facing audit logs.)
 - 2 Email and inbox, independent channels (The uniform channel-function signature, the email send via the Unit 7 wrapper, the in-app inbox row written at dispatch, and the rule that one channel's failure never kills the other.)
 - 3 Preferences, read once, default-on (The category-grained `user_notification_preferences` schema, the default-on rule for missing rows, the critical-channel override, and the one-place read inside the dispatcher.)
 - 4 Dedup the rapid duplicates (The 60-second window in `notification_dedup` keyed by `(event_type, dedup_key, recipient_user_id)`, registry-defined dedup keys, the dedup-vs-coalesce line, and where the check sits inside the dispatcher flow.)

@@ -2179,3 +2179,21 @@ getFileDownloadUrl | - | Tenant-scoped helper signing a fresh presigned GET for 
 getSignedGetForKey | - | The lone tenant-free GET signer for a raw key; called by the export worker inside the trust boundary, no org row to scope against. | first defined: Chapter 069 L4
 server-side PUT | server-PUT | A worker writing object bytes to R2 itself with PutObjectCommand; the byte-pipe rule's other side from the browser presigned PUT, used when there is no browser to hand off to. | first defined: Chapter 069 L5
 kill-resume | kill-resume idempotency, kill-resume drill | Killing a durable run mid-flight and restarting it yields exactly one of each effect; the parent retry re-runs the tail against the same run-keyed object, and an overwrite is idempotent. | first defined: Chapter 069 L5
+notification dispatcher | dispatcher | The single function every notification flows through; call sites fire one event, it owns every channel decision. | first defined: Chapter 070 L1
+call site | - | The place that fires an event: describes what happened and who should know, never how it's delivered. | first defined: Chapter 070 L1
+cross-cutting concern | - | A concern otherwise scattered across the codebase (logging, auth, channel knowledge) pulled into one place. | first defined: Chapter 070 L1
+notifiable_events registry | notifiable_events, notification registry | Typed map keyed by event type listing every notification the app can send, with channels, template, prefs, dedup. | first defined: Chapter 070 L1
+transactional outbox | outbox pattern | Write the notification intent inside the state-change transaction, deliver later from a worker, so commit and intent are atomic. | first defined: Chapter 070 L1
+render-at-dispatch | snapshot display strings, store rendered text | Compute a notification's title/body when the event fires and store them on the row, so later data changes don't rewrite it. | first defined: Chapter 070 L1
+notification channel | channel | One delivery path a notification can take (email, in-app inbox, push); each is a function with the same signature. | first defined: Chapter 070 L1
+sink | - | The bottom-layer function that actually performs the I/O a channel calls into (the sendEmail wrapper, db.insert). | first defined: Chapter 070 L2
+inbox formatter | - | Per-event-type (payload) => { title, body } function in the registry that renders an inbox row's stored text. | first defined: Chapter 070 L2
+notification category | preference category, preferenceCategory | A group of related event types sharing one user toggle (team, billing, security); the unit of preference choice. | first defined: Chapter 070 L3
+notification opt-out | opt-out (notifications) | A user turning a channel off; the only thing that writes a preferences row, so silence is absence of a row. | first defined: Chapter 070 L3
+default-on | default on | Missing preference row means opted in on every channel; only an explicit false drops a channel. | first defined: Chapter 070 L3
+critical channel | criticalChannel | A registry-declared channel the user cannot fully mute (security, act-now billing); forced back on after the preference filter. | first defined: Chapter 070 L3
+deduplication | dedup | Dropping a repeat so the same notification is not delivered to the same person twice. | first defined: Chapter 070 L4
+dedup window | windowSeconds | Short look-back span (default 60s, per-event in the registry) within which a repeat firing counts as a duplicate. | first defined: Chapter 070 L4
+dedup key | dedupKey, keyBy | Per-event field list that defines what counts as the same notification; built into a composite key with eventType and recipientUserId. | first defined: Chapter 070 L4
+notification_dedup | dedup table | Table recording (eventType, dedupKey, recipientUserId, firedAt) per delivery; the dispatcher's short-term send memory, pruned on a schedule. | first defined: Chapter 070 L4
+coalesce (notifications) | coalescing | Collapsing several distinct-but-related events into one summarized notification rather than dropping any. | first defined: Chapter 070 L4
