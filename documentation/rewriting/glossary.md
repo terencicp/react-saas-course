@@ -2165,3 +2165,17 @@ lifecycle rule | - | A prefix-scoped bucket rule auto-deleting objects older tha
 Class B operations | Class B | R2's request tier for reads and HEAD requests, billed separately from Class A writes; the cost driver for read-heavy workloads. | first defined: Chapter 068 L5
 Content-Disposition | - | Download response header setting the saved filename (attachment; filename="..."), so the friendly name beats the object key. | first defined: Chapter 068 L4
 orphan bytes | - | An R2 object with no file_metadata row; cheap litter a sweep reclaims, the inverse of an orphan row. | first defined: Chapter 068 L4
+size-bomb | size bomb, size-bomb upload | Client claims a small file when asking for the URL, then PUTs something enormous; the post-upload HEAD plus byte cap defends against it. | first defined: Chapter 069 L1
+presigned PUT | signed PUT | A presigned URL scoped to a PUT: the browser uploads bytes straight to R2, the app server signs but never carries them. | first defined: Chapter 069 L2
+write capability | upload capability | A signed URL treated as a bearer grant: holding it authorizes one write scoped to a fixed bucket, key, and content type until it expires. | first defined: Chapter 069 L2
+buildObjectKey | - | Helper deriving the object key server-side from orgId, a server-minted id, and the validated content type; never client-supplied. | first defined: Chapter 069 L2
+signableHeaders | - | getSignedUrl option naming which headers the signature must cover; pinning content-type makes R2 reject a PUT whose Content-Type differs from the signed one. | first defined: Chapter 069 L2
+two-step write | two-step upload | Sign-then-finalize split: the sign action writes no row, finalize HEADs the stored object and inserts from observed truth; an unused sign leaves only a cheap orphan object, never an orphan row. | first defined: Chapter 069 L2
+poison pill | - | An `import 'server-only'` line that fails the build if a module reaches a client bundle; nickname for the server-only guard. | first defined: Chapter 069 L3
+finalizeUpload | - | The two-step write's second half: HEADs the PUT object, validates type and size against the signed values, inserts the file_metadata row and audit entry in one transaction. | first defined: Chapter 069 L3
+fresh-per-render URL | fresh-per-render | A download URL signed anew on every render and never stored; a persisted signed URL would expire and lie. | first defined: Chapter 069 L4
+RFC 5987 | filename* encoding | The filename*=UTF-8'' header encoding (charset tag + percent-encoded string) carrying non-ASCII filenames through Content-Disposition. | first defined: Chapter 069 L4
+getFileDownloadUrl | - | Tenant-scoped helper signing a fresh presigned GET for one file; a cross-org or missing id collapses to not_found. | first defined: Chapter 069 L4
+getSignedGetForKey | - | The lone tenant-free GET signer for a raw key; called by the export worker inside the trust boundary, no org row to scope against. | first defined: Chapter 069 L4
+server-side PUT | server-PUT | A worker writing object bytes to R2 itself with PutObjectCommand; the byte-pipe rule's other side from the browser presigned PUT, used when there is no browser to hand off to. | first defined: Chapter 069 L5
+kill-resume | kill-resume idempotency, kill-resume drill | Killing a durable run mid-flight and restarting it yields exactly one of each effect; the parent retry re-runs the tail against the same run-keyed object, and an overwrite is idempotent. | first defined: Chapter 069 L5

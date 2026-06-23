@@ -1,0 +1,240 @@
+---
+title: Project overview
+chapter-id: 69
+course-progress: 0.6684
+sidebar:
+  order: 1
+  label: Project overview
+rewrites: 2
+---
+
+import { Card, CardGrid, FileTree, Steps } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Over the next four lessons you'll build a direct-browser-to-R2 upload feature: a `/files` page where a user picks a file, watches a progress bar as the bytes stream straight to Cloudflare R2, then sees it land in a list with a working download link.
+You'll then retrofit the durable-export CSV so its email carries a real R2 link instead of a placeholder, exercising the same machinery from the server, where a worker does the PUT with no browser to hand off to.
+The build installs primitives every later upload feature reuses: a `lib/r2.ts` client built once, a presigned PUT that lets the browser write to storage without routing a byte through your function, a post-upload HEAD that gates the two-step write, never-cached download URLs minted per render, and a `file_metadata` row as each object's canonical identity.
+
+<Figure caption="The /files page mid-upload: the picker echoes the chosen file, the progress bar tracks the direct-to-R2 PUT, and finished uploads sit below as rows with Download links.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/069/l1-desktop-1280.png"
+      alt="Desktop capture of the /files page at 1280px width: an upload form with a file picker and Upload button at the top, and below it a list of completed file rows, each showing the file name, a content-type badge, a formatted size, an upload time, and a Download link."
+    />
+  </Screenshot>
+</Figure>
+
+A few things stay out of scope: image resizing and format conversion (Cloudflare Images' job), multipart upload (one PUT covers the 25 MB cap), virus scanning, client-side preview beyond the picker's echo, and cleanup of unfinished uploads (production uses R2 lifecycle rules, not application code).
+Soft-delete is the lone half-measure: its action, column, and tests ship, but no UI calls them.
+
+## What we'll practice
+
+This project assembles the R2 pieces from the object-storage chapter into one runnable feature. By the end you'll have practiced:
+
+- **Signing a presigned PUT inside a Server Action**, so the function authorizes the upload but never carries the bytes; the multi-megabyte transfer goes browser-to-R2.
+- **Ordering the write so the database row lands last**: sign, upload, HEAD to confirm, then insert, so a row never exists before its bytes do.
+- **Reading the true size and content type from the post-upload HEAD** instead of trusting what the client claimed.
+- **Issuing a fresh presigned GET on every render** and keeping the page uncached, so a download link is never stale.
+- **Enforcing tenancy on every read** through `tenantDb(orgId)`, with a `member` role gate at the action boundary.
+- **Driving one `lib/r2.ts` from two callers**: the browser-PUT user uploads and the server-PUT export retrofit.
+
+## Architecture
+
+Two kinds of traffic take different paths.
+Small JSON crosses your function: the action that signs a URL, the action that finalizes a row.
+The file itself goes straight from browser to R2 and never touches your server, the thick edge in the diagram.
+
+<Figure caption="Two kinds of traffic, two paths. The browser trades small JSON with the presignedPut and finalizeUpload actions but PUTs the file's bytes straight to R2 (the thick edge); /files signs a fresh GET per row; the export worker PUTs server-side under its own prefix. One lib/r2.ts client serves both consumers.">
+```d2
+direction: right
+
+**.style.font-size: 44
+
+classes: {
+  browser: {
+    style: { fill: "#dbeafe"; stroke: "#2563eb"; font-color: "#1e3a8a"; border-radius: 12 }
+  }
+  fn: {
+    style: { fill: "#ede9fe"; stroke: "#7c3aed"; font-color: "#4c1d95"; border-radius: 12 }
+  }
+  worker: {
+    style: { fill: "#dcfce7"; stroke: "#16a34a"; font-color: "#14532d"; border-radius: 12 }
+  }
+  store: {
+    style: { fill: "#fef3c7"; stroke: "#d97706"; font-color: "#78350f" }
+  }
+  edge: {
+    style: { font-size: 38 }
+  }
+}
+
+browser: "Browser\n/files" { class: browser }
+
+presign: "presignedPut\naction · signs,\nno DB" { class: fn }
+finalize: "finalizeUpload\naction · HEAD,\ninserts row" { class: fn }
+list: "/files render\nlistFiles +\nper-row GET" { class: fn }
+worker_task: "export worker\nserver-side PUT" { class: worker }
+
+r2: "R2 bucket\norg/<id>/files/…\nexports/org/<id>/…" { class: store; shape: cylinder }
+
+browser -> presign: "1. small JSON" { class: edge; style.stroke: "#7c3aed" }
+browser -> r2: "2. PUT bytes,\nstraight to R2" { class: edge; style.stroke: "#d97706"; style.stroke-width: 6 }
+browser -> finalize: "3. small JSON" { class: edge; style.stroke: "#7c3aed" }
+finalize -> r2: "HEAD object" { class: edge; style.stroke: "#d97706" }
+list -> r2: "sign fresh GET\nper render" { class: edge; style.stroke: "#d97706" }
+worker_task -> r2: "PUT CSV\n+ sign GET" { class: edge; style.stroke: "#d97706" }
+```
+</Figure>
+
+Read it as four flows over one bucket.
+The **upload** runs across the top: the browser asks `presignedPut` to sign a URL, PUTs the bytes straight at R2 (the thick edge, no function involved), then tells `finalizeUpload`, which HEADs the object and writes the row.
+The **list** is the read side: rendering `/files` signs a fresh download URL per row.
+The **export** is the previous project's worker, now PUTting its CSV server-side under an `exports/` prefix.
+Under all four sits one `S3Client` and one bucket per environment; the prefixes (`org/<id>/files/` for uploads, `exports/org/<id>/` for exports) carry the workload split, not separate buckets.
+
+## Starting file tree
+
+The starter is a complete app, the org-scoped invoicing surface, Better Auth, and the durable export, with the upload feature carved out as stubs.
+You write exactly **six surfaces**, marked below; everything else is provided, including the `file_metadata` table and its migration.
+
+<FileTree>
+- docker-compose.yml local Postgres
+- trigger.config.ts Trigger.dev v4 config (from the export project)
+- .env.example copy to `.env` (see Setup); adds the four `R2_*` vars
+- package.json adds `r2:cors`, `r2:lifecycle` to the export project's scripts
+- drizzle/
+  - 0008_add_file_metadata.sql **provided** — the `file_metadata` table, unique `objectKey`, composite index
+- scripts/
+  - seed.ts orgs + invoices (from the export project); no `file_metadata` rows
+  - r2-cors.ts idempotent CORS push, `AllowedOrigins` = your app URL
+  - r2-lifecycle.ts 7-day rule on the `exports/` prefix
+- src/
+  - env.ts adds `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET_NAME`
+  - db/
+    - schema.ts the `file_metadata` table (provided), already present
+    - tenant.ts `tenantDb()` facade
+    - audit-log.ts `logAudit()` writer
+    - queries/
+      - **file-metadata.ts** *you write* — `getFile`, `getFileDownloadUrl`, `getSignedGetForKey`, `listFiles`
+  - lib/
+    - r2.ts singleton `S3Client` + `ALLOWED_CONTENT_TYPES` + `MAX_BYTES`
+    - email.ts `sendEmail()` wrapper
+    - auth/authed-action.ts `authedAction()` factory
+    - files/
+      - keys.ts `extFor` + `buildObjectKey` (extension from the content type)
+      - errors.ts `UploadError` with four codes
+      - cursor.ts `FileCursor` + base64url keyset cursor
+      - soft-delete.ts `softDeleteFile` (provided, not wired to UI)
+      - **presigned-put.ts** *you write* — the `presignedPut` action
+      - **finalize.ts** *you write* — the `finalizeUpload` action
+    - exports/ the export project's CSV helpers
+  - trigger/
+    - **export-invoices.ts** *you edit* — the export retrofit
+    - paginate-page.ts child task (from the export project)
+    - send-export-email.ts child task; payload already accepts `downloadUrl`
+  - emails/ExportReadyEmail.tsx the export-ready email template
+  - app/
+    - files/
+      - **page.tsx** *you write* — server-rendered list + per-row presigned GETs
+      - **upload-form.tsx** *you write* — client component + XHR PUT + progress
+    - (protected)/inspector/ the export project's surface; renders `downloadUrl` as a clickable link
+</FileTree>
+
+Where each provided piece first matters:
+
+- `lib/r2.ts` — the singleton `S3Client`, the `ALLOWED_CONTENT_TYPES` allowlist, and the `MAX_BYTES` cap. You sign a PUT against it next lesson.
+- `db/schema.ts` — the `file_metadata` table. `finalizeUpload` inserts into it in lesson three.
+- `lib/files/keys.ts` — `extFor` and `buildObjectKey`; the extension comes from the validated content type, never the filename. Next lesson.
+- `lib/files/errors.ts` — the `UploadError` class with its four codes and a `toResult` mapper. Lesson three.
+- `lib/files/cursor.ts` — `FileCursor` plus `encodeCursor` / `decodeCursor`, a base64url keyset cursor. Lesson four's list.
+- `lib/files/soft-delete.ts` — `softDeleteFile`, shipped but never called from the UI.
+- `scripts/r2-cors.ts` and `scripts/r2-lifecycle.ts` — the CORS push and the 7-day lifecycle rule. Run the first in Setup, the second in the last lesson.
+- `app/(protected)/inspector/` — the export surface, now rendering `metadata.downloadUrl` as a clickable link, live in the last lesson.
+- `trigger/*` and `lib/exports/*` — the export task files. You edit only `trigger/export-invoices.ts`, in the last lesson.
+
+## Roadmap
+
+The four implementation lessons build the feature one confirmable slice at a time.
+
+<CardGrid>
+  <Card title="Lesson 2 — Sign the PUT, no DB write">
+    Write the `presignedPut` action: it signs a short-lived direct-to-R2 upload URL and writes no row. A raw `curl` PUT lands an object with no function in the transfer.
+  </Card>
+  <Card title="Lesson 3 — Browser PUT, HEAD, then insert">
+    Write the `finalizeUpload` action, which HEADs the object and inserts its `file_metadata` row, and the XHR upload form. A file picked in the browser now lands in R2 and writes its row.
+  </Card>
+  <Card title="Lesson 4 — Fresh-per-render GETs">
+    Render the `/files` list, signing a fresh download URL for every row on every render. A copied URL dies at the 11-minute mark; a refresh hands back a working one.
+  </Card>
+  <Card title="Lesson 5 — Real downloadUrl for the export">
+    Retrofit the CSV export to write a real R2 object server-side and email a working presigned link, reusing `lib/r2.ts` from a worker.
+  </Card>
+</CardGrid>
+
+## Setup
+
+This project runs two terminals at once: the Trigger.dev worker, which still runs the previous project's export, and the Next.js dev server.
+It also adds a step earlier projects didn't have: create your own R2 bucket and push a CORS rule to it before the first browser upload works.
+
+<Steps>
+1. Get the starter from the [project repository](https://github.com/terencicp/react-saas-course-projects), under `Chapter 069/start/`, then install:
+
+   ```bash
+   pnpm install
+   ```
+
+2. Copy the env template, bring up Postgres, then apply the schema and seed:
+
+   ```bash
+   cp .env.example .env
+   docker compose up -d
+   pnpm db:migrate && pnpm db:seed
+   ```
+
+   The migration adds the `file_metadata` table. The seed plants the export project's organizations and invoices but no `file_metadata` rows, so `/files` starts empty.
+
+3. In the Cloudflare R2 dashboard, create a bucket and a bucket-scoped API token with **Object Read** and **Object Write**. Paste the account id, the token's access key id and secret, and the bucket name into the four `R2_*` variables in `.env`.
+
+4. Push the CORS rule to your bucket, once per environment:
+
+   ```bash
+   pnpm r2:cors
+   ```
+
+   The script logs the effective rules. Confirm `AllowedOrigins` is `['http://localhost:3000']`, not `'*'`, since a wildcard origin would let any site upload to your bucket. Run this before the first browser upload, or the CORS preflight fails and the PUT never leaves the page.
+
+5. Start the worker in one terminal and the app in another:
+
+   ```bash
+   pnpm trigger:dev
+   ```
+
+   ```bash
+   pnpm dev
+   ```
+
+   Visit `/files` for an empty list under a form that does nothing yet, since the upload actions are still stubs. Visit `/inspector` (behind the auth guard) for the working export, except its download link is still a placeholder, not a real R2 link. The implementation lessons begin at those two points.
+</Steps>
+
+Four environment variables are new this chapter; the rest carry over from the export project, already in `.env.example`.
+
+| Variable | Purpose | How to obtain |
+| --- | --- | --- |
+| `R2_ACCOUNT_ID` | Identifies your Cloudflare account; the R2 endpoint derives from it. | The R2 dashboard. |
+| `R2_ACCESS_KEY_ID` | The scoped token's key id. | Shown once when you create the API token. |
+| `R2_SECRET_ACCESS_KEY` | The scoped token's secret. | Shown once when you create the API token; copy it then. |
+| `R2_BUCKET_NAME` | The bucket the objects live in. | The bucket from step 3. |
+
+The carried-over variables keep their previous values.
+Their `.env.example` placeholders satisfy env validation, so `next build` passes without reaching R2 or the Trigger.dev cloud; you only need real R2 credentials for the live upload loop.
+
+:::note
+The 25 MB cap defends against a size-bomb upload, where a client claims a small file when asking for the URL, then PUTs something enormous. The third lesson runs exactly that attack. Production apps often allow 100 MB and up via multipart upload, which this project names but doesn't build; a single-PUT cap keeps the size defense to one HEAD.
+:::
+
+You're set up when `/files` renders its empty list and the worker terminal reads **Waiting for tasks**.
+The next lesson writes the first half of the upload: the action that signs a URL and hands the browser the right to write straight to R2.

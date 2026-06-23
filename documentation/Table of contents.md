@@ -601,12 +601,12 @@
 - 5 Wiring R2 into the app (Picks the two call sites R2 covers (the 69 user-upload path with `file_metadata` and the 67 CSV export retrofit with a server-side PUT and no metadata row), names the workloads kept off R2, and pre-loads the lib surface and env shape for the 69 project.)
 - 6 Quiz
 
-### Chapter 069 — Project: presigned R2 upload
-- 1 Project Overview
-- 2 Sign the PUT, no DB write
-- 3 Browser PUT, HEAD, then insert
-- 4 Fresh-per-render GETs
-- 5 Real downloadUrl for the export
+### Chapter 069 — Project: Presigned R2 uploads
+- 1 Project overview (Maps the four-lesson build: a direct browser-to-R2 upload feature on `/files`, then the chapter-067 CSV export retrofit to a real link — installing the reusable `lib/r2.ts`, presigned PUT, post-upload HEAD, fresh-per-render GETs, and `file_metadata` rows.)
+- 2 Sign the PUT, no DB write (The Server Action that hands the browser a 5-minute presigned PUT plus a server-built upload id and object key, validating the client's file claims and writing no row, so an orphan object stays cheap.)
+- 3 Browser PUT, HEAD, then insert (The `UploadForm` XHR-PUTs straight to R2 with a progress bar, then `finalizeUpload` HEADs the stored object and inserts one `file_metadata` row plus an audit entry from server-observed size and type.)
+- 4 Fresh-per-render download URLs (The `/files` list signs each Download link fresh on every render — no `use cache`, cheap local signing, tenant-scoped reads, RFC 5987 filenames — so a copied link expires and a refresh hands back a working one.)
+- 5 A real download link for the export (The export worker server-side-PUTs its in-memory CSV under an `exports/` prefix swept by a lifecycle rule, signs one short GET shared by the inspector panel and the email, and writes no `file_metadata` row.)
 
 ---
 

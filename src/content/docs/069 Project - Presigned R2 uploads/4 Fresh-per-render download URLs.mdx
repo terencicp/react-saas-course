@@ -1,10 +1,11 @@
 ---
-title: Fresh-per-render GETs
+title: Fresh-per-render download URLs
 chapter-id: 69
 course-progress: 0.6731
+rewrites: 2
 sidebar:
   order: 4
-  label: Fresh-per-render GETs
+  label: Fresh-per-render download URLs
 ---
 
 import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
@@ -14,13 +15,16 @@ import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode
 import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
 import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
 import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
 import { CardGrid } from '@astrojs/starlight/components';
 
 <CourseProgressBar value={frontmatter['course-progress']} />
 
-Last lesson a picked file landed in R2 and wrote its row, but the `/files` page still showed `"No files yet."` even right after — the row existed, the page just never read it. This lesson renders the list: every uploaded file shows up with a working "Download" link, signed fresh on every render so the link is never stale and never cached.
+Last lesson a picked file landed in R2 and wrote its row, but `/files` still showed `"No files yet."`: the row existed, the page just never read it.
+This lesson renders the list, so every uploaded file shows up with a "Download" link signed fresh on every render.
 
-When it works, an uploaded file appears in the list with a "Download" link that saves the file under the name the user originally chose. The catch — and the whole point of the lesson — is what happens if you copy one of those links and sit on it: about ten minutes later it stops working entirely, while a refresh of `/files` hands you back a brand-new, working one for the same row. That single behavior is the read-boundary reflex this chapter exists to install.
+Each link saves the file under the name the user originally chose.
+Copy one and sit on it, though, and about ten minutes later it stops working, while a refresh of `/files` hands you a new working link for the same row.
 
 <Screenshot viewport="desktop">
   <img
@@ -31,13 +35,22 @@ When it works, an uploaded file appears in the list with a "Download" link that 
 
 ## Your mission
 
-The load-bearing idea here is one sentence, and everything else in the lesson falls out of it: **a presigned URL is a credential with a short life, not a stable address.** It is a signed, time-boxed grant of "you may GET this one object until this clock runs out" — not a permanent link you can store and hand around. So the page mints a new one for every row on every render, and it never stores or caches the result.
+One idea drives the lesson: **a presigned URL is a short-lived credential, not a stable address.**
+It grants "you may GET this one object until the clock runs out," so the page mints a fresh one per row on every render and never stores or caches the result.
 
-That decision drives the constraints. The `/files` Server Component must **not** opt into `use cache`. If you cached the render, you would freeze the signed URLs inside that cached HTML — and they would keep expiring on schedule while the cache served them, leaving the page confidently rendering links that are already dead. Fresh-per-render is not a nicety here; it is structural. The natural worry is cost — am I really signing N URLs on every paint? — and the answer is yes, and it is fine: `getSignedUrl` is a local HMAC computation over the request, with no round trip to R2, so signing a page of links is effectively free. You are not paying a network call per row; you are paying a hash.
+That rules out `use cache` on the `/files` Server Component.
+Caching the render would freeze the signed URLs inside the cached HTML; they would keep expiring on schedule while the cache served them, so the page would show links that are already dead.
+Signing per render is cheap: `getSignedUrl` is a local HMAC over the request with no round trip to R2, so a page of links costs hashes, not network calls.
 
-Reads go through `tenantDb(orgId)`, filtered to non-deleted rows. That is the structural enforcement that one org never sees another's files and that soft-deleted rows stay hidden — the same read-boundary discipline from [Postgres owns identity, R2 owns bytes](/068-object-storage-with-r2/4-the-file_metadata-table/). The download must save under the user's *original* file name, not the opaque `org/<id>/files/<uuid>.jpg` segment the object actually lives under, which means setting `ResponseContentDisposition` on the signed GET — and because a file name can carry spaces, accents, or emoji, that header is RFC 5987-encoded. The render writes no audit entry: auditing is action-and-task only, so there is deliberately no `file.list_viewed` event — a read surface that audited on every paint would flood the trail and slow the page, and the audit story already has its anchor at `finalizeUpload`. The keyset cursor that pages the list (`lib/files/cursor.ts`, a base64url `{ uploadedAt, id }`) is provided; you reuse it rather than author one.
+The rest of the constraints:
 
-Out of scope: a soft-delete button — the `softDeletedAt` column and a `softDeleteFile` action both exist in the starter but stay unwired here, and the soft-delete discipline itself lives in [Making the missing filter impossible](/061-soft-delete-archive-concurrency/2-the-lifecycle-query-helper/) — and any caching layer over the metadata read, which is a chapter for later. One more thing lands in this file without being used yet: a tenant-free `getSignedGetForKey` helper that the export worker calls next lesson. Leave it in; it is the one deliberately unscoped read in the file, and the reason is next lesson's.
+- Reads go through `tenantDb(orgId)` filtered to non-deleted rows, the same read-boundary discipline from [Postgres owns identity, R2 owns bytes](/068-object-storage-with-r2/4-the-file_metadata-table/), so one org never sees another's files.
+- The download saves under the user's original file name, not the `org/<id>/files/<uuid>.jpg` key the object lives under. That means setting `ResponseContentDisposition` on the signed GET, <Term definition="The HTTP spec for the filename*=UTF-8'' encoding: a charset tag plus a percent-encoded string, letting non-ASCII filenames travel through a header that otherwise only allows plain ASCII.">RFC 5987</Term>-encoded so names with spaces, accents, or emoji survive.
+- The render writes no audit entry: auditing is action-and-task only, and a read surface that logged every paint would flood the trail.
+- The keyset cursor that pages the list (`lib/files/cursor.ts`, a base64url `{ uploadedAt, id }`) is provided; reuse it.
+
+Two things stay out of scope: a soft-delete button (the `softDeletedAt` column and a `softDeleteFile` action exist in the starter but stay unwired here) and any caching layer over the metadata read.
+The file also gains a tenant-free `getSignedGetForKey` helper that the export worker calls next lesson; leave it in, unused for now.
 
 <Checklist id="mission">
   <ChecklistItem chip="tested">An uploaded file appears as a row in the `/files` list showing its original name, content type (badge), formatted size, and upload time.</ChecklistItem>
@@ -50,7 +63,7 @@ Out of scope: a soft-delete button — the `softDeletedAt` column and a `softDel
 
 ## Coding time
 
-Two files to write, both stubs right now. Implement the four read helpers in `src/db/queries/file-metadata.ts` — the throw-`not implemented` stub gets replaced wholesale — and turn `src/app/files/page.tsx` from its `"No files yet."` shell into the real list. Work against the brief and the tests before you open the walkthrough.
+Two files to write, both stubs right now. Implement the four read helpers in `src/db/queries/file-metadata.ts`, and turn `src/app/files/page.tsx` from its `"No files yet."` shell into the real list. Work against the brief and the tests before you open the walkthrough.
 
 <details>
 <summary>Reference solution and walkthrough</summary>
@@ -59,9 +72,9 @@ Two files, in the order the data flows: the read helpers first, then the page th
 
 ### `db/queries/file-metadata.ts` — the tenant-scoped reads
 
-This file is the read boundary for file metadata. Four exports: a single-row read, the per-row download signer, the tenant-free worker helper, and the keyset list. The discipline that runs through all of them is the same — every tenant read goes through `tenantDb(orgId)` with `isNull(softDeletedAt)` as the inner filter, so a cross-org id and a deleted row both resolve to nothing.
+This file is the read boundary for file metadata. Four exports: a single-row read, the per-row download signer, the tenant-free worker helper, and the keyset list. Every tenant read goes through `tenantDb(orgId)` with `isNull(softDeletedAt)` as the inner filter, so a cross-org id and a deleted row both resolve to nothing.
 
-Start with the two reads that scope to a tenant. `getFile` is a plain single-row lookup; `getFileDownloadUrl` builds on it to sign the download.
+Start with the two tenant-scoped reads. `getFile` is a single-row lookup; `getFileDownloadUrl` builds on it to sign the download.
 
 <AnnotatedCode lang="ts" maxLines={18} code={`
 export const getFile = async (
@@ -105,27 +118,27 @@ export const getFileDownloadUrl = async (
 };
 `}>
   <AnnotatedStep meta={`{5-7} "tenantDb(orgId)" "isNull(fileMetadata.softDeletedAt)"`} color="blue">
-    `getFile` reads one row through `tenantDb(orgId)` — the org predicate is the outer filter the facade enforces, so the query can only ever see this org's rows. `isNull(softDeletedAt)` is the inner filter that keeps a soft-deleted file out of the result.
+    `getFile` reads one row through `tenantDb(orgId)`, which enforces the org predicate as the outer filter, so the query sees only this org's rows. `isNull(softDeletedAt)` is the inner filter that keeps a soft-deleted file out of the result.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{8} "row ?? null"`} color="green">
-    The lookup returns `row ?? null`. This is the line that makes the tenancy boundary leak nothing: a `fileId` that belongs to *another* org is outside `tenantDb(orgId)`'s scope, so it resolves to `null` — exactly the same answer as a file that doesn't exist at all. A caller can't tell a cross-org id from a missing one.
+    `row ?? null` is where the tenancy boundary leaks nothing: a `fileId` belonging to another org is outside `tenantDb(orgId)`'s scope, so it resolves to `null`, the same answer as a file that never existed. A caller can't tell a cross-org id from a missing one.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{16-19} "object-not-found"`} color="orange">
-    No row means no download. `getFileDownloadUrl` maps that to an `UploadError('object-not-found')`, which `toResult` turns into the `not_found` Result code. Because `getFile` already collapsed cross-org and missing into one `null`, a foreign org asking for this file gets `not_found` — denied, not served, and not even told the file exists.
+    No row means no download. `getFileDownloadUrl` maps that to an `UploadError('object-not-found')`, which `toResult` turns into the `not_found` Result code. Since `getFile` already collapsed cross-org and missing into one `null`, a foreign org gets `not_found`: denied, not told the file exists.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{22-31} "GetObjectCommand"`} color="violet">
-    With a real row in hand, sign a `GetObjectCommand` for its `objectKey`. This is the fresh credential — minted right here, at call time, returned to the caller, never written to a column.
+    With a real row in hand, sign a `GetObjectCommand` for its `objectKey`. This is the fresh credential, minted at call time, returned to the caller, never written to a column.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{27-29} "ResponseContentDisposition"`} color="red">
-    `ResponseContentDisposition` is the one non-obvious line. The object lives under an opaque key like `org/abc/files/0192f1a0-….jpg`; without this header the browser saves the download under *that* segment. Setting `attachment; filename*=UTF-8''…` tells the browser to save under the original name instead, RFC 5987-encoded so a name with spaces or accents survives.
+    `ResponseContentDisposition` is the one non-obvious line. The object lives under an opaque key like `org/abc/files/0192f1a0-….jpg`; without this header the browser saves the download under that segment. Setting `attachment; filename*=UTF-8''…` saves under the original name instead, RFC 5987-encoded so spaces and accents survive.
   </AnnotatedStep>
 </AnnotatedCode>
 
-The RFC 5987 encoding deserves a closer look, because it is the kind of detail that is invisible until a file named `Q3 report (final).pdf` downloads as `0192f1a0-7000-7000-8000-000000000000.pdf` and a user files a bug. `filename*=UTF-8''…` is the encoded-value form of the `Content-Disposition` filename parameter: it carries a charset and a percent-encoded string, which is what lets a non-ASCII name come through intact. The helper percent-encodes the name and then restores the handful of characters the grammar actually allows unescaped:
+The encoding earns a closer look, because it stays invisible until a file named `Q3 report (final).pdf` downloads as `0192f1a0-7000-7000-8000-000000000000.pdf` and a user files a bug. `filename*=UTF-8''…` carries a charset and a percent-encoded string, which is what brings a non-ASCII name through intact. The helper percent-encodes the name, then restores the few characters the grammar allows unescaped:
 
 ```ts title="src/db/queries/file-metadata.ts"
 // RFC 5987 encoding for the Content-Disposition filename* parameter, so the browser
@@ -139,7 +152,7 @@ const encodeRFC5987 = (value: string): string =>
     );
 ```
 
-Now the keyset list. This is the read the `/files` page pages over, newest-first, and the part worth slowing down for is how it walks to the next page without an `OFFSET`.
+Now the keyset list, the read the `/files` page pages over, newest-first. The part worth slowing down for is how it walks to the next page without an `OFFSET`.
 
 <AnnotatedCode lang="ts" maxLines={18} code={`
 export const listFiles = async ({
@@ -183,35 +196,25 @@ export const listFiles = async ({
 };
 `}>
   <AnnotatedStep meta={`{10-11} "decodeCursor(cursor)"`} color="blue">
-    `decodeCursor` turns the `?cursor=` token back into a `{ uploadedAt, id }` keyset — or `null` if it's absent, garbage, or tampered with. A `null` decode means page one, never a throw, so a hostile querystring degrades to the first page rather than a crash.
+    `decodeCursor` turns the `?cursor=` token back into a `{ uploadedAt, id }` keyset, or `null` if it's absent, garbage, or tampered with. A `null` decode means page one, never a throw, so a hostile querystring degrades to the first page rather than a crash.
   </AnnotatedStep>
 
   <AnnotatedStep meta="{13-22}" color="violet">
-    The keyset predicate is "every row strictly after the cursor, in descending order." Because the list orders by two columns, the cursor has to carry both: a row qualifies if its `uploadedAt` is strictly earlier, **or** its `uploadedAt` is equal and its `id` is strictly smaller. That `id` tie-break is what stops two files uploaded in the same millisecond from being skipped or shown twice across a page boundary.
+    The keyset predicate is "every row strictly after the cursor, in descending order." Because the list orders by two columns, the cursor carries both: a row qualifies if its `uploadedAt` is strictly earlier, **or** equal with a strictly smaller `id`. That `id` tie-break stops two files uploaded in the same millisecond from being skipped or shown twice across a page boundary.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{24-28} "limit: limit + 1"`} color="green">
-    The query fetches `limit + 1` rows. That one extra row is the cheap way to learn whether a next page exists — if it comes back, there's more; if it doesn't, this is the last page — with no second `COUNT` query. The `orderBy [desc(uploadedAt), desc(id)]` matches the composite index exactly, so the database walks the index instead of sorting.
+    Fetching `limit + 1` rows is the cheap way to learn whether a next page exists: if the extra row comes back there's more, otherwise this is the last page, with no second `COUNT` query. The `orderBy [desc(uploadedAt), desc(id)]` matches the composite index, so the database walks the index instead of sorting.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{30-37} "rows.slice(0, limit)" "encodeCursor"`} color="orange">
-    `hasMore` is true when that extra row showed up. If it did, slice it off — the user only sees `limit` rows — and build `nextCursor` from the `(uploadedAt, id)` of the last *kept* row, so the next page resumes exactly after it. No extra row, no next cursor, no "Next page" link.
+    When that extra row showed up, `hasMore` is true: slice it off so the user sees only `limit` rows, and build `nextCursor` from the `(uploadedAt, id)` of the last kept row, so the next page resumes right after it. No extra row, no next cursor, no "Next page" link.
   </AnnotatedStep>
 </AnnotatedCode>
 
-A few of these choices carry weight past what the code shows.
+There is no `url` column on `file_metadata`: a persisted URL is a cached URL by another name, and it would go stale exactly as a cached render would. A larger codebase would have a base-query helper own the `isNull(softDeletedAt)` filter so you couldn't forget it, the [scoped-read tabs](/062-project---production-invoice-list-view/3-scoped-reads-and-the-view-tabs/) pattern, but here the surface is small enough that the explicit filter per read is clear and sufficient.
 
-**The page is not `use cache`, and that is the backbone of the whole feature.** A cached render would store this HTML — signed URLs and all — and keep serving it after the URLs inside it have expired, so the page would lie about links that no longer work. Signing per render is the only way the link a user sees is always one that still has time left on it. This is also why there is no `url` column on `file_metadata`: a persisted URL is a cached URL by another name, and it would go stale the same way.
-
-**Signing N URLs per render is not a hot spot.** It feels like it should be — a page of twenty rows signs twenty URLs — but `getSignedUrl` never calls R2. It computes an HMAC signature locally from your credentials and the request, which is microseconds of CPU, not a network round trip. The cost scales with rows, but it scales in hashes, and hashes are free at this scale. Don't reach for a cache to "fix" it; there is nothing to fix.
-
-**`getFile` returning the same `null` for cross-org and missing is the tenancy guarantee, stated in one line.** The boundary leaks nothing because there is nothing to leak: a foreign org's id and a typo both come back `null`, both surface as `not_found`, and an attacker probing for "does this file exist in some other org" learns the same thing whether it does or not. That is the read-side mirror of the `member`-role gate on the write side.
-
-**The render does not audit, on purpose.** There is no `file.list_viewed` event in the system, and there shouldn't be — auditing belongs to actions and tasks, the things that *change* state, on the [append-only audit log](/057-roles-authorization-audit-logs/5-the-append-only-audit-log/) discipline. A read surface that wrote an audit row per render would write twenty rows for one page view and turn the trail into noise. The file audit trail starts and ends with `finalizeUpload`; this page contributes nothing to it.
-
-**`isNull(softDeletedAt)` on every read is the soft-delete discipline.** A soft-deleted file is still a row in the table; the only thing keeping it out of every list and every download is this filter, applied at the read. In a larger codebase a base-query helper would own this so you couldn't forget it — the pattern is the [scoped-read tabs](/062-project---production-invoice-list-view/3-scoped-reads-and-the-view-tabs/) work — but here the surface is small enough that the explicit `isNull` per read is clear and sufficient.
-
-That leaves the one read in this file that is deliberately *not* tenant-scoped:
+That leaves the one read in this file that is deliberately not tenant-scoped:
 
 ```ts title="src/db/queries/file-metadata.ts"
 // The lone tenant-free helper: signs a GET on a raw key with no tenantDb check. The
@@ -234,10 +237,10 @@ export const getSignedGetForKey = async ({
 ```
 
 :::note
-`getSignedGetForKey` lands this lesson but is dead code until the next one — nothing calls it yet. It is in this file now because it belongs with the other GET signers, and it is the one helper with no `tenantDb` scope on purpose. Its caller is the export worker, which has no request and no session and owns the exact key it just wrote — so there is no org row to scope against, and no original name to set a disposition for (the export sets its own at PUT time). Hold that thought; next lesson wires it in.
+`getSignedGetForKey` lands this lesson but is dead code until the next one — nothing calls it yet. It belongs here with the other GET signers, and it is the one helper with no `tenantDb` scope on purpose. Its caller, the export worker, has no request and no session and owns the exact key it just wrote, so there is no org row to scope against and no original name to set a disposition for. Next lesson wires it in.
 :::
 
-Here is the file in full, including the imports and the two constants the walkthrough referred to:
+Here is the file in full, with the imports and the two constants the walkthrough referred to:
 
 ```ts title="src/db/queries/file-metadata.ts"
 import 'server-only';
@@ -385,11 +388,11 @@ export const listFiles = async ({
 };
 ```
 
-The keyset cursor itself is provided in `lib/files/cursor.ts` and you don't write it — but it is worth knowing why it has its own codec instead of reusing the invoices' `createdAt`-only one from [the tenant-scoped invoice list](/041-project---org-scoped-invoicing-data-layer/5-the-tenant-scoped-invoice-list-with-cursor-pagination/). The `file_metadata` index is the composite `(uploadedAt desc, id desc)`, so the cursor has to carry *both* columns to break ties deterministically; a single-column cursor would skip or repeat rows that share a millisecond. The codec is base64url JSON, Zod-validated on decode, which is what lets `decodeCursor` return `null` on a tampered token rather than throwing.
+The keyset cursor itself is provided in `lib/files/cursor.ts`, so you don't write it, but it is worth knowing why it has its own codec instead of reusing the invoices' `createdAt`-only one from [the tenant-scoped invoice list](/041-project---org-scoped-invoicing-data-layer/5-the-tenant-scoped-invoice-list-with-cursor-pagination/). The `file_metadata` index is the composite `(uploadedAt desc, id desc)`, so the cursor carries both columns to break ties deterministically; a single-column cursor would skip or repeat rows that share a millisecond. The codec is base64url JSON, Zod-validated on decode, which lets `decodeCursor` return `null` on a tampered token rather than throwing.
 
 ### `app/files/page.tsx` — the list render
 
-The page is a Server Component. It resolves the org, validates the cursor, calls `listFiles`, and renders the rows — each through an async `FileRow` that signs its own fresh download URL.
+The page is a Server Component. It resolves the org, validates the cursor, calls `listFiles`, and renders the rows, each through an async `FileRow` that signs its own fresh download URL.
 
 <AnnotatedCode lang="tsx" maxLines={18} code={`
 const FileRow = async ({
@@ -434,23 +437,23 @@ const FileRow = async ({
 };
 `}>
   <AnnotatedStep meta={`{1-7} "async"`} color="blue">
-    `FileRow` is an **async** Server Component. Each row awaits its own data — that's the per-row signing model: the page maps over the rows and renders one `FileRow` each, and React resolves them. There is no client component and no `'use client'` anywhere on this surface; the whole list is server-rendered.
+    `FileRow` is an **async** Server Component, so each row awaits its own data: the page maps over the rows, renders one `FileRow` each, and React resolves them. There is no `'use client'` on this surface; the whole list is server-rendered.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{9} "getFileDownloadUrl(orgId, file.id)"`} color="violet">
-    The fresh signature, per row. Every `FileRow` calls `getFileDownloadUrl` on its own — so a page of twenty rows mints twenty independent, just-signed URLs on this render, and twenty new ones on the next. None of them is read from a column; there is no column to read.
+    The fresh signature, per row. Every `FileRow` calls `getFileDownloadUrl` on its own, so a page of twenty rows mints twenty just-signed URLs on this render and twenty new ones on the next. None is read from a column; there is no column to read.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{20-25} "Badge" "formatBytes" "formatUploadedAt"`} color="green">
-    The four facts the row surfaces, all off the `FileMetadata` row: the original name, the content type inside a `<Badge>`, the humanized `byteSize`, and the upload time as a fixed string. Every one comes from the server-observed row — never a client-supplied label.
+    The four facts the row surfaces, all off the `FileMetadata` row: the original name, the content type inside a `<Badge>`, the humanized `byteSize`, and the upload time as a fixed string. Every one comes from the server-observed row, never a client-supplied label.
   </AnnotatedStep>
 
   <AnnotatedStep meta={`{29-37} "download.ok"`} color="orange">
-    The "Download" link is gated on `download.ok`. In the normal case the sign succeeds and the `<a href>` is the fresh URL; if signing ever fails the row still renders its metadata, just without a broken link. `getFileDownloadUrl` returns a `Result`, so this branch is the honest way to handle the failure path.
+    The "Download" link is gated on `download.ok`. Usually the sign succeeds and the `<a href>` is the fresh URL; if signing fails the row still renders its metadata, just without a broken link. `getFileDownloadUrl` returns a `Result`, so this branch handles the failure path honestly.
   </AnnotatedStep>
 </AnnotatedCode>
 
-The two formatters are pure, file-local, and deliberately deterministic so the seeded list renders identically on every paint:
+The two formatters are pure, file-local, and deterministic so the seeded list renders identically on every paint:
 
 ```tsx title="src/app/files/page.tsx"
 // Server-observed identity at every read; deterministic so the seeded list renders the
@@ -474,9 +477,9 @@ const formatUploadedAt = (uploadedAt: Date): string =>
   uploadedAt.toISOString().slice(0, 16).replace('T', ' ');
 ```
 
-`formatUploadedAt` renders a fixed UTC string rather than a locale-aware date on purpose: a Server Component formatting with the server's locale and a client re-rendering with the browser's would mismatch, and the simplest way to dodge that is a single canonical representation. Proper time-zone-aware formatting is its own topic later in the course; here the row just needs a stable, unambiguous timestamp.
+`formatUploadedAt` renders a fixed UTC string rather than a locale-aware date on purpose: a Server Component formatting with the server's locale and a client re-rendering with the browser's would mismatch, and a single canonical representation avoids that. Here the row just needs a stable, unambiguous timestamp.
 
-Finally the page itself — resolve the org, parse the cursor, list, render, and gate the "Next page" link on the cursor `listFiles` handed back:
+Finally the page itself: resolve the org, parse the cursor, list, render, and gate the "Next page" link on the cursor `listFiles` handed back:
 
 ```tsx title="src/app/files/page.tsx"
 const cursorSchema = z.string().min(1).nullable().catch(null);
@@ -530,9 +533,9 @@ const FilesPage = async ({
 export default FilesPage;
 ```
 
-Three things to notice in the wiring. `requireOrgUser()` is what supplies the `orgId` that scopes every read on the page — the list is tenant-scoped at the source, not filtered after the fact. `cursorSchema` validates `searchParams.cursor` with a `.catch(null)`, so a hand-edited or junk `?cursor=` value collapses to "page one" instead of erroring — the same fail-soft posture `decodeCursor` takes inside `listFiles`, applied one layer up at the URL boundary. And the empty state is a real branch: an org with zero uploads sees an explicit `"No files yet."`, not a blank region, while the `"Next page"` link only renders when `listFiles` returned a `nextCursor` — present on a full page, gone on the last.
+Three things to notice in the wiring. `requireOrgUser()` supplies the `orgId` that scopes every read on the page, so the list is tenant-scoped at the source, not filtered after the fact. `cursorSchema` validates `searchParams.cursor` with a `.catch(null)`, so a hand-edited or junk `?cursor=` value collapses to page one instead of erroring, the same fail-soft posture `decodeCursor` takes inside `listFiles`, one layer up at the URL boundary. And the empty state is a real branch: an org with zero uploads sees an explicit `"No files yet."`, while the `"Next page"` link renders only when `listFiles` returned a `nextCursor`.
 
-Notice what is *not* in this file: no `'use cache'`, no `logAudit`, no `db.insert` or `db.update`. This is a pure read surface. The render signs as many URLs as there are rows and writes nothing — that is the discipline that keeps fresh-per-render honest and the audit trail clean.
+Notice what is not in this file: no `'use cache'`, no `logAudit`, no `db.insert` or `db.update`. This is a pure read surface that signs as many URLs as there are rows and writes nothing.
 
 </details>
 
@@ -568,7 +571,7 @@ Run the lesson's test suite:
 pnpm test:lesson 4
 ```
 
-The `/files` read path signs a live R2 GET against a bucket the runner has no credentials for, reads through `tenantDb` behind a session and a database it doesn't have, and renders an async Server Component tree — so the runner can't *execute* the page. It proves each behavior the only way a node, no-DOM run can: it exercises the two pure seams for real — a `(uploadedAt, id)` keyset round-trips through the actual cursor codec, and an `object-not-found` `UploadError` runs through the real `toResult` and comes out `not_found` — and reads the rest off the implementation's own source: a row renders its name, type badge, size, and time (req 1); the page reads through `tenantDb(orgId)` and filters `isNull(softDeletedAt)` on every read so a cross-org id is invisible (req 4); the list builds the descending keyset predicate and fetches `limit + 1`, gating "Next page" on the cursor (req 5); and neither the page nor the helpers call `logAudit`, write to the database, or declare `use cache` (req 6). A pass looks like this:
+The runner can't *execute* the page: it would sign a live R2 GET against a bucket it has no credentials for, read through `tenantDb` behind a missing session and database, and render an async Server Component tree. So a node, no-DOM run proves each behavior another way. It exercises the two pure seams for real — a `(uploadedAt, id)` keyset round-trips through the actual cursor codec, and an `object-not-found` `UploadError` runs through the real `toResult` and comes out `not_found` — and reads the rest off the implementation source: a row renders its name, type badge, size, and time (req 1); every read goes through `tenantDb(orgId)` and filters `isNull(softDeletedAt)` (req 4); the list builds the descending keyset predicate and fetches `limit + 1` to gate "Next page" (req 5); and neither the page nor the helpers call `logAudit`, write to the database, or declare `use cache` (req 6). A pass looks like this:
 
 ```ansi title="pnpm test:lesson 4"
  [32m✓[0m Lesson 4 — the /files list signs a fresh download URL per row per render [2m(17)[0m
@@ -582,7 +585,7 @@ The `/files` read path signs a live R2 GET against a bucket the runner has no cr
  [2m     Tests[0m  [32m17 passed[0m [2m(17)[0m
 ```
 
-Green tests prove the read boundary's shape, but the three behaviors that matter most to a user live in a real browser — the download saving under the right name, the real signed hrefs in the page source, and the headline expiry proof. With `pnpm dev` running and signed in as a `member` of a seeded org, confirm each by hand:
+Green tests prove the read boundary's shape, but the behaviors that matter most to a user only show up in a real browser. With `pnpm dev` running and signed in as a `member` of a seeded org, confirm each by hand:
 
 <Checklist id="verify">
   <ChecklistItem chip="untested">The file you uploaded last lesson appears in the list; clicking "Download" saves it under its original name, not the opaque object key.</ChecklistItem>
@@ -591,7 +594,7 @@ Green tests prove the read boundary's shape, but the three behaviors that matter
 </Checklist>
 
 :::caution
-That last check is the chapter's headline proof, and it is the one a tired student is most tempted to skip. Run the timer for real — or fast-forward your machine's clock past the 10-minute mark — and watch the copied URL die while the refreshed one works. Skip it and you ship a mental model where a signed URL survives a long page session, which is exactly the wrong reflex. The whole point of fresh-per-render is that it doesn't.
+That last check is the chapter's headline proof. Run the timer for real — or fast-forward your machine's clock past the 10-minute mark — and watch the copied URL die while the refreshed one works. Skip it and you ship a mental model where a signed URL survives a long page session; the whole point of fresh-per-render is that it doesn't.
 :::
 
-The user-upload loop is now closed end to end: a file goes up straight to R2, writes its row, and renders back as a working, self-expiring download. The same `lib/r2.ts` and the same presigned-URL mechanics power one more surface — next lesson retrofits the CSV export so its email carries a real R2 link instead of a placeholder, this time with the worker doing the PUT and consuming that `getSignedGetForKey` helper sitting unused in the query file.
+The upload loop now runs end to end: a file goes straight up to R2, writes its row, and renders back as a working, self-expiring download. Next lesson reuses the same presigned-URL mechanics to retrofit the CSV export, replacing its placeholder link with a real one from the `getSignedGetForKey` helper sitting unused in the query file.
