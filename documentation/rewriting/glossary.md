@@ -2326,3 +2326,68 @@ error digest (Next.js) | digest (error.tsx) | Stable hash Next.js hands error bo
 six seams | error seam catalog, error surface | The six boundaries (Server Action, route handler, page check, webhook, rate limiter, page boundary) where fail-closed and message-split must land; the app's whole error surface. | first defined: Chapter 080 L3
 error seam | seam (error) | One of the six boundaries owning both error commitments, each with a wrapper and a grep that finds bypasses. | first defined: Chapter 080 L3
 unstable_retry | unstable_retry() | Next.js 16.2+ error-boundary retry running router.refresh() and reset() in a transition, so it recovers a render that failed during a data fetch. | first defined: Chapter 080 L3
+security header | - | A response header that is a rule the browser enforces; the server only ships the rule. | first defined: Chapter 081 L1
+clickjacking | - | Luring a user into clicking an invisible framed copy of your page laid over a decoy. | first defined: Chapter 081 L1
+MIME-sniffing | MIME sniffing | The browser guessing a response's type from its bytes and maybe running a non-script file as script. | first defined: Chapter 081 L1
+downgrade attack | SSL-strip | An attacker forcing a connection back to plaintext http:// to read or rewrite traffic. | first defined: Chapter 081 L1
+strict-dynamic | 'strict-dynamic' | CSP keyword trusting any script loaded by an already-trusted (nonced) script, dropping the origin allowlist. | first defined: Chapter 081 L1
+prerendering | static prerender | Rendering a page to static HTML at build time so every visitor gets the same cached output. | first defined: Chapter 081 L1
+Report-Only (CSP) | Content-Security-Policy-Report-Only | CSP mode that reports violations it would have blocked but blocks nothing; a safe dress rehearsal before enforce. | first defined: Chapter 081 L1
+Permissions-Policy | - | Header turning off browser features (camera, mic, geolocation, payment) the page doesn't use. | first defined: Chapter 081 L1
+Referrer-Policy | - | Header controlling how much of the URL is sent to other origins as the referrer. | first defined: Chapter 081 L1
+X-Frame-Options | - | Legacy standalone header denying framing; superseded by CSP frame-ancestors, kept for old crawlers. | first defined: Chapter 081 L1
+X-Content-Type-Options | nosniff | Header (nosniff) stopping MIME-sniffing so a response isn't run as script. | first defined: Chapter 081 L1
+relay (abuse) | - | An endpoint an attacker drives to act on a third party; your server sends the mail or fetch under your IP and reputation. | first defined: Chapter 081 L2
+inbox-bombing | email bombing | Flooding a victim's inbox with unwanted mail by abusing an open send endpoint. | first defined: Chapter 081 L2
+SSRF | Server-Side Request Forgery | Attacker supplies the URL your server fetches, pointing it at an internal service or the cloud metadata endpoint. | first defined: Chapter 081 L2
+fan-out (webhook) | - | The downstream work one inbound event sets off (emails, jobs, rows); the cost the event causes, separate from receiving it. | first defined: Chapter 081 L2
+CAPTCHA | - | A challenge distinguishing a human from an automated client; now usually an invisible signal check. | first defined: Chapter 081 L2
+Cloudflare Turnstile | Turnstile | Cloudflare's free, mostly invisible CAPTCHA gate for public endpoints when per-IP limiting runs out of road. | first defined: Chapter 081 L2
+superadmin | super-admin | Platform-operator role (your own staff) that can cross tenant boundaries; its use is gated and logged. | first defined: Chapter 081 L3
+right to erasure | right to be forgotten | GDPR Art. 17 right letting a person demand erasure of their personal data. | first defined: Chapter 081 L3
+data minimization | - | GDPR principle: don't keep personal data longer than its purpose needs; the basis for automated retention limits. | first defined: Chapter 081 L4
+anonymize | anonymization | Deletion shape that scrubs the PII columns and keeps the rest of the row's forensic/relational data. | first defined: Chapter 081 L4
+subprocessor | subprocessor list | Third-party vendor (Stripe, Resend, PostHog) processing your users' PII; the published list is the checklist erasure must cover. | first defined: Chapter 081 L4
+prior consent | - | Consent must come before processing, not after; a tracker that fires then asks has broken the rule. | first defined: Chapter 081 L5
+strictly necessary | - | ePrivacy phrase for cookies exempt from consent: indispensable to a service the user actively requested. | first defined: Chapter 081 L5
+granular consent | - | Per-category consent (accept analytics, refuse marketing) instead of all-or-nothing; regulators require it. | first defined: Chapter 081 L5
+consent gate | cookie consent gate | Engineering gate where nothing non-essential runs until the user consents; one source of truth every tracker reads. | first defined: Chapter 081 L5
+useConsent | useConsent() | The single hook returning the two category flags plus the controls; every tracker reads consent only here. | first defined: Chapter 081 L5
+belt one (opt-out by default) | opting out by default | SDK ships disabled and must be turned on; governs only a module already loaded, so not sufficient alone. | first defined: Chapter 081 L5
+belt two (import gate) | import gate | Dynamically importing a tracker only after its flag flips on, so the code never reaches the browser pre-consent. | first defined: Chapter 081 L5
+dark pattern | - | UI designed to steer the user to the choice the business prefers; an Accept bigger than Reject is the textbook case. | first defined: Chapter 081 L5
+CNIL | - | France's data-protection authority; has fined companies over asymmetric Accept/Reject banner designs. | first defined: Chapter 081 L5
+EDPB | European Data Protection Board | EU body that sets and enforces consent rules; fined asymmetric banner designs. | first defined: Chapter 081 L5
+data controller | controller | The party deciding why and how personal data is processed; under GDPR carries the burden of demonstrating valid consent. | first defined: Chapter 081 L5
+session replay | - | A tracker that records and replays a user's actual session (clicks, scrolls, keystrokes) as a video; always consent-required. | first defined: Chapter 081 L5
+marketing pixel | ad pixel | Invisible image or script an ad network loads to track a user across sites for attribution/profiling; always consent-required. | first defined: Chapter 081 L5
+CCPA | - | US-California law adding a "Do Not Sell or Share" footer link; a separate right from the EU consent gate. | first defined: Chapter 081 L5
+cookieless analytics | - | Analytics (e.g. Plausible) that sets no cookie and builds no profile, so it needs no consent banner. | first defined: Chapter 081 L5
+publishable key | - | Public-by-design API key that only identifies an account, grants no privileged access. | first defined: Chapter 081 L6
+DSN | Sentry DSN | Sentry's public ingest URL; identifies the project, accepts error events, grants no read access. | first defined: Chapter 081 L6
+source map | source maps | File mapping minified production JS back to original source for readable stack traces. | first defined: Chapter 081 L7
+high-entropy string | high-entropy | A value with no discernible pattern; a scanner flags it by Shannon entropy, not a known prefix. | first defined: Chapter 081 L6
+break-glass copy | break-glass | Emergency-only credential copy stored apart from the normal flow, reached only when the primary store can't return the value. | first defined: Chapter 081 L6
+runbook | - | A checked-in step-by-step operational procedure a teammate can follow with no prior context. | first defined: Chapter 081 L6
+pre-commit hook | pre-commit | A script Git runs before finalizing a commit; aborts the commit on a non-zero exit. | first defined: Chapter 081 L6
+Husky | - | Standard tool for managing Git hooks in a JS project; versions hooks in the repo and auto-installs them. | first defined: Chapter 081 L6
+Gitleaks | - | Secret scanner reading the staged diff, flagging known secret patterns and high-entropy strings. | first defined: Chapter 081 L6
+log drain | - | A pipe forwarding an app's logs to an external service; a place env-shaped strings can leak if unredacted. | first defined: Chapter 081 L6
+sensitive flag (Vercel) | sensitive | Vercel env-var flag making a variable write-only once created; the value can't be read back out. | first defined: Chapter 081 L6
+secret store | platform secret store | A deployment platform's encrypted store for production secrets (Vercel's project env vars), injected at build/runtime. | first defined: Chapter 081 L6
+BFG Repo-Cleaner | BFG | Fast tool for scrubbing a leaked secret out of every commit in git history. | first defined: Chapter 081 L6
+Shai-Hulud | - | Self-replicating npm worm (2025-26) that spread via hijacked maintainer tokens, re-publishing itself package to package. | first defined: Chapter 081 L8
+typosquatting | typosquat | Publishing a package whose name is a near-miss of a popular one, to catch typos and AI hallucinations. | first defined: Chapter 081 L8
+postinstall script | postinstall | npm lifecycle script that runs automatically after install, with full machine access. | first defined: Chapter 081 L8
+exfiltration | - | Covertly shipping stolen data (secrets, tokens) off the machine. | first defined: Chapter 081 L8
+exotic dependency | exotic subdep | A dependency resolved from a git repo or tarball URL rather than a package registry. | first defined: Chapter 081 L8
+sandbox | sandboxed | An isolated execution context that limits what code can touch; install scripts run with none. | first defined: Chapter 081 L8
+GHSA | GitHub Security Advisory | The vulnerability database pnpm keys audits against. | first defined: Chapter 081 L8
+CVE | Common Vulnerabilities and Exposures | The legacy public vulnerability ID scheme. | first defined: Chapter 081 L8
+advisory | security advisory | A published report that a specific package version range is vulnerable. | first defined: Chapter 081 L8
+attack surface | - | Every entry point an attacker could exploit; each dependency added widens it. | first defined: Chapter 081 L8
+Renovate | - | A bot that opens dependency-update pull requests, with grouping and scheduling rules. | first defined: Chapter 081 L8
+Socket | - | A tool that flags packages by suspicious behavior rather than known CVEs. | first defined: Chapter 081 L8
+minimumReleaseAge | - | pnpm setting quarantining freshly-published versions until they age past a cutoff (default 1440 min). | first defined: Chapter 081 L8
+blockExoticSubdeps | - | pnpm setting enforcing a registry-only contract across the transitive tree. | first defined: Chapter 081 L8
+allowBuilds | - | pnpm map permitting named packages to run install scripts; everything else is skipped. | first defined: Chapter 081 L8

@@ -1,0 +1,368 @@
+---
+title: Supply-chain hardening with pnpm
+tagline: How pnpm 11's on-by-default install-time controls harden your dependency tree against supply-chain attacks.
+chapter-id: 81
+course-progress: 0.7586
+rewrites: 2
+sidebar:
+  order: 8
+  label: Supply-chain hardening
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import KillChain from '../../../components/lessons/081/8/KillChain.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Term from '../../../components/ui/Term.astro';
+import Dropdowns from '../../../components/exercises/dropdowns/Dropdowns.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Run `pnpm install` on the app you've been building and watch the package count.
+You declared maybe twenty direct dependencies; what lands in `node_modules` is two hundred.
+Each was pulled in by another package, each runs code on your laptop and in CI, and you have read none of them.
+
+You never will: two hundred packages is past the point where a human can review them, and that gap is what attackers found.
+The <Term definition="A self-replicating npm worm, first disclosed September 2025, with a V2 wave in late 2025 and further variants into 2026. Named after the Dune sandworm because it spread by re-publishing itself through compromised maintainer tokens.">Shai-Hulud</Term> worm tore through npm by hijacking maintainer accounts and re-publishing itself package to package, and the `chalk` and `debug` compromises pushed malicious code into dependencies nearly every JavaScript project pulls in.
+Supply-chain attacks now sit on the short list of likely ways a SaaS gets breached, alongside the cross-site scripting and credential-stuffing this chapter's first two lessons hardened.
+
+So the defense can't be vigilance.
+It has to be **structure**: a handful of config lines that make the dangerous moves unreachable whether or not anyone is watching.
+Most ship **on by default** in pnpm 11, so the senior move isn't adding them; it's understanding them well enough to keep them on under deadline pressure, when that protection is all that stands between you and the fix.
+
+Gitleaks already scans every commit for secrets, and your env schema fails the build when a variable is missing: your *commit-time* and *runtime* gates.
+This lesson adds the third, the *install-time* gate, and ends with a dependency-hygiene report you can run against your own repo, the chapter's eighth and last audit entry.
+
+:::note
+In pnpm 11 the supply-chain settings live in **`pnpm-workspace.yaml`**, not `.npmrc`; `.npmrc` now holds only authentication and registry settings.
+Older guides put these in `.npmrc`, the pnpm 10 shape.
+:::
+
+## How a supply-chain attack runs
+
+Each control below makes sense only once you can point at the stage it breaks, so first walk one kill chain end to end.
+It's the simplest attack that touches install scripts, freshly-published versions, and the lockfile at once.
+
+The setup is a typo.
+An attacker publishes `axois`, one transposed letter from `axios`, the package you meant.
+The nastier variant is the `chalk` and `debug` shape: the attacker phishes a real maintainer's npm token and pushes a malicious patch into a legitimate popular package, so there's no typo to catch and the name is exactly right.
+
+Scrub through the diagram and watch when the malicious code runs.
+
+<KillChain />
+
+On stage three, the attacker's code executes at **install time**: after `pnpm install` resolves the package, before a single line of your code runs, before any test fires.
+That timing is why your earlier gates miss it.
+Gitleaks scans your commits, not the contents of `node_modules`; the env schema checks values when the app boots, long after the `postinstall` script has run and left.
+
+So you make the dangerous stages structurally unreachable instead: fresh versions, install scripts, and unpinned resolution, three stages and three controls, taken below in order of leverage.
+
+<VideoCallout videoId="QVqIx-Y8s-s" videoTitle="The largest supply-chain attack ever — Fireship">
+  Fireship's 4-minute breakdown of the chalk/debug compromise: the phished maintainer token, the install-time injection, and the roughly two-hour window before the community caught on.
+</VideoCallout>
+
+Four terms for the rest of the lesson.
+A <Term definition="A package your dependencies depend on, not one you installed directly. That's where the two-hundred number comes from.">transitive dependency</Term> is one your dependencies pull in rather than one you installed; that's where the two-hundred number comes from.
+<Term definition="Publishing a package whose name is a near-miss of a popular one, to catch your typos and an AI's hallucinations.">Typosquatting</Term> publishes a package whose name is a near-miss of a popular one, to catch typos and AI hallucinations.
+A <Term definition="An npm lifecycle script that runs automatically after a package is installed, with full access to the machine.">`postinstall` script</Term> runs automatically after install, with full access to the machine.
+And <Term definition="Covertly shipping stolen data — secrets, tokens — off the machine.">exfiltration</Term> is covertly shipping stolen data off the machine.
+
+## Delay new versions 24 hours: `minimumReleaseAge`
+
+A malicious version is most dangerous in its **first few hours**, before the community notices and gets it yanked; after that, your audit databases and tooling flag it.
+So resolve only versions that have already survived a day, letting the rest of the world act as the canary.
+
+That's `minimumReleaseAge`, set in `pnpm-workspace.yaml`:
+
+```yaml title="pnpm-workspace.yaml"
+minimumReleaseAge: 1440
+```
+
+`1440` is minutes, twenty-four hours.
+**pnpm 11 ships this on by default**, so the move is keeping it and writing it out explicitly so you recognize it and don't remove it.
+
+A version published less than twenty-four hours ago doesn't exist as far as resolution is concerned, so `install` picks the newest version *older* than the cutoff.
+This is **not** "never update": you get every version, just one day late, and that day is the entire defense.
+
+:::caution
+**Do not set `minimumReleaseAge: 0`.** That doesn't unblock the one patch you need; it removes the quarantine for *every dependency, forever*, and nobody remembers to restore it. The correct move is the narrowest exception: add that **one package** to a `minimumReleaseAgeExclude` list, committed in the same pull request so a reviewer sees it and it can be reverted once the patch ages out.
+:::
+
+That carve-out is two or three lines:
+
+<div data-mark-color="blue">
+
+```yaml title="pnpm-workspace.yaml" {2-3}
+minimumReleaseAge: 1440
+minimumReleaseAgeExclude:
+  - 'jose' # critical CVE patch, < 24h old — revert when aged out
+```
+
+</div>
+
+pnpm 11 gives you **no per-command flag** to skip the age check, so the exclude list is the only path, which forces the bypass into reviewed config instead of one person's shell history.
+
+## Force registry-only resolution: `blockExoticSubdeps`
+
+`minimumReleaseAge` assumes packages come from a registry, which is what gives them a publish time, a provenance trail, and a yank mechanism.
+But a dependency can declare *its own* sub-dependency as a raw **git URL** or **tarball URL**, skipping the registry and every protection built on it, letting a compromised intermediate package smuggle arbitrary code past your controls.
+
+```yaml title="pnpm-workspace.yaml"
+blockExoticSubdeps: true
+```
+
+This pnpm 11 default enforces a **registry-only contract** across the transitive tree: every package down there must resolve from a configured registry.
+Your own direct dependencies can still point at an <Term definition="A dependency resolved from a git repo or a tarball URL rather than from a package registry.">exotic dependency</Term> when you own that decision; what's blocked is a package three levels down dragging in a git URL on your behalf.
+
+## Skip install scripts unless allowed: `allowBuilds`
+
+`postinstall`, `preinstall`, and `install` scripts run automatically and unsandboxed during install.
+This is the mechanism every install-time attack uses: the one moment a package executes arbitrary code on your machine just for being present.
+pnpm 11 inverts the old npm and yarn behavior of running them for every package, in three parts.
+
+First, scripts are skipped by default: pnpm runs a dependency's lifecycle scripts only if you've explicitly allowed that package.
+
+Second, the allow-list is the `allowBuilds` map, which replaces pnpm 10's `onlyBuiltDependencies` array, mapping a package to a boolean: `true` permits its build scripts, `false` denies them.
+A few packages legitimately compile native code at install, `esbuild`, `@swc/core`, and `sharp` being the canonical trio, and those get `true`.
+
+Third, `strictDepBuilds: true` makes the install exit non-zero the moment any dependency has build scripts not in the map.
+Without it an unreviewed `postinstall` silently doesn't run and you never notice; with it, an unfamiliar build script fails the install and forces a human to look.
+
+<AnnotatedCode lang="yaml" maxLines={10} code={`
+# pnpm-workspace.yaml
+minimumReleaseAge: 1440
+blockExoticSubdeps: true
+strictDepBuilds: true
+allowBuilds:
+  esbuild: true
+  '@swc/core': true
+  sharp: true
+  node-telemetry: false
+`}>
+  <AnnotatedStep meta="{5-10}" color="blue">
+    These packages, and only these, may run install scripts. Every package not named here is treated as unreviewed, and its scripts don't run.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"esbuild: true" "node-telemetry: false"`} color="blue">
+    `esbuild` gets `true` because it compiles a native binary at install. That's the test for every `true` entry: does this package have a real native build step? If you can't say why, it doesn't belong. The `false` on `node-telemetry` is an explicit deny, a `postinstall` you've looked at and refused, recorded so the decision is documented.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"strictDepBuilds: true"`} color="blue">
+    A freshly-added dependency whose `postinstall` isn't in the map fails the install until a human reviews it and decides whether to add it.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Whether a package belongs in `allowBuilds` is a code-review decision: the line grants it the right to run arbitrary code on every machine and in CI, on every install, forever.
+A reviewer signs off with a reason; one person doesn't type past a failing install to make it green.
+
+This closes the kill chain: a typosquat's `postinstall` is unreviewed, so `strictDepBuilds` fails the install before the script runs, its code-execution primitive dead because the default refused it.
+
+A <Term definition="One of preinstall / install / postinstall — npm scripts that run automatically at install phases.">lifecycle script</Term> is one of `preinstall`, `install`, or `postinstall`. A <Term definition="An isolated execution context that limits what code can touch. Install scripts have none — full machine access.">sandbox</Term> is an isolated execution context that limits what code can touch; install scripts run with none.
+
+## Commit the lockfile and freeze it in CI
+
+The earlier controls each guard one stage; the lockfile makes the whole tree deterministic.
+Without it, a fresh CI machine resolves whatever satisfies the range, which can be a version published minutes ago, after you tested.
+A quarantined, script-gated tree only protects you if it's the *same tree* everywhere, and that is what the lockfile guarantees.
+
+`pnpm-lock.yaml` pins **every** package, direct and transitive, to an exact version and to an <Term definition="A cryptographic digest of the package's exact tarball. Install rejects any tarball whose bytes don't match the hash.">integrity hash</Term> of the bytes that version shipped.
+
+**Commit it.** It's the contract, not a regenerable artifact, and because every install verifies bytes against the recorded hashes, a tampered tarball fails the check.
+
+**Run `pnpm install --frozen-lockfile` in CI.** This mode *fails the build* when `package.json` and the lockfile disagree, instead of silently regenerating the lockfile and pulling whatever's newest.
+Skip either step and you reopen the "whatever's latest" resolution the earlier controls depend on.
+
+```bash title="CI" "--frozen-lockfile"
+# pnpm-lock.yaml is committed — it is the contract, not an artifact
+
+pnpm install --frozen-lockfile
+```
+
+Pin the *tool* too, or a stray `npm install` regenerates a `package-lock.json` with a different resolver and bypasses every pnpm control above: add a `packageManager` field in `package.json` and `only-allow pnpm` in a `preinstall` script.
+
+Fill in the four settings below, and note which file each lives in: the `pnpm-workspace.yaml`-not-`.npmrc` placement is the easiest to get wrong.
+
+<Dropdowns
+  instructions="Fill in the four supply-chain knobs."
+  answers={[
+    { answer: 'minimumReleaseAge', options: ['minimumReleaseAge', 'maxReleaseAge', 'releaseDelay'] },
+    { answer: 'blockExoticSubdeps', options: ['blockExoticSubdeps', 'allowExoticSubdeps', 'registryOnly'] },
+    { answer: 'allowBuilds', options: ['allowBuilds', 'onlyBuiltDependencies', 'buildScripts'] },
+    { answer: '--frozen-lockfile', options: ['--frozen-lockfile', '--no-frozen-lockfile', '--update-lockfile'] },
+  ]}
+>
+```yaml
+# pnpm-workspace.yaml
+___: 1440
+___: true
+___:
+  esbuild: true
+
+# CI command:
+pnpm install ___
+```
+</Dropdowns>
+
+A <Term definition="A file that pins every dependency to an exact resolved version and an integrity hash.">lockfile</Term> pins every dependency to an exact version and integrity hash; <Term definition="The install mode that fails rather than updating the lockfile — the CI-correct mode.">`--frozen-lockfile`</Term> is the CI-correct install mode that fails rather than updating it.
+
+## Catch known vulnerabilities: `pnpm audit`
+
+Everything above stops **novel** attacks: versions nobody has flagged yet, unfamiliar install scripts, drifting resolution.
+`pnpm audit` covers the opposite case, checking your installed versions against a database of published advisories to catch **already-known** vulnerabilities.
+A codebase needs both layers.
+
+- `pnpm audit` checks your tree against the <Term definition="GitHub Security Advisory — the database pnpm now keys audits against.">**GHSA**</Term> database. The older <Term definition="Common Vulnerabilities and Exposures — the legacy public vulnerability ID scheme.">CVE</Term> IDs still exist, but GHSA is what pnpm reads now.
+- `pnpm audit --prod` drops dev-only dependencies, since a high-severity <Term definition="A published report that a specific package version range is vulnerable.">advisory</Term> in a build-time tool shouldn't block a release the way one in a *production* dependency must. The misread runs both ways: waving off a *production* finding "because it's transitive" is exactly what `--prod` exists to stop.
+- `pnpm audit --fix` updates the lockfile toward a non-vulnerable version when one exists.
+
+```bash
+pnpm audit
+pnpm audit --prod
+pnpm audit --fix
+```
+
+:::note
+In pnpm 11, `pnpm audit --fix` also adds each advisory's minimum patched version to `minimumReleaseAgeExclude`, so the fix isn't itself blocked by the 24-hour quarantine.
+:::
+
+The command is the easy part; the senior contribution is the *policy*: **zero high-severity findings in production dependencies** as a release gate, mediums triaged within the sprint, lows tracked.
+Run it locally before you merge; wiring it up as a blocking CI gate comes later.
+
+## Vet a dependency before you add it
+
+No config can make this call: it's the human gate before `pnpm add` runs, because the cheapest supply-chain defense is one fewer dependency.
+
+Before pulling a package in, ask:
+
+1. **Has it shipped a release in the last six months or so?** Abandoned packages are a prime takeover vector: attackers hunt dormant but still-popular namespaces because nobody's home to notice a malicious version.
+2. **Do the download numbers match the reputation?** A "popular" package with oddly low downloads, or a sudden unexplained spike, warrants a second look.
+3. **Is the maintainer responsive?** Triaged issues and recent commits mean someone would notice a hijack and react.
+
+Behind all three sits one fact: every dependency is <Term definition="Every entry point an attacker could exploit. Each dependency you add widens it.">attack surface</Term> *and* maintenance debt.
+So the first question isn't "which package solves this," it's "can I do this with the platform, or a few lines of my own?"
+
+Sort the dependencies below; the middle category, worth a verify first, is the one to develop a feel for.
+
+<Buckets twoCol instructions="Sort each dependency by what you'd do before adding it.">
+  <Bucket name="add" label="Add it" description="Signals all check out" />
+  <Bucket name="investigate" label="Investigate first" description="Could be fine — verify before committing" />
+  <Bucket name="avoid" label="Avoid" description="Clear red flags" />
+
+  <Item bucket="add">12M weekly downloads, last release 3 weeks ago, 40 maintainers, issues triaged</Item>
+  <Item bucket="add">The framework's own first-party package, actively released</Item>
+  <Item bucket="investigate">New package, solves your exact need, 200 downloads, published last week</Item>
+  <Item bucket="investigate">Solid downloads, but the last release was 14 months ago and issues are piling up</Item>
+  <Item bucket="avoid">Last release 2021, one maintainer, name is one character off a popular library</Item>
+  <Item bucket="avoid">5M downloads last week, ~2k the week before, no changelog for the jump</Item>
+</Buckets>
+
+## Update dependencies automatically, merge them manually
+
+Staying patched is itself a security control: outdated dependencies quietly accumulate known vulnerabilities, undoing the posture you just set.
+But the automation that keeps you current must not bypass the human at the gate.
+
+Use <Term definition="A bot that opens dependency-update pull requests, with grouping and scheduling rules.">**Renovate**</Term>, chosen over Dependabot for better grouping and scheduling.
+Batch patch and minor updates into one weekly pull request, and let majors come as individual PRs, since they carry breaking changes a human has to read.
+
+Bot updates land as **pull requests gated by your full CI suite** — tests, `pnpm audit`, `--frozen-lockfile`, the 24-hour quarantine — and are **never auto-merged blindly**.
+Auto-merging every green bot PR re-creates the exact risk these controls exist to manage: a malicious patch riding a clean PR straight to `main`.
+
+One layer deeper is <Term definition="A tool that flags packages by suspicious behavior — a package newly making network calls, reading env, touching the filesystem — rather than by known CVEs.">**Socket**</Term>, with Snyk in the same category: these scan for *behavioral* indicators rather than known advisories, answering a different question — "is this package suddenly doing something it never did?" — and earn their place once a team reaches roughly five engineers.
+
+## The deliverable: your dependency-hygiene report
+
+Every lesson in this chapter ends in one grep-able deliverable; this is the eighth and final one.
+Run it against your own repo, where each item is a single fact, true or false.
+
+<Checklist id="dep-hygiene">
+  <ChecklistItem>`pnpm-lock.yaml` is committed to the repo.</ChecklistItem>
+  <ChecklistItem chip="untested">`minimumReleaseAge` is not zeroed out in `pnpm-workspace.yaml` (the default `1440` is intact); any `minimumReleaseAgeExclude` entry is justified in its PR.</ChecklistItem>
+  <ChecklistItem chip="untested">`blockExoticSubdeps` is left on (not set to `false`).</ChecklistItem>
+  <ChecklistItem chip="untested">The `allowBuilds` map is reviewed: every `true` entry is justified by a real native build step, and `strictDepBuilds` is not disabled.</ChecklistItem>
+  <ChecklistItem>CI runs `pnpm install --frozen-lockfile`.</ChecklistItem>
+  <ChecklistItem>`pnpm audit --prod` is clean (no high-severity), or every finding is triaged.</ChecklistItem>
+  <ChecklistItem chip="untested">`packageManager` is pinned in `package.json` and `only-allow pnpm` runs in `preinstall`.</ChecklistItem>
+  <ChecklistItem chip="untested">Renovate (or Dependabot) is enabled, with auto-merge off for non-trivial updates.</ChecklistItem>
+  <ChecklistItem chip="untested">Any unmaintained or suspicious direct dependency is flagged (the three-question check applied).</ChecklistItem>
+</Checklist>
+
+This completes the eight-control catalog the chapter built, the set the next chapter audits a seeded codebase against.
+
+One consolidation drill before the quiz.
+Match each threat to the control that neutralizes it.
+
+<Matching instructions="Match each threat to the control that neutralizes it.">
+  <Pair>
+    <Fragment slot="left">A malicious version published minutes ago</Fragment>
+    <Fragment slot="right">`minimumReleaseAge` — the 24-hour quarantine</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A transitive dep pulled from a git or tarball URL</Fragment>
+    <Fragment slot="right">`blockExoticSubdeps` — registry-only contract</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A `postinstall` script exfiltrating secrets</Fragment>
+    <Fragment slot="right">`allowBuilds` + `strictDepBuilds` — unreviewed scripts fail the install</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">"Whatever's latest" resolving on a fresh CI machine</Fragment>
+    <Fragment slot="right">Committed lockfile + `--frozen-lockfile`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A known CVE in an installed dependency</Fragment>
+    <Fragment slot="right">`pnpm audit`</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A takeover of an abandoned, still-popular package</Fragment>
+    <Fragment slot="right">The three-question maintained check</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A malicious patch riding a green auto-merge to main</Fragment>
+    <Fragment slot="right">Renovate PRs gated by CI, no blind auto-merge</Fragment>
+  </Pair>
+</Matching>
+
+## External resources
+
+pnpm's documentation is the canonical reference for the exact shape of these settings. The Socket writeup is the forensic account of the attack this lesson opens with, and the OpenSSF guide is the vendor-neutral checklist for vetting dependencies.
+
+<CardGrid>
+  <ExternalResource
+    title="pnpm — Supply chain security"
+    href="https://pnpm.io/supply-chain-security"
+    icon="simple-icons:pnpm"
+    iconColor="#F69220"
+    description="pnpm's official guide to the install-time defenses this lesson configures."
+  />
+  <ExternalResource
+    title="pnpm — Settings reference"
+    href="https://pnpm.io/settings"
+    icon="simple-icons:pnpm"
+    iconColor="#F69220"
+    description="The exact shape of minimumReleaseAge, allowBuilds, blockExoticSubdeps, and more."
+  />
+  <ExternalResource
+    title="Socket — the Qix chalk/debug compromise"
+    href="https://socket.dev/blog/npm-author-qix-compromised-in-major-supply-chain-attack"
+    icon="simple-icons:socket"
+    iconColor="#5B21B6"
+    description="The forensic writeup of the exact phishing-to-install-time attack this lesson is built around."
+  />
+  <ExternalResource
+    title="OpenSSF — npm Best Practices"
+    href="https://openssf.org/blog/2022/09/01/npm-best-practices-for-the-supply-chain/"
+    icon="simple-icons:linuxfoundation"
+    iconColor="#003366"
+    description="A vendor-neutral guide to vetting dependencies and hardening CI against supply-chain risk."
+  />
+</CardGrid>
