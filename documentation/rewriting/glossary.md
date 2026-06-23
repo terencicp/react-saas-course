@@ -2316,3 +2316,13 @@ Next-gate | next-gate | Client check greying out Next so a user can't advance wi
 authedInputAction | authedInputAction(role, schema, fn) | Direct-object sibling of authedAction; takes a plain parsed object (no FormData), re-parses it, runs fn with parsed input plus ctx. | first defined: Chapter 079 L4
 correctness boundary | - | The server-side re-parse that actually guarantees a valid write; distinct from a bypassable client gate. | first defined: Chapter 079 L4
 consumeForceFailure | force-failure (action) | Verification scaffolding: reads-and-clears a per-user force-failure flag so a submit returns the real err() failure shape on demand. | first defined: Chapter 079 L4
+safeLimit | safeLimit(limiter, key) | The one helper holding the fail-open policy: on a Redis outage the limiter throws, it logs and returns a passing verdict so the auth path stays up. | first defined: Chapter 080 L1
+two-message discipline | two messages, one failure two readers | Every error forks at the wrapper into a sanitized user sentence and a rich operator record; never at the UI. | first defined: Chapter 080 L2
+operator (error reader) | the operator | Anyone reading logs/monitoring rather than the UI: on-call engineer, support rep, auditor; gets the fat artifact. | first defined: Chapter 080 L2
+read-aloud test | - | A user message is one a support rep could read aloud verbatim on a call; if it must be translated or leaks, it isn't user-shaped. | first defined: Chapter 080 L2
+redactor | redaction config | The single config stripping known sensitive keys from every operator-side artifact before it's written. | first defined: Chapter 080 L2
+mapError | - | One dispatch (lib/error-mapping.ts) turning any error into { code, userMessage, fieldErrors? }; the single place the split is guaranteed. | first defined: Chapter 080 L2
+error digest (Next.js) | digest (error.tsx) | Stable hash Next.js hands error boundaries after stripping error.message in production; the user-facing join key into Sentry. | first defined: Chapter 080 L2
+six seams | error seam catalog, error surface | The six boundaries (Server Action, route handler, page check, webhook, rate limiter, page boundary) where fail-closed and message-split must land; the app's whole error surface. | first defined: Chapter 080 L3
+error seam | seam (error) | One of the six boundaries owning both error commitments, each with a wrapper and a grep that finds bypasses. | first defined: Chapter 080 L3
+unstable_retry | unstable_retry() | Next.js 16.2+ error-boundary retry running router.refresh() and reset() in a transition, so it recovers a render that failed during a data fetch. | first defined: Chapter 080 L3

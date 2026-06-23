@@ -1,0 +1,407 @@
+---
+title: The six error seams
+tagline: The six boundaries where the fail-closed and two-message rules land, each with the wrapper that owns it and the grep that catches a bypass.
+chapter-id: 80
+course-progress: 0.7423
+rewrites: 2
+sidebar:
+  order: 3
+  label: The six seams
+---
+
+import SixSeamsOverview from '../../../components/lessons/080/3/SixSeamsOverview.astro';
+import DefenseInDepthRings from '../../../components/lessons/080/3/DefenseInDepthRings.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import TextAnswer from '../../../components/exercises/text-answer/TextAnswer.astro';
+import AnswerWhy from '../../../components/exercises/text-answer/AnswerWhy.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You have two error rules.
+**Fail closed:** when a gate can't *prove* a request is allowed, it refuses, and a throw inside the check counts as a refusal, not an accidental yes.
+**Two messages:** every error forks into a sanitized `userMessage` for the person and a rich operator record for the engineer, and that fork happens at the wrapper, never at the screen.
+
+The previous lesson's test, *does this fail closed, and is what the user sees safe to read aloud on a support call?*, judges one path at a time; it can't tell you where all the paths are.
+For that you need every place the two rules have to land.
+
+There are exactly six: wrappers, helpers, and boundaries, each owning both rules, each with a grep pattern that finds the code that slipped past it.
+Learn the six and you have a map of the app's entire error surface.
+
+<SixSeamsOverview />
+
+Each card is a seam. The lesson visits them one at a time, asking the same four questions: where the seam lives, where **fail-closed** lands, where **message-split** lands, and the **audit step** — what to grep for to find the path that skipped the seam, and how to triage the hits.
+Answer the four once and the other five are pattern-matching.
+
+## Seam 1: `authedAction`, the Server Action boundary
+
+We start here because it's the seam you know best: the canonical Server Action wrapper from the organizations work.
+The four answers here are the template for the other five.
+
+**Where it lives.** `authedAction(role, schema, fn)` wraps every Server Action across your `actions.ts` files.
+It returns a `(formData) => Promise<Result<T>>` and hands your `fn` a `ctx` of `{ user, orgId, role, db }`.
+One wrapper covers every action, so the gate logic lives in exactly one place: one place to lint, one name to grep for.
+
+**Where fail-closed lands.** Every exit on a failed gate is a refusal, and the action body never runs unless every gate passed.
+If the schema's `safeParse` fails, the wrapper returns `mapError(input.error)`, a `validation` `Result`.
+If `requireOrgUser()` finds no session or no active org, it *throws*, and that throw flies to the framework's nearest `error.tsx`, so the user gets the boundary, not the resource.
+If `roleAtLeast(role)` sees a role beneath the bar, that's an *expected* refusal, so the wrapper returns `err('forbidden', …)` rather than throwing.
+If your `fn` throws, the wrapper's single `try/catch` returns it as an `internal` `Result`.
+Four mechanisms, one outcome: refuse.
+
+**Where message-split lands.** In that same `try/catch`, which runs the two moves from the previous lesson in order: write the operator record, then produce the user side.
+
+<div data-mark-color="green">
+
+```ts title="lib/authed-action.ts" {2-3}
+} catch (error) {
+  logger.error({ action, userId, orgId, role, input: redact(input), err: error });
+  Sentry.captureException(error);
+  return mapError(error);
+}
+```
+
+</div>
+
+The raw `error.message` reaches the log and Sentry, never the `userMessage`.
+The wrapper applies the split once, for every action, so you never apply it at each one.
+
+**Audit step.** The seam owns both rules *only for the code that goes through it*.
+A Server Action that skips `authedAction` has no gate at all: no role check, no capture, no `mapError`.
+So the finding you hunt for is a <Term definition="The directive that marks a function as a Server Action — callable from the client but executed on the server.">`'use server'`</Term> file that never imports the wrapper.
+
+```bash
+# Server Action files that never route through authedAction
+rg -l "'use server'" --glob '*.ts' | xargs rg --files-without-match 'authedAction'
+```
+
+Then triage every hit.
+The public sign-up action is a legitimate exception: it can't require a logged-in user because it *creates* one, so it runs through a different wrapper with its own enumeration discipline.
+Document it and move on.
+Everything else is a finding, an action with no gate, and the fix is to migrate it onto `authedAction`.
+That distinction, *legitimate exception → document, the rest → migrate*, is the triage rule for every seam.
+
+## Seam 2: `authedRoute`, the route-handler boundary
+
+Seam #2 is seam #1's twin: same gates, different door.
+The action wrapper returns a `Result` for your own UI; the route wrapper returns an HTTP `Response` for a client you don't control.
+
+**Where it lives.** `authedRoute(role, schema, fn)` wraps the handlers in your `route.ts` files just as `authedAction` wraps actions, ending in a `Response` instead of a `Result`.
+
+**Where fail-closed lands.** Same gates as seam #1, but each refusal is now an HTTP status code rather than a `Result` branch:
+
+<div data-mark-color="orange">
+
+```text title="route conventions — enforced status table" {5}
+failure class           status   reason
+─────────────────────   ──────   ─────────────────────────────
+parse failure            422     validation
+no session               401     no identity
+role too low             403     forbidden
+cross-tenant resource    404     not the owner — indistinguishable from "doesn't exist"
+business Result.err      4xx     matching status via problemFrom()
+unexpected throw         500     server bug
+```
+
+</div>
+
+One row earns a second look: a cross-tenant resource, a logged-in user from org A asking for org B's invoice, returns **404**, not 403.
+A 403 ("you may not have this") confirms the resource exists; a 404 says there is nothing here to talk about.
+Returning the same not-found shape whether the row is missing or simply isn't yours denies the attacker the one bit they were fishing for.
+
+**Where message-split lands.** The wrapper writes an <Term definition="RFC 9457, Problem Details for HTTP APIs — the standard JSON shape for an HTTP error body: type, title, status, detail, plus extensions.">RFC 9457</Term> body through a `problem()` helper: `{ type, title, status, detail, fieldErrors? }`.
+`title` is operator-honest but user-safe, `detail` is the sentence the user reads, and `fieldErrors` is the same flat `Record<string, string[]>` shape `flattenError` produces on the action side.
+The operator log captures route, method, and headers, minus `authorization` and `cookie`, plus the parsed input, the `ctx`, and the cause chain.
+
+`problemFrom` is what ties seams #1 and #2 together.
+One business function returns one error; `authedAction` turns it into a `Result`, while `authedRoute` runs `problemFrom(result.error)` to turn that same error into Problem Details.
+The fork to a user-facing artifact happens at whichever wrapper the error flowed through.
+
+**Audit step.** The mirror of seam #1: a `route.ts` that exports an HTTP method but never imports the wrapper.
+
+```bash
+# route.ts files that export a handler but never route through authedRoute
+rg -l 'export (async function|const) (GET|POST|PUT|PATCH|DELETE)' --glob '**/route.ts' \
+  | xargs rg --files-without-match 'authedRoute'
+```
+
+Triage as before.
+Webhook receivers (seam #4, with its own signature verify) and public auth callbacks are legitimate exceptions; document them, and migrate the rest.
+
+## Seam 3: `requireOrgUser()`, the Server Component boundary
+
+A protected Server Component or layout calls `requireOrgUser()` near the top of the segment.
+There is no wrapper object; the helper itself is the seam, and what it teaches is **defense in depth**.
+
+**Where it lives.** A protected `page.tsx` or `layout.tsx` calls `requireOrgUser()` as one of its first lines.
+
+**Where fail-closed lands.** The helper throws on no session or no active org, and the nearest `error.tsx` catches the throw and renders the fallback.
+You write no try/catch: you let the throw reach the boundary, so the user gets the boundary, never the page body.
+
+**Where message-split lands.** Structurally, for free.
+`error.tsx` renders generic copy (seam #6 owns that detail) and Sentry capture happens inside the boundary's effect, and the framework redacts the underlying message before the boundary renders.
+
+So if the gate already runs at the perimeter, where the proxy bounces signed-out users before the page loads, why re-check inside the component?
+Because the two checks are not the same check, and only one of them authorizes.
+
+<DefenseInDepthRings />
+
+The outer ring is <Term definition="Next.js 16's named middleware file — it runs at the edge before a request reaches your page.">`proxy.ts`</Term>.
+It does one cheap thing: confirm a session cookie is present and bounce signed-out users to `/sign-in`.
+It never asks whether this user still belongs to this org or whether their role is high enough, so it does not authorize.
+The inner ring, `requireOrgUser()`, re-checks against the database and catches the three cases above that the proxy structurally cannot.
+Both rings run on every protected page, but only the inner one authorizes, because a present cookie is not a current membership.
+
+**Audit step.** Find protected Server Components and layouts that read tenant-scoped data without calling `requireOrgUser()` (or its equivalent) at the top.
+Each hit leans on the outer ring alone, a present cookie and an unverified membership, and that's a finding.
+
+## Seam 4: the webhook receiver
+
+Seam #4 changes who the "user" is.
+Every other seam serves a browser; this one serves a *machine* such as Stripe or Resend.
+It's also the densest: the request walks through several gated layers in a fixed, load-bearing order.
+
+The full receiver gets built later, in the billing and email work, against fixed contracts: verify on the raw body before you parse, compare the signature in constant time, dedup through a `processed_events(provider, event_id)` ledger, and map each failure to a specific status.
+
+**Where it lives.** Each receiver lives in `app/api/webhooks/*`, one for Stripe and one for Resend.
+They deliberately skip `authedRoute`: their question isn't "prove a logged-in user" but "prove this request came from the provider."
+A different question gets a different wrapper: verify-then-dedup.
+
+**Where fail-closed lands.** In every layer, in order.
+The bug *is* a wrong ordering, so place the steps yourself.
+
+<Sequence instructions="Order the layers of a webhook receiver. Two orderings are load-bearing: verify must come before any parse, and the dedup INSERT must come before the business work.">
+
+```ts title="app/api/webhooks/stripe/route.ts"
+export async function POST(req: Request) {
+  // the five layers below run in a fixed order
+}
+```
+
+  <Step>Read the raw request body (no JSON parse yet)</Step>
+  <Step>Verify the signature against the raw body, in constant time</Step>
+  <Step>`INSERT` into the `processed_events` ledger (`ON CONFLICT DO NOTHING`)</Step>
+  <Step>Run the business work inside the transaction</Step>
+  <Step>Respond with the status code for the outcome</Step>
+</Sequence>
+
+Each layer is a refusal with its own status.
+A failed raw-body read answers **400**; a signature header that won't parse answers **400** and logs the malformed header.
+A failed constant-time <Term definition="Hash-based message authentication code — a signature computed from the payload and a shared secret; recomputing it and comparing proves the sender knew the secret.">HMAC</Term> compare answers **401**, and because the compare is constant-time it leaks no timing.
+If the HMAC library *throws*, it answers **500**; the provider retries, which still refuses this attempt.
+The one exception is the dedup hit: when `INSERT ... ON CONFLICT DO NOTHING` reports the event was already processed, the receiver answers **200**.
+That 200 is not a refusal.
+It's <Term definition="A request you can safely send more than once: replaying it produces the same result as sending it once.">idempotent</Term> success, the one outcome here that looks like a refusal but isn't.
+Finally, if the business work throws inside the transaction, the receiver answers **500** and the provider retries; on the retry the dedup constraint catches the now-duplicate event, so the work never runs twice.
+
+That last step is why the order matters.
+The receiver fails closed aggressively, answering 500 and hanging up the moment anything is uncertain, and that is only *safe* because the dedup ledger makes the provider's retry idempotent.
+Refuse aggressively, retry safely: the two compose only because the ledger sits before the business work.
+
+**Where message-split lands.** The "user" is a machine, so the user-facing artifact is mostly the status code plus a minimal Problem Details body of `{ type, title, status }`.
+The operator record carries everything: the parsed `Stripe-Signature` or <Term definition="Resend's webhook-signing service; verifies a SHA-256 signature and enforces a short replay window.">Svix</Term> headers, the timestamp delta, the event id and type, the resolved tenant, and the cause chain on a throw.
+
+**Audit step.** Visit each receiver and confirm the shape: raw body read *before* any JSON parse, constant-time signature compare, dedup `INSERT` *before* the business work, business work inside the transaction with the dedup, and status codes matching the failure class.
+The Resend bounce-and-complaint receiver is the same shape with a Svix SHA-256 verify and a five-minute replay window.
+Three findings to hunt for, all real bugs people ship:
+
+- A receiver that **JSON-parses before it verifies**.
+It's processing an unauthenticated payload, so it accepts forged events.
+This is the canonical webhook bug, the exact misordering the exercise drilled.
+- A receiver that **catches and 200s** on a verification failure: fail-open dressed up as "don't make the provider retry."
+- A receiver that **echoes the full provider payload** in its response body, a leak the provider never asked for.
+
+## Seam 5: the rate-limiter call, the documented fail-open carve-out
+
+Fail-closed is this chapter's default, and this seam is the single deliberate place that inverts it.
+
+**Where it lives.** Every rate-limit decision goes through `safeLimit(limiter, key)` in `lib/rate-limit.ts`, so the carve-out exists in exactly one place.
+That is what makes the fail-open defensible: a documented carve-out in one helper is an architectural decision, while the same behavior copy-pasted across call sites is a vulnerability.
+
+**Where fail-closed lands, and why it deliberately doesn't.** `safeLimit` wraps the `limit()` call, catches a throw, logs it, and returns `{ success: true }`, so an unreachable Redis lets the request through.
+
+<div data-mark-color="orange">
+
+```ts title="lib/rate-limit.ts" {5}
+try {
+  return await limiter.limit(key);
+} catch (error) {
+  logger.error({ event: 'rate_limit_unavailable', limiter, key, err: error });
+  return { success: true };
+}
+```
+
+</div>
+
+A Redis outage that locks every user out of their own account is a far worse incident than a brief window where the abuse limiter is down, so availability failures fail open on purpose.
+The boundary is narrow, though: fail-open is the policy only for Redis being unavailable.
+Actual quota exhaustion, where the user hit the limit and Redis answered cleanly with "denied," still fails closed and returns the 429.
+The carve-out is "I couldn't reach the limiter," not "the limiter said no."
+Even the availability policy isn't universal: a limiter guarding admin actions or a billing path the customer can't retry might flip back to fail-closed, where the cost of abuse outweighs the cost of a lockout.
+That policy lives in the helper too, never at the call sites.
+
+**Where message-split lands.** The user-facing 429 body is the same opaque message no matter which gate tripped: the IP limiter and the per-email limiter both produce the identical `rateLimited(...)` → `err('rate_limited', 'Too many attempts. Please try again later.')`.
+A message that said "*your email* is being limited" would itself be a signal, confirming the email belongs to an account.
+The route twin, `rateLimitedResponse(result)`, returns the 429, and the structured log carries the full diagnosis for the operator: which gate, which key, remaining, and reset.
+
+**Audit step.** Grep for `.limit(` calls that don't go through `safeLimit`.
+A direct `limiter.limit()` in a handler has bypassed the documented policy: it fails however the limiter happens to throw, with no logged event and no deliberate decision behind it, and that's a finding.
+Centralizing the carve-out is what makes it auditable: one helper to read for the policy, one pattern to grep for the bypass.
+
+The fail-open default is the most over-generalized idea in the chapter, so test it on a fresh case rather than the auth example you've already seen.
+
+<MultipleChoice>
+  A teammate adds an admin-only **bulk-delete** endpoint, rate-limits it, and asks how its limiter should behave when Redis is unreachable. They point at `safeLimit` returning `{ success: true }` on the auth path as the precedent to copy. What's the right call for *this* limiter?
+
+  <McqChoice correct>Don't copy the auth-path default here — a limiter guarding mass deletion is exactly the kind of path that flips back to fail-closed, since letting abuse through during the outage is worse than briefly blocking deletes; encode that as a policy inside the helper.</McqChoice>
+  <McqChoice>Copy the auth-path default — once one limiter fails open, every limiter should fail open too, so the app behaves the same way everywhere.</McqChoice>
+  <McqChoice>Fail open, but expire the allowance: let the bulk delete through only if the admin re-issues the request inside a five-minute window.</McqChoice>
+  <McqChoice>Keep it fail-closed, and do it by wrapping the endpoint's `limit()` call in its own `try/catch` that answers a 503 when Redis throws.</McqChoice>
+
+  <McqWhy>Fail-*closed* is the chapter's default; the auth-path fail-open is a deliberate carve-out scoped to *Redis being unavailable*, justified because a lockout there is worse than a brief abuse window. A destructive admin path inverts that trade — abuse during the outage is the bigger incident — so it flips the default back. "Always match the auth path" is the over-generalization lesson 1 warned against; the five-minute window is an invented mechanism borrowed from the webhook replay rule; and a `try/catch` at the call site has the right instinct but the wrong place — every fail-open or fail-closed decision lives in `safeLimit`, never scattered across handlers.</McqWhy>
+</MultipleChoice>
+
+## Seam 6: `error.tsx` and `global-error.tsx`, the page boundary
+
+The last seam is the *catcher*: every uncaught throw from a Server Action gate (#1) or a page check (#3) lands here.
+
+**Where it lives.** An `error.tsx` sits at any route segment that renders sensitive data; a `global-error.tsx` sits at the root for what `error.tsx` can't catch, above all the root layout itself throwing.
+Both are `'use client'` components, owned by the framework's boundary mechanism rather than called by your code.
+
+**Where fail-closed lands.** The framework catches the throw, and in *production builds* Next.js redacts `error.message` and ships a stable <Term definition="An opaque hash Next.js generates for a server error; it's safe to show because it carries no detail, only a value you can correlate.">`digest`</Term> in its place.
+As everywhere, the user gets the boundary, never the resource.
+`global-error.tsx` is the last line of defense, so when it fires you assume nothing above it survived, which is why it ships its own `<html>` and `<body>`.
+
+<VideoCallout videoId="ywUDMEVR3Mg" videoTitle="Next.js 15 Tutorial - Handling Global Errors">
+  Codevolution builds the `global-error.tsx` this seam ends on: why `error.tsx` can't catch a root-layout throw, why the file ships its own `<html>` and `<body>`, and why it only renders in a production build (5 min).
+</VideoCallout>
+
+**Where message-split lands.** The boundary renders generic copy and captures detail in a `useEffect`.
+The `digest` is the one operator-side detail the user may see: opaque, so it leaks nothing, but joinable, so the user quotes it to support and the operator looks it up in Sentry.
+What matters most is an *absence*: `error.message` is never read in the JSX.
+
+<div data-mark-color="green">
+
+```tsx title="app/(app)/dashboard/error.tsx" {1}
+{error.digest && <p>Reference: {error.digest}</p>}
+{/* never render error.message — it leaks server internals in prod */}
+```
+
+</div>
+
+Retry uses `unstable_retry()` (Next.js 16.2+), not the bare `reset()` you might reach for.
+`unstable_retry` runs `router.refresh()` and `reset()` together in a transition, so it can recover a render that failed *during a data fetch*, which is most of them.
+A bare `reset()` re-runs the render but not the fetch, so it just fails again.
+
+**Audit step.** Confirm four things: every sensitive segment has an `error.tsx`, the root has a `global-error.tsx`, *none* render `error.message`, and each calls Sentry capture.
+Capture can run through the integration automatically or with an explicit `captureException`; the explicit call is the anchor you want in `global-error.tsx` especially, since by the time it fires the render has already failed once.
+The findings to look for: a segment with no boundary (it falls through to a parent, usually fine but worth confirming); a boundary that surfaces the message; a `global-error.tsx` with no Sentry capture; or the design-level leak, an `error.tsx` with a **"Show details" toggle**, a leak vector by intent.
+
+```bash
+# any boundary that surfaces the raw message, or a "show details" toggle
+rg 'error\.message' --glob '**/{error,global-error}.tsx'
+rg -i 'show details' --glob '**/{error,global-error}.tsx'
+```
+
+`notFound()` and `redirect()` are *not errors*: they're framework control-flow primitives implemented as throws, and `error.tsx` does not catch them, `not-found.tsx` and the redirect handler do.
+Both rules still hold: fail-closed, because a thrown `notFound()` aborts the render and the user doesn't get the resource; message-split, because the not-found page renders generic copy without leaking which id was requested.
+The bug to watch for is a boundary that *catches and swallows* a `notFound()`, a category error.
+Re-throw it.
+
+## One shared `code` set across the seams
+
+Every error from any seam carries a stable `code` from seven canonical values, `validation | conflict | not_found | unauthorized | forbidden | rate_limited | internal`, or, on the route and webhook seams, the RFC 9457 `type` that mirrors it.
+That `code` is the contract between layers: every seam reaches into the same enumerated set rather than inventing its own.
+
+The analytics layer groups error events by `code`, so a seam that quietly returns a free-form `code: 'something_failed'` splits one bar into a long tail of one-off strings nobody can chart.
+The six seams sum to one error picture only if they share the enumeration, so a new `code` is a deliberate addition to the set, not a string you type at a call site.
+
+Here the previous lesson's split is easiest to blur: `code` is the machine identifier analytics groups on, `userMessage` is the human string you render.
+Never render the `code`, and never group on the `userMessage`.
+
+## Every error path is one of these six
+
+When you add a feature and ask where its errors go, the answer is one of six shapes: Server Action, route handler, page check, webhook receiver, rate limiter, page boundary.
+The two commitments come along for free, because the seam already owns them.
+
+When a genuinely new shape shows up, such as a hand-rolled API client doing raw `fetch` or a receiver for a custom protocol, don't let it drift in as one more un-audited path.
+Add a seventh seam on purpose: give it a wrapper, document where its fail-closed and message-split land, and write the grep that finds its bypasses.
+The catalog is the app's architectural error surface, and growing it by accident is how that surface rots.
+
+Three habits protect the catalog, and they are the ones to watch for on review:
+
+- A seam "almost like `authedAction` but with one extra parameter" must **extend** the wrapper, never **fork** it. A parallel wrapper drifts, and the grep for the original never finds the copy, so "one place to lint" silently becomes two, one of which nobody watches.
+- A page check inside a **Client Component** bypasses the Server Component perimeter entirely. The client can't be trusted to gate anything; authorization belongs on the server seam.
+- A stray `console.log(error)` leaks into a production branch. Use the structured logger's `debug` level instead.
+
+Now consolidate: read each finding and decide which of the two rules it breaks.
+
+<Buckets twoCol instructions="Each chip is a finding from an audit pass. Sort it by which of the two commitments it breaks — does the gate let something through that should have been refused, or does the wrong audience see the wrong thing?">
+  <Bucket name="fail-closed" label="Fail-closed violation" description="A gate fails (or is absent) but the request proceeds anyway" />
+  <Bucket name="leak" label="Message-split / leak violation" description="The user sees something they shouldn't, or the operator side leaks" />
+
+  <Item bucket="fail-closed">A `'use server'` action that never imports `authedAction`</Item>
+  <Item bucket="fail-closed">JSON-parsing the webhook body *before* the HMAC compare</Item>
+  <Item bucket="fail-closed">A direct `limiter.limit()` call in a handler, not via `safeLimit`</Item>
+  <Item bucket="fail-closed">A webhook receiver that catches a bad signature and responds `200`</Item>
+  <Item bucket="fail-closed">A protected page that reads tenant data but never calls `requireOrgUser()`</Item>
+  <Item bucket="fail-closed">A `requireRole` that returns `false` when its membership query throws</Item>
+
+  <Item bucket="leak">A `429` body that says "*your email* is being rate-limited"</Item>
+  <Item bucket="leak">An `error.tsx` that renders `{error.message}`</Item>
+  <Item bucket="leak">A cross-tenant `/invoices/[id]` returning `403` instead of `404`</Item>
+  <Item bucket="leak">A duplicate-key DB error surfaced to the user as `invoices_org_id_slug_key`</Item>
+  <Item bucket="leak">An `error.tsx` with a "Show details" toggle revealing the stack</Item>
+</Buckets>
+
+Now the real test of the map: reconstruct a seam from memory. Take one seam and write its four facts.
+
+<TextAnswer
+  rubric="Grade on accuracy of seam location and rule landing, NOT prose quality. The assigned seam is the route-handler seam. A passing answer must hit all four facts: (1) it is owned by the authedRoute(role, schema, fn) wrapper around handlers in route.ts files; (2) fail-closed lands as a refusal mapped to an HTTP status code — gate failures never let the handler body run (e.g. 401 no session, 403 role too low, 404 cross-tenant, 422 parse fail, 500 unexpected throw); (3) message-split lands in the wrapper, which captures the rich operator record to the log/Sentry while the caller only gets a sanitized RFC 9457 Problem Details body via problem()/problemFrom(); (4) the bypass grep finds a route.ts that exports an HTTP method handler (GET/POST/PUT/PATCH/DELETE) but never imports authedRoute. Missing the route.ts / authedRoute location, claiming a gate failure still runs the body, claiming the raw error reaches the caller, or omitting the grep are each failing gaps."
+  keywords={["authedRoute", "route.ts", "Problem Details", "problemFrom", "problem(", "status code", "HTTP status", "404", "401", "403", "GET|POST", "without authedRoute", "doesn't import authedRoute", "missing authedRoute", "Response"]}
+  lines={7}
+  placeholder="Write the four facts for the route-handler seam…"
+>
+
+Your assigned seam is **the route-handler boundary** (seam #2). From memory — without scrolling back up — write its **four facts** in your own words:
+
+1. the wrapper (and the files) that owns it,
+2. where **fail-closed** lands,
+3. where **message-split** lands, and
+4. the **grep** that finds a handler which skipped the seam.
+
+<AnswerWhy>The route-handler seam is owned by **`authedRoute(role, schema, fn)`**, the wrapper around the handlers in your **`route.ts`** files — the twin of `authedAction`, but its framework artifact is an HTTP **`Response`**, not a `Result`. **Fail-closed** lands as a refusal mapped to a status code: parse fail → 422, no session → 401, role too low → 403, cross-tenant resource → 404 (indistinguishable from "doesn't exist"), unexpected throw → 500 — and on any failed gate the handler body never runs. **Message-split** lands in the wrapper too: it captures the rich operator record (route, method, headers minus `authorization`/`cookie`, input, ctx, cause chain) to the log and Sentry, while the caller gets only a sanitized **RFC 9457 Problem Details** body — `{ type, title, status, detail, fieldErrors? }` via `problem()`, or `problemFrom(result.error)` for a business error. The bypass **grep** lists `route.ts` files that export an HTTP method (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`) but never import `authedRoute` — e.g. `rg -l 'export (async )?function (GET|POST|PUT|PATCH|DELETE)' --glob '**/route.ts' | xargs rg -L 'authedRoute'` — and each non-exception hit is a handler with no gate to migrate.</AnswerWhy>
+
+</TextAnswer>
+
+These six are the lens the next chapters reuse, for the security baseline, the audit project, observability, and CI lint rules.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Next.js — Error Handling"
+    href="https://nextjs.org/docs/app/getting-started/error-handling"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The framework source for seam #6 — error.tsx, global-error, the digest, and unstable_retry."
+  />
+  <ExternalResource
+    title="RFC 9457 — Problem Details for HTTP APIs"
+    href="https://www.rfc-editor.org/rfc/rfc9457.html"
+    icon="lucide:scroll-text"
+    iconColor="#0F2B46"
+    description="The spec behind the route and webhook seams' error body: type, title, status, detail."
+  />
+</CardGrid>

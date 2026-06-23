@@ -689,7 +689,7 @@
 ### Chapter 080 — Error discipline
 - 1 Refuse by default (Every gate that controls access — authorization, tenancy, paywall, signature verify — treats an exception inside the check as a refusal, with the throw-and-catch structure that makes fail-open hard to write.)
 - 2 Two audiences, two messages (Every error splits into a sanitized user string (no IDs, no stacks, no constraint names) and a fully-instrumented operator record (cause chain, ctx, redacted input), diverging at the wrapper and never at the UI.)
-- 3 Walking the six error seams (A seam-by-seam audit of `authedAction`, `authedRoute`, page-level `requireOrgUser`, the webhook receiver, the rate limiter, and the `error.tsx` boundaries, naming where each commitment lands and what to grep for to catch bypasses.)
+- 3 The six seams (A seam-by-seam audit of `authedAction`, `authedRoute`, page-level `requireOrgUser`, the webhook receiver, the rate limiter, and the `error.tsx` boundaries, naming where each commitment lands and what to grep for to catch bypasses.)
 - 4 Quiz
 
 ### Chapter 081 — The security baseline
