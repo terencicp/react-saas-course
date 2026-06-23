@@ -2211,3 +2211,25 @@ in-band redirect | - | A Server Action mutates, invalidates, then redirects in o
 fan-out (invalidation) | invalidation fan-out | Firing one narrow tag per cached read a single mutation changed, so no affected read goes silently stale. | first defined: Chapter 072 L2
 multi-recipient invalidation | multi-recipient pattern | One action fires tags scoping several people's data, since who triggered a change and whose data changed are different questions. | first defined: Chapter 072 L2
 'max' (revalidateTag profile) | max profile | Recommended revalidateTag second arg; marks the tag stale for plain stale-while-revalidate on the next visit. | first defined: Chapter 073 L4
+NAT | Network Address Translation | Many devices on a private network share one public IP; to the outside hundreds of users look like one address. | first defined: Chapter 074 L1
+WAF | Web Application Firewall | Edge filter inspecting each request by IP, path, headers; blocks or logs before it reaches your code. | first defined: Chapter 074 L1
+edge (network) | network edge | CDN/proxy tier running before your app function, geographically close to the user. | first defined: Chapter 074 L1
+TTL | time-to-live | Automatic expiry on a stored key; when it elapses the key vanishes, which resets a rate-limit counter. | first defined: Chapter 074 L1
+Redis | - | In-memory key-value store; very fast reads/writes, keys can carry a TTL; holds the per-key counters. | first defined: Chapter 074 L1
+Upstash Redis | Upstash | Serverless HTTP/REST-accessible managed Redis; works in edge runtimes, scales to zero, bills per request. | first defined: Chapter 074 L1
+scales to zero | scale to zero | No servers running and no cost when idle; pay per request, not per hour of uptime. | first defined: Chapter 074 L1
+denial-of-service | DoS | Making a system unavailable to legitimate users; here, locking a victim out via a per-email limit. | first defined: Chapter 074 L1
+@upstash/ratelimit | - | Rate-limiting library using @upstash/redis under the hood; the application-layer limiter. | first defined: Chapter 074 L1
+@upstash/redis | - | HTTP/REST Redis client library you call from your code. | first defined: Chapter 074 L1
+edge controls | edge layer | Rate-limit filters at the edge (Vercel WAF) seeing IP/path/headers, before app code. | first defined: Chapter 074 L1
+application controls | application limiter | @upstash/ratelimit inside Server Actions/route handlers, after parse and auth; sees email/user/org. | first defined: Chapter 074 L1
+connectionless | - | Reached over stateless HTTP requests, not a long-lived socket; nothing to open, pool, or close. | first defined: Chapter 074 L2
+sliding window | Ratelimit.slidingWindow | Rate-limit algorithm weighting count across current and previous window; smoothest cap, the default. | first defined: Chapter 074 L2
+token bucket | Ratelimit.tokenBucket | Rate-limit algorithm: a refilling bucket of tokens, one spent per request; allows bursts, caps sustained rate. | first defined: Chapter 074 L2
+fixed window | Ratelimit.fixedWindow | Rate-limit algorithm: one counter per clock-aligned window, reset on the boundary; cheapest, allows boundary slop. | first defined: Chapter 074 L2
+Lua | - | Redis's server-side scripting language; a script runs as one atomic unit. | first defined: Chapter 074 L2
+hot invocation | warm instance | A serverless instance kept hot from a recent request; module-scope objects and their caches survive and get reused. | first defined: Chapter 074 L2
+delta-seconds | - | A count of seconds from now until an event; a relative duration, not an absolute timestamp. | first defined: Chapter 074 L2
+p50 | median latency | The median latency; half of requests are faster. | first defined: Chapter 074 L2
+lockout vector | - | Denying a victim access to their own account by tripping a limit keyed on the victim's identifier; the defense becomes the attack. | first defined: Chapter 074 L3
+dual-keying rule | dual key, dual gate | Run a per-IP and a per-victim-identifier gate independently and require a request to clear both; catches single-source floods and distributed campaigns without enabling lockout. | first defined: Chapter 074 L3

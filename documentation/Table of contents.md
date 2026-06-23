@@ -643,7 +643,7 @@
 ### Chapter 074 — Rate limiting with Upstash Redis
 - 1 Two layers: edge WAF and application limiter (Teaches the layering of Vercel WAF (per-IP edge controls) and `@upstash/ratelimit` (per-key application controls), the public-URL-with-auth trigger that makes Upstash non-negotiable, why Upstash Redis is the 2026 default, and the fail-open-on-auth policy.)
 - 2 The @upstash/ratelimit API surface (Teaches the connectionless `Redis.fromEnv()` client, the module-scope `Ratelimit` declaration with prefix and analytics, the three algorithms (sliding window default, token bucket, fixed window), the `limit(key)` return shape, key design, and the `pending` analytics flush via `waitUntil`.)
-- 3 Dual-keying the auth endpoints (Teaches the three module-scope limiters for sign-in, sign-up, and password reset, the per-IP-and-per-email dual-keying rule that defeats credential stuffing without lockout, the gate-first-work-second seam inside the action, the RFC-shape `RateLimit-*` headers, the user-safe 429 body, and the fail-open `safeLimit` wrapper.)
+- 3 Rate-limiting the auth endpoints (Teaches the three module-scope limiters for sign-in, sign-up, and password reset, the per-IP-and-per-email dual-keying rule that defeats credential stuffing without lockout, the gate-first-work-second seam inside the action, the RFC-shape `RateLimit-*` headers, the user-safe 429 body, and the fail-open `safeLimit` wrapper.)
 - 4 Quiz
 
 ### Chapter 075 — Project: Upstash rate limits on the auth surface
