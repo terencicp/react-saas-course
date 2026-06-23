@@ -40,7 +40,7 @@ Rename the chapter folder name using the new title.
 
 ## Step 5 - Fix inbound links
 
-Skip this step in Blitz mode.
+Skip this step in Blitz mode, or if no chapter folder or files has been renamed.
 
 Renaming the chapter folder in step 4 changed the chapter slug shared by every lesson, and any lesson a rewriter reported renaming in step 3 changed its own slug; links pointing to the old URLs from across the course are now broken.
 Skip the rest of this step when nothing was renamed.
