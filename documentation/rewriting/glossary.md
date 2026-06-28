@@ -2435,3 +2435,55 @@ round (Temporal) | round | Snaps a whole value to a grid via smallestUnit, round
 roundingMode | - | round option choosing how to break ties and which way to round: floor, ceil, trunc, halfExpand. | first defined: Chapter 083 L5
 compare (Temporal) | Temporal.compare | Static per-type method returning -1/0/1 for sort; equals/before/after are the boolean instance forms. | first defined: Chapter 083 L5
 ISO 8601 duration string | P grammar | Text form of a Duration: P30D is 30 days, P1M one month, PT12H twelve hours; the wire/DB form of a span. | first defined: Chapter 083 L5
+next-intl | - | The 2026 Next.js i18n library: t() function, JSON catalog format, App Router wiring. | first defined: Chapter 084 L1
+translation key | i18n key, key | Stable dot-path string code holds (inbox.greeting); resolves to per-language text. | first defined: Chapter 084 L1
+catalog (i18n) | message catalog | Per-language JSON file holding the actual text, keyed by the same string code holds. | first defined: Chapter 084 L1
+key namespace (i18n) | namespace | Top-level segment of a key grouping strings by feature (invoice, auth). | first defined: Chapter 084 L1
+leaf (i18n key) | - | Final key segment naming the string's role (title, cta), not its English words. | first defined: Chapter 084 L1
+named placeholder | named slot | A slot identified by name ({count}, {name}) the translator can reorder and the engineer fills. | first defined: Chapter 084 L1
+positional placeholder | - | A slot identified by argument order (%s, {0}) rather than name; can't be reordered or renamed in translation. | first defined: Chapter 084 L1
+wire format | - | The shared format two parties exchange data through; here the JSON catalog between engineer and translator. | first defined: Chapter 084 L1
+ICU MessageFormat | - | Unicode-standard syntax inside a catalog entry for plurals, gendered forms, and more. | first defined: Chapter 084 L1
+TMS | Translation Management System | SaaS where translators work, syncing translations back to the catalog (Lokalise, Crowdin, Tolgee, Phrase). | first defined: Chapter 084 L1
+source language | i18n fallback language | The complete catalog every key must have (en-US here); other languages fall back to it per missing key. | first defined: Chapter 084 L1
+per-key fallback | - | When a language lacks a key, rendering the source-language string for that key only, not the whole file. | first defined: Chapter 084 L1
+t.rich | - | next-intl call rendering a catalog string with inline tags to real JSX, the component supplied from code. | first defined: Chapter 084 L1
+International Components for Unicode | ICU | Reference C/Java implementation whose message syntax the i18n ecosystem adopted. | first defined: Chapter 084 L2
+CLDR | Unicode Common Locale Data Repository | Open dataset of per-language formatting and grammar rules every Intl formatter and ICU implementation reads. | first defined: Chapter 084 L2
+plural | ICU plural | ICU selector keyword branching a cardinal count into the locale's plural categories. | first defined: Chapter 084 L2
+plural categories | - | CLDR's per-language buckets (zero one two few many other) deciding which numbers take which grammatical form. | first defined: Chapter 084 L2
+cardinal | - | A plain counting number (1, 2, 3); what the plural keyword branches on. | first defined: Chapter 084 L2
+ordinal | - | A position number (1st, 2nd, 3rd); branches on a different CLDR rule set than cardinals. | first defined: Chapter 084 L2
+selectordinal | - | ICU selector keyword branching an ordinal on CLDR's ordinal rules. | first defined: Chapter 084 L2
+select (ICU) | - | ICU selector keyword branching on a literal string value (gender, role, type) with a mandatory other. | first defined: Chapter 084 L2
+# token (ICU) | - | Inside a plural branch, the selector value rendered as a locale-aware number; distinct from re-interpolating {count}. | first defined: Chapter 084 L2
+Intl.PluralRules | - | Native browser API mapping a number to its CLDR plural category for a locale. | first defined: Chapter 084 L2
+MessageFormat 2 | MF2 | Next version of ICU message syntax with explicit input/local/match declarations; standardizing as of 2026. | first defined: Chapter 084 L2
+Intl.* family | Intl namespace | Built-in locale formatters (NumberFormat, DateTimeFormat, RelativeTimeFormat, Collator, ListFormat, DisplayNames...); construct once, .format(value). | first defined: Chapter 084 L3
+Intl.DateTimeFormat | - | Locale+timeZone date/time formatter; accepts Temporal types but throws TypeError on ZonedDateTime. | first defined: Chapter 084 L3
+Intl.RelativeTimeFormat | - | Locale formatter for "3 days ago"/"in 3 days" from a signed number and one unit. | first defined: Chapter 084 L3
+Intl.Collator | - | Locale-aware string comparator; .compare plugs into Array.sort, with numeric/sensitivity/usage options. | first defined: Chapter 084 L3
+Intl.ListFormat | - | Locale-aware joiner for lists (conjunction/disjunction/unit); replaces array.join(', '). | first defined: Chapter 084 L3
+Intl.DisplayNames | - | Locale-aware names for languages, regions, currencies; .of(code) returns the display string. | first defined: Chapter 084 L3
+BCP 47 | language tag, RFC 5646 | IETF language tag (language-REGION, e.g. en-US); the region subtag distinguishes en-US from en-GB. | first defined: Chapter 084 L3
+locale resolution chain | resolution chain | Fixed-order check (URL prefix, profile, cookie, Accept-Language best-match, default) picking one locale per request; first hit wins. | first defined: Chapter 084 L4
+Accept-Language | - | Request header carrying the browser's ranked BCP 47 tags with q-values; a hint, not the truth. | first defined: Chapter 084 L4
+q-value | quality value | Weight 0-1 on each Accept-Language tag; higher ranks higher. | first defined: Chapter 084 L4
+RFC 4647 | - | IETF spec for matching a requested tag against available ones; Lookup (single best) vs Filter (all). | first defined: Chapter 084 L4
+Lookup (RFC 4647) | - | Matching strategy returning the single best tag, getting less specific (strip subtag) until a hit, else default. | first defined: Chapter 084 L4
+best fit | - | Distance-based, region-aware locale match; match() default, always does at least as much as Lookup. | first defined: Chapter 084 L4
+ponyfill | - | A polyfill imported and called by name rather than patching globals; opt-in. | first defined: Chapter 084 L4
+@formatjs/intl-localematcher | match() | Ponyfill exposing match(requested, available, default); best-matches tags, does not parse Accept-Language. | first defined: Chapter 084 L4
+negotiator | Negotiator | Package parsing a raw Accept-Language header into ranked tags; pairs with match(). | first defined: Chapter 084 L4
+TC39 Stage 1 | - | Earliest formal TC39 proposal stage: worth exploring, not shippable. | first defined: Chapter 084 L4
+NEXT_LOCALE | locale cookie | Cookie holding an anonymous visitor's switcher choice; written only on a genuine override, session-scoped by default. | first defined: Chapter 084 L4
+Content-Language | - | Response header naming the locale of the returned content; crawlers and proxies read it. | first defined: Chapter 084 L4
+middleware | - | Code that runs before a route renders; in Next.js 16 it lives in proxy.ts. | first defined: Chapter 084 L5
+static rendering | static render | HTML built once at build time and served from cache, not rebuilt per request. | first defined: Chapter 084 L5
+matcher (proxy) | proxy matcher | Path pattern (negative-lookahead regex) deciding which requests proxy.ts runs on; excludes API routes, framework internals, and file extensions. | first defined: Chapter 084 L5
+hreflang | hreflang alternate | HTML link annotation declaring a page's language/region alternates; clusters same-content variants so search engines rank the right locale and pool authority. | first defined: Chapter 084 L6
+SERP | search engine results page | The list of results a search engine shows for a query. | first defined: Chapter 084 L6
+x-default | - | Pseudo-locale hreflang entry naming the fallback URL for users whose language matches none of the declared alternates; pointed at the default locale. | first defined: Chapter 084 L6
+self-canonical | - | Each locale variant declaring its own localized URL as canonical, not the default-locale original; the rule that keeps translations indexable. | first defined: Chapter 084 L6
+sitemap index | - | Root sitemap.xml that lists no URLs itself but points at child sitemaps, often one per locale; a scale option above a single sitemap.ts. | first defined: Chapter 084 L6
+noindex | robots index:false | Per-page directive (metadata.robots index:false) telling Google to crawl but not index/rank a page; distinct from robots.txt, which blocks crawling. | first defined: Chapter 084 L6

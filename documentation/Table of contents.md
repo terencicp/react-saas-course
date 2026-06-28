@@ -732,7 +732,7 @@
 - 2 ICU MessageFormat: plurals, select, gendered forms (ICU `plural` with CLDR categories and exact-match overrides, `selectordinal` for ordinals, `select` for free enums, and nested plural-inside-select for gendered counts.)
 - 3 The Intl.* formatter family (The daily-reach `Intl.*` formatters — `NumberFormat`, `DateTimeFormat` (Temporal-native, mandatory `timeZone`), `RelativeTimeFormat`, `Collator`, plus `ListFormat` / `DisplayNames` — and the construct-once-reuse rule.)
 - 4 The locale resolution chain (The five-input negotiation order (URL prefix, profile, cookie, `Accept-Language` best-match, default), BCP 47 `Lookup` via `@formatjs/intl-localematcher`, and `users.locale` paired with `users.timeZone`.)
-- 5 Wiring next-intl into Next.js 16 (The next-intl file shape — `defineRouting`, `createMiddleware`, `getRequestConfig`, `setRequestLocale`, `generateStaticParams`, `useTranslations` / `getTranslations`, `useFormatter`, typed navigation, and the `IntlMessages` global type.)
+- 5 Wiring next-intl into Next.js 16 (The next-intl file shape — `defineRouting`, `createNavigation`, the resolution chain in `proxy.ts`, `getRequestConfig`, `setRequestLocale`, `generateStaticParams`, `useTranslations` / `getTranslations`, `useFormatter`, `NextIntlClientProvider` scoping, and the `AppConfig` type augmentation.)
 - 6 hreflang, per-locale canonicals, and SEO (The `alternates.languages` metadata surface with self-reference and bidirectionality, `x-default`, locale-specific canonicals, per-locale sitemaps, and OG `og:locale` with locale-aware OG images.)
 - 7 Quiz
 
