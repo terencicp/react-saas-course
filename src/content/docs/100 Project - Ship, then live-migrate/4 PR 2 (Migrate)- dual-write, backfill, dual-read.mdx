@@ -1,0 +1,391 @@
+---
+title: "PR 2 (Migrate): dual-write, backfill, dual-read"
+chapter-id: 100
+course-progress: 0.9475
+rewrites: 2
+sidebar:
+  order: 4
+  label: "PR 2: Migrate"
+---
+
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid, Steps } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+PR 1 left production in a deliberate halfway state: the `invoices` table now has nullable `subtotal` and `tax` columns sitting empty, while every read and write still flows through the old combined `total`.
+The new shape exists in the schema before any code depends on it.
+
+Now you close the gap by teaching the app both money shapes at once.
+Every mutation writes `subtotal`, `tax`, and `total` together; every read resolves through the new pair and falls back to `total` for rows nobody has filled yet; a one-shot script backfills those legacy rows in production once dual-write is live; and a final migration promotes both columns to `NOT NULL` — all without the live app and live schema ever disagreeing.
+
+## Your mission
+
+Every create and edit must now capture a separate `subtotal` and `tax` while keeping the combined `total` populated, so nothing downstream breaks as the deploy rolls and old code is still serving.
+Making the two new columns required and dropping stored `total` is the next PR; this lesson stops short of it.
+
+One rule shapes the solution: no row may ever have a `subtotal`/`tax` that disagrees with its `total`.
+So the dual-write is structural — all three money columns sit in a single `.set({...})`/`.values({...})`, computed from the same inputs in one statement.
+
+Order matters too.
+The backfill runs only after the dual-write code is live in production; run it earlier and an invoice created in the gap lands with a null `subtotal`/`tax` again.
+It must be idempotent and bounded: select only rows that still need it (`subtotal IS NULL`), work in batches, and re-check the guard inside the `UPDATE` so a second run touches zero rows.
+Run it over the unpooled connection.
+
+Money stays a `string` end to end, so compute `total` in integer cents, never with a floating-point `+` on dollar strings.
+The bridge you build here — `total = subtotal + tax`, plus a tolerance for posts that still send only a combined amount — is temporary, born in this PR to die in the next.
+The `SET NOT NULL` promotion ships as its own small PR after the production backfill completes, so the one near-irreversible tightening gets reviewed alone.
+
+Some things stay out of scope: at this seed size `SET NOT NULL` is instant rather than a locking, `CHECK`-constrained migration; the backfill runs inline rather than on a durable job runner; and `subtotal = total, tax = 0` is a modeling simplification a real product would replace with a per-invoice rate history.
+Dropping `total`, removing the fallback, and deleting the `coalesce` bridge are PR 3; leave all of it standing.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">Creating an invoice persists `subtotal`, `tax`, and a `total` equal to the integer-cents sum of the two.</ChecklistItem>
+  <ChecklistItem chip="tested">Editing an invoice persists the new `subtotal`/`tax` and recomputes `total` as their sum, leaving the version-precondition behavior intact.</ChecklistItem>
+  <ChecklistItem chip="untested">A mutation that arrives with only a combined amount is tolerated (`subtotal` becomes that amount, `tax` becomes `'0'`) rather than rejected.</ChecklistItem>
+  <ChecklistItem chip="untested">List and detail reads surface `subtotal`/`tax` for un-backfilled rows by falling through to the legacy `total` (as subtotal) and `0` (as tax).</ChecklistItem>
+  <ChecklistItem chip="tested">Running the backfill twice writes no rows the second time; a single run populates every legacy row's `subtotal`/`tax`.</ChecklistItem>
+  <ChecklistItem chip="untested">On the preview branch the backfill brings split-coverage to 100% with zero rows in the data-integrity diff.</ChecklistItem>
+  <ChecklistItem chip="untested">After the dual-write code is live in production, the production backfill completes and split-coverage reads 100% against production.</ChecklistItem>
+  <ChecklistItem chip="untested">The `SET NOT NULL` promotion ships as its own PR, merges green, and succeeds against the fully-backfilled table; the schema-state probe then shows `subtotal`/`tax` as `NOT NULL`.</ChecklistItem>
+  <ChecklistItem chip="untested">Across both PRs production keeps serving: the list renders from the new pair, new mutations show all three columns with `subtotal + tax = total`, and Sentry stays quiet.</ChecklistItem>
+  <ChecklistItem chip="untested">The PR-2 entry in `docs/runbooks/migration-subtotal-tax.md` records dual-write live, backfill complete, columns `NOT NULL`.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Cut a branch — `migrate/subtotal-tax-dual-write` — and implement the dual-write, the dual-read fall-through, and the backfill against the brief and the tests.
+Rehearse on a Neon preview branch before any of it reaches production.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The migrate step touches the money helper, the dual-write in the actions, the dual-read in the queries, the form that feeds the pair, the backfill script, and the promotion PR.
+
+### The combined-amount helper
+
+`total` is now computed by the application, not typed by the user.
+That computation needs one home, because the write path (to fill the `total` column), the list table, and the conflict banner all call it.
+
+```ts title="src/lib/invoices/money.ts"
+export const combinedAmount = (money: {
+  subtotal: string;
+  tax: string;
+}): string => {
+  const cents =
+    Math.round(Number(money.subtotal) * 100) +
+    Math.round(Number(money.tax) * 100);
+  return (cents / 100).toFixed(2);
+};
+```
+
+Why integer cents: `numeric(12,2)` comes back from Drizzle as a `string`, and the naive `Number(subtotal) + Number(tax)` drifts.
+`0.1 + 0.2` is `0.30000000000000004` in IEEE-754, and `toFixed(2)` on that is a coin flip at the boundaries.
+Rounding each operand to whole cents before adding keeps the arithmetic in integers, where there is no drift, then `toFixed(2)` formats it back to the `numeric(12,2)` shape the column expects.
+
+With the helper in place, the two read surfaces switch from the stored column to the derived value: `table.tsx` renders `combinedAmount(row)` for its Total column and `conflict-banner.tsx` renders `combinedAmount(current)`, instead of reading `row.total` / `current.total`.
+
+### The dual-write in the actions
+
+`createInvoice` and `updateInvoice` change the same three ways: the Zod schema accepts the new pair, the write carries all three money columns in one statement, and a fallback tolerates a post that still sends only a combined amount.
+The lifecycle actions touch no money column and are left as they are.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const updateInvoiceSchema = z.strictObject({
+  id: z.string(),
+  customerName: z.string().min(1),
+  status: z.enum(STATUS_VALUES),
+  subtotal: z.string().min(1).optional(),
+  tax: z.string().min(1).optional(),
+  total: z.string().min(1).optional(),
+  version: z.coerce.number().int(),
+  overwrite: z.coerce.boolean().default(false),
+});
+
+// Tolerate a post that still sends only the combined amount during the deploy
+// window: treat it as the subtotal, with zero tax. Born to die in PR 3.
+const resolveMoney = (input: {
+  subtotal?: string;
+  tax?: string;
+  total?: string;
+}): { subtotal: string; tax: string } => ({
+  subtotal: input.subtotal ?? input.total ?? '0',
+  tax: input.tax ?? '0',
+});
+
+// ...inside updateInvoice, after the version precondition passes:
+const money = resolveMoney(input);
+
+const [updated] = await tx
+  .update(invoices)
+  .set({
+    customerName: input.customerName,
+    status: input.status,
+    subtotal: money.subtotal,
+    tax: money.tax,
+    total: combinedAmount(money),
+    version: row.version + 1,
+  })
+  .where(
+    and(eq(invoices.organizationId, ctx.orgId), eq(invoices.id, input.id)),
+  )
+  .returning();
+`}>
+  <AnnotatedStep meta={`{5-6} "subtotal" "tax"`} color="green">
+    The schema accepts the `subtotal`/`tax` pair the new form posts.
+    They are `optional` only so the fallback can stand in during the deploy window; once the form is everywhere, every real request takes this path.
+  </AnnotatedStep>
+  <AnnotatedStep meta={`{7} "total"`} color="orange">
+    `total` stays accepted and optional, so an old tab or queued request that still sends only the combined amount is not rejected mid-deploy.
+  </AnnotatedStep>
+  <AnnotatedStep meta={`{12-21}`} color="blue">
+    The fallback, at the action layer.
+    A post with the pair uses the pair; a post with only `total` becomes `subtotal = total, tax = '0'`.
+  </AnnotatedStep>
+  <AnnotatedStep meta={`{28-35} "subtotal" "tax" "total"`} color="green">
+    All three money columns in one `.set({...})`, with `total: combinedAmount(money)` computed from the same pair.
+    One statement, so the three values can never disagree.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Splitting `total` into a follow-up statement opens a window where the row is internally inconsistent — exactly the divergence the inspector's data-integrity diff surfaces.
+The `version` precondition and admin-only `overwrite` escape hatch are untouched; this PR changes the money columns, not the concurrency guard.
+`createInvoice` gets the identical treatment inside its `.values({...})`, and `rowToInvoice` now maps `subtotal: row.subtotal, tax: row.tax` onto the `InvoiceRow` the queries return.
+
+:::caution
+If you reach for a second `await tx.update(...)` to set `total`, stop — that is the split-statement bug, and the easiest way to create the `subtotal + tax <> total` row the data-integrity panel exists to catch.
+:::
+
+### The dual-read in the queries
+
+Rows created before this PR still have a null `subtotal`/`tax` until the backfill runs, and reads must stay correct during the run.
+So the read side resolves the pair through a `coalesce` fall-through: a filled row reads its real `subtotal`/`tax`; an un-backfilled row falls through to the legacy `total` (as subtotal) and `0` (as tax), while the combined `total` stays selected for any caller that still wants it.
+
+```ts title="src/lib/invoices/queries.ts"
+export type InvoiceRow = {
+  id: string;
+  organizationId: string;
+  number: string;
+  customerName: string;
+  status: InvoiceStatus;
+  subtotal: string;
+  tax: string;
+  total: string;
+  currency: string;
+  createdAt: Date;
+  dueAt: Date | null;
+  deletedAt: Date | null;
+  archivedAt: Date | null;
+  version: number;
+};
+
+// Dual-read: a backfilled row reads its real subtotal/tax; an un-backfilled row
+// falls through to the legacy total (as subtotal) and 0 (as tax). The combined
+// total stays available to callers. Born to die in PR 3.
+const subtotalExpr = sql<string>`coalesce(${invoices.subtotal}, ${invoices.total})`;
+const taxExpr = sql<string>`coalesce(${invoices.tax}, 0)`;
+
+// The combined-amount sort orders on the resolved pair, not the raw column.
+const amountExpr = sql`(${subtotalExpr} + ${taxExpr})`;
+```
+
+Both `listInvoices` and `getInvoiceDetail` select `subtotalExpr` as `subtotal`, `taxExpr` as `tax`, and `invoices.total` as `total`.
+The `total`/`-total` sort orders on `amountExpr`, the resolved sum, so sorting by amount stays correct whether or not a row has been backfilled.
+No read ever returns a null money value, even with zero rows backfilled, so the dual-read is safe to ship the instant the PR merges.
+
+### The form posts the pair
+
+The edit form drove a single combined-amount input; now it posts the two fields the dual-write reads.
+Only the field block changes — the version round-trip, conflict resolution, and `useActionState` wiring stay as they are.
+
+```tsx title="src/app/(protected)/invoices/[id]/edit/edit-form.tsx"
+        <div className="space-y-1.5">
+          <Label htmlFor="subtotal">Subtotal</Label>
+          <Input
+            id="subtotal"
+            name="subtotal"
+            data-testid="subtotal-input"
+            defaultValue={seed.subtotal}
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="tax">Tax</Label>
+          <Input
+            id="tax"
+            name="tax"
+            data-testid="tax-input"
+            defaultValue={seed.tax}
+          />
+        </div>
+```
+
+The single `name="total"` input is replaced by `name="subtotal"` and `name="tax"`, each reading from the `seed` row the form already has.
+Because the queries surface `subtotal`/`tax` through the `coalesce` fall-through, the form has a sensible default even for a row that has not been backfilled yet.
+
+### The backfill script
+
+The script fills the legacy rows — created before dual-write went live — by copying `total` into `subtotal` and setting `tax` to `'0'`.
+You run it by hand with `pnpm db:backfill`; the app never imports it and never runs it inside a request.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import { sql } from 'drizzle-orm';
+
+import { dbUnpooled } from '@/db/index';
+
+const BATCH_SIZE = 1000;
+
+export const runBackfill = async (): Promise<void> => {
+  let totalUpdated = 0;
+
+  while (true) {
+    const ids = await dbUnpooled.execute<{ id: string }>(sql\`
+      select id::text as id
+      from invoices
+      where subtotal is null
+      limit \${BATCH_SIZE}
+    \`);
+
+    const batch = Array.from(ids).map((row) => row.id);
+    if (batch.length === 0) {
+      break;
+    }
+
+    const updated = await dbUnpooled.execute<{ id: string }>(sql\`
+      update invoices
+      set subtotal = total, tax = '0'
+      where id = any(\${batch}::uuid[]) and subtotal is null
+      returning id::text as id
+    \`);
+
+    totalUpdated += Array.from(updated).length;
+    console.log(\`[backfill] updated \${totalUpdated} rows so far\`);
+  }
+
+  console.log(\`[backfill] done — \${totalUpdated} rows backfilled\`);
+};
+`}>
+  <AnnotatedStep meta={`"dbUnpooled"`} color="orange">
+    The backfill runs on `dbUnpooled`, the direct connection.
+    The pooled `db` your serverless functions use runs in transaction mode, the wrong tool for a long-running script that holds a session across many round trips.
+  </AnnotatedStep>
+  <AnnotatedStep meta={`{11-16} "where subtotal is null" "limit"`} color="blue">
+    Each pass selects only the rows that still need filling, capped by a batch limit.
+    Drop `where subtotal is null` and every run rewrites the whole table; drop `limit` and you load every id into memory at once.
+  </AnnotatedStep>
+  <AnnotatedStep meta={`{23-28} "and subtotal is null"`} color="green">
+    The `UPDATE` repeats the `and subtotal is null` guard in its `WHERE`.
+    A second run, or a row a live dual-write filled between the select and the update, matches zero rows.
+  </AnnotatedStep>
+  <AnnotatedStep meta={`{10} "while (true)" {19-21} "break"`} color="violet">
+    The loop drains the table batch by batch and stops the instant a pass comes back empty.
+    One query cannot drain a table larger than the batch size; the empty pass is how the run knows it is done.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The script issues raw SQL through `dbUnpooled.execute(sql\`...\`)` rather than the typed Drizzle builder so it keeps compiling after PR 3 drops `total` from the schema.
+The typed builder would no longer know about `total` and fail to typecheck; a `sql` literal references the live database, not the TypeScript schema.
+
+### The promotion PR
+
+Once the production backfill completes and split-coverage reads 100%, every row has a non-null `subtotal`/`tax`, so the columns can finally be tightened to `NOT NULL`.
+That tightening ships as its own small PR — branch `migrate-notnull/subtotal-tax` — so the one near-irreversible statement in the cadence is reviewed in isolation, with the backfill that made it safe already merged and run.
+Promote both columns to `.notNull()` in `schema.ts` (consuming the `TODO(L4)` marker), then `pnpm db:generate` produces the migration:
+
+```sql title="drizzle/0006_set_subtotal_tax_not_null.sql"
+ALTER TABLE "invoices" ALTER COLUMN "subtotal" SET NOT NULL;--> statement-breakpoint
+ALTER TABLE "invoices" ALTER COLUMN "tax" SET NOT NULL;
+```
+
+Shipping `SET NOT NULL` inside the contract PR would also be correct — it is the same forward-only tightening either way; the separate PR is purely for reviewability.
+
+### The workflow
+
+The order you ship it in is the other half of the lesson.
+Rehearse the whole thing on a Neon preview branch before any of it reaches production:
+
+<Steps>
+
+1. Open PR 2 — title it `migrate: dual-write subtotal and tax, backfill, dual-read fall-through` — with **no schema migration in it**. The migrate step is application code plus a by-hand script; the only migration in this lesson is the `NOT NULL` promotion, which is a separate PR.
+
+2. On the preview deployment, point `pnpm db:backfill` at the preview branch's unpooled URL and run it. Confirm in the inspector that split-coverage hits 100%, the newest rows show all three columns with `subtotal + tax = total`, and the data-integrity diff is empty. The bug you are hunting is a single-site dual-write split; it shows up here as a divergent row.
+
+3. Merge PR 2 once CI is green. Production now dual-writes all three columns and reads through the `coalesce` fall-through, but the legacy rows still have null `subtotal`/`tax`.
+
+4. Run `pnpm db:backfill` against production, with the production unpooled URL supplied in that one shell session only — never committed to the repo. Watch the inspector for the first ten minutes or so: a dual-write split would surface immediately as a `subtotal + tax <> total` row. Split-coverage climbs to 100%.
+
+5. Open and merge the promotion PR (`migrate-notnull/subtotal-tax`). Its migration runs `SET NOT NULL` against the now-fully-backfilled table and succeeds. The schema-state panel flips `subtotal` and `tax` to `NOT NULL`.
+
+6. Fill the PR-2 section of `docs/runbooks/migration-subtotal-tax.md`: dual-write live, backfill complete, columns `NOT NULL`.
+
+</Steps>
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Expand and contract pattern"
+    href="https://www.prisma.io/dataguide/types/relational/expand-and-contract-pattern"
+    icon="simple-icons:prisma"
+    iconColor="#2D3748"
+    description="The cadence this PR implements, step by step — the doc the video itself points you to."
+  />
+  <ExternalResource
+    title="Neon — testing queries on a branch"
+    href="https://neon.com/docs/guides/branching-test-queries"
+    icon="simple-icons:neon"
+    iconColor="#00E599"
+    description="Spin up a copy-on-write branch to rehearse the backfill against production-like data before merging."
+  />
+  <ExternalResource
+    title="Drizzle Kit — migrations"
+    href="https://orm.drizzle.team/docs/migrations"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The generate/migrate workflow behind the SET NOT NULL promotion PR."
+  />
+  <ExternalResource
+    title="Postgres — numeric and decimal types"
+    href="https://www.postgresql.org/docs/current/datatype-numeric.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="Why money lives in exact numeric, not floating point — the drift the integer-cents helper exists to avoid."
+  />
+</CardGrid>
+
+## Moment of truth
+
+The suite runs the one behavior it can exercise directly, `combinedAmount`, through the cases that matter, including the `0.1 + 0.2` drift this lesson exists to teach.
+It also reads the source of the actions, edit form, and backfill to confirm each is shaped the way the migrate step requires.
+Run it from the project root:
+
+```bash
+pnpm test:lesson 4
+```
+
+A green run looks like this:
+
+```bash
+ ✓ tests/lessons/Lesson 4.test.ts (11 tests)
+
+ Test Files  1 passed (1)
+      Tests  11 passed (11)
+```
+
+The tests run in Node with no database and no preview branch, so the deployment invariants are yours to confirm.
+Tick each one off against the live preview, then production:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">On the preview branch, after running the backfill, the inspector shows split-coverage at 100% with zero rows in the data-integrity diff.</ChecklistItem>
+  <ChecklistItem chip="untested">After PR 2 merges, the production backfill completes and split-coverage reads 100% against production.</ChecklistItem>
+  <ChecklistItem chip="untested">The promotion PR merges green and its migration succeeds; the schema-state panel then shows `subtotal` and `tax` as `NOT NULL`.</ChecklistItem>
+  <ChecklistItem chip="untested">Production `/invoices` renders from the new pair, new create/edit mutations populate all three columns with `subtotal + tax = total`, and Sentry logs zero new errors through both merges.</ChecklistItem>
+  <ChecklistItem chip="untested">The PR-2 entry in `docs/runbooks/migration-subtotal-tax.md` records dual-write live, backfill complete, and columns `NOT NULL`.</ChecklistItem>
+</Checklist>
+</content>
+</invoke>

@@ -2855,3 +2855,8 @@ manual ring | manual verification ring | The by-hand layer of preview verificati
 synthetic load | manufactured contention | A small script hammering the relevant mutation in a tight loop on a branch, to surface lock contention a traffic-free rehearsal would hide. | first defined: Chapter 099 L3
 IS DISTINCT FROM | - | SQL comparison treating NULL as an ordinary value, so neither side vanishes from a result the way a plain <> would. | first defined: Chapter 099 L3
 neonctl | Neon CLI | Neon's command-line tool; the manual escape hatch for creating and resetting branches outside the automatic Vercel integration. | first defined: Chapter 099 L3
+inspector (project) | /inspector | Read-only project surface that probes the live schema and data, making the migration's state visible (split coverage, dual-write, integrity diff). | first defined: Chapter 100 L1
+Fluid Compute | - | Vercel serverless mode keeping a warm instance alive for many concurrent invocations, cutting cold starts; the project default. | first defined: Chapter 098 L3
+incompatibility window | - | Span during a deploy when running code and live schema disagree, so requests can fail; expand-migrate-contract avoids it. | first defined: Chapter 100 L3
+DROP COLUMN | drop column, metadata-only drop | Postgres column drop that only marks the column dead in the catalog; near-instant, no table rewrite, space reclaimed later by VACUUM. | first defined: Chapter 100 L5
+VACUUM | - | Postgres background maintenance pass reclaiming on-disk space from dead rows and dropped columns. | first defined: Chapter 100 L5

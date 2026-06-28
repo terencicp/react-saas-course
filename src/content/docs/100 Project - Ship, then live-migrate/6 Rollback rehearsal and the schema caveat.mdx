@@ -1,0 +1,198 @@
+---
+title: Rollback rehearsal and the schema caveat
+chapter-id: 100
+course-progress: 0.9496
+rewrites: 3
+sidebar:
+  order: 6
+  label: Rollback rehearsal
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import { CardGrid, Steps } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Production sits on the target schema: `subtotal` and `tax`, no `total`.
+One move remains, and it builds nothing.
+You are going to break production on purpose, roll it back, watch the rollback fail to fix the real problem, then write down what you saw for the next on-call engineer.
+
+The lesson turns on one caveat.
+An alias re-point swaps the running code in seconds, but the database stays on whatever schema your forward-only migrations applied.
+Roll the code back against a schema it no longer fits and you trade one outage for another, a lesson that only lands when you feel it once on your own production, while nothing is at stake.
+
+The only file that changes on disk is `docs/runbooks/rollback.md`; everything else is a gesture on the Vercel dashboard and a check that it did what you expected.
+
+## Your mission
+
+You are rehearsing recovery, not changing production, so the dashboard is familiar before a real incident demands it.
+Rehearse against the contract deployment on purpose: its schema change is the one in the whole cadence a rollback cannot reverse, the sharpest test of the caveat.
+Promoting the previous deployment, the one that shipped right after PR 2, restores code that reads `total` through the dual-read `coalesce` fall-through.
+But `total` is gone, so for the few seconds before you re-promote, production raises `column total does not exist`.
+That error is the point: it proves the caveat, and doubles as the live test that Sentry catches the failure.
+
+You can be this casual only because the project has no live users; with real traffic this would run inside a maintenance window against a throwaway deployment, never the live alias.
+The runbook is for the on-call engineer with none of today's context, so it must hand them the one distinction that decides the response.
+An *application bug* is recovered by an alias re-point plus a code-only `git revert`, the schema untouched.
+A *schema mistake* an alias re-point cannot undo; the only fix is a forward-fix migration, for instance re-adding `total` as a `GENERATED ALWAYS AS (subtotal + tax) STORED` column, named in the runbook but never run here.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">`docs/runbooks/rollback.md` carries the four-step alias re-point gesture, the `git revert` follow-up section, the re-enable-auto-assignment section, and the bolded "an alias re-point does not undo a migration" caveat.</ChecklistItem>
+  <ChecklistItem chip="tested">The runbook names both recovery paths: the code-only `git revert` for an application bug, and the forward-fix migration (the `GENERATED ALWAYS` re-add of `total`) for a schema mistake.</ChecklistItem>
+  <ChecklistItem chip="untested">Promoting the previous (post-PR-2) production deployment flips the alias in seconds, confirmed by `curl -sI` returning the PR-2 `x-vercel-id` and the inspector's build-source panel showing the PR-2 commit SHA.</ChecklistItem>
+  <ChecklistItem chip="untested">With the older code live against the contract schema, production raises a `column total does not exist` error and Sentry receives it.</ChecklistItem>
+  <ChecklistItem chip="untested">Auto-assignment is off after the promote, so the next merge to `main` will not silently re-ship the contract code until it is re-enabled.</ChecklistItem>
+  <ChecklistItem chip="untested">Re-promoting the contract (PR-3) deployment restores production to the target schema and code, the inspector showing the target shape and Sentry quiet after a refresh window.</ChecklistItem>
+  <ChecklistItem chip="untested">The launch checklist's eight rows remain green at the URL.</ChecklistItem>
+</Checklist>
+
+The test reaches only the artifact on disk: it reads `docs/runbooks/rollback.md` as text and asserts its load-bearing structure.
+It cannot promote a deployment, read a Sentry event, or query Neon, so every live gesture is yours to confirm by hand in *Moment of truth*.
+
+## Coding time
+
+Run the rehearsal, write the runbook, then restore production to the target state.
+
+<details>
+<summary>Reference walkthrough</summary>
+
+### The rehearsal
+
+<Steps>
+1. Open the Vercel dashboard for the project and go to Deployments. The current production deployment is the PR-3 (contract) merge.
+
+2. Find the previous production deployment — the one that shipped when PR 2 merged. Open its menu and choose Promote to Production.
+
+3. Watch the alias swap. It completes in under thirty seconds; no rebuild runs, because the deployment already exists. From a terminal, `curl -sI https://<APP_URL>` and read the `x-vercel-id` header, then open the inspector's deployment panel — both now point at the PR-2 commit SHA.
+
+4. Hit `/invoices`. The page errors: the PR-2 code reads through the dual-read `coalesce(invoices.subtotal, invoices.total)` fall-through, the Drizzle query reaches for a `total` column the contract migration dropped, and Postgres answers `column total does not exist`. Open Sentry — the error is there, captured within seconds.
+
+5. Confirm auto-assignment flipped off. When you promote an older deployment by hand, Vercel stops auto-assigning the production alias to new builds, so a fresh merge cannot silently overwrite your choice. Check under Settings → Domains.
+
+6. Re-promote the PR-3 (contract) deployment the same way. The alias swaps back in seconds; `/invoices` recovers; the inspector's schema-state panel shows the target shape again (`subtotal`/`tax` `NOT NULL`, no `total`); Sentry goes quiet after a refresh window. Re-enable auto-assignment once you've smoke-tested the restored deployment.
+</Steps>
+
+To script the gesture instead, `vercel ls --prod` lists production deployments and `vercel promote <deployment-url>` flips the alias.
+
+:::caution
+The `column total does not exist` error is the rehearsal's payload, not a slip: it proves the alias re-point moved the code while the schema stayed put. Never run this against a production with live users.
+:::
+
+### The filled runbook
+
+`docs/runbooks/rollback.md` ships as a stub: the caveat is written, three section headers sit empty below it. Fill them with the gesture you just rehearsed, then append the discriminator separating an application bug from a schema mistake:
+
+````md title="docs/runbooks/rollback.md"
+# Rollback runbook
+
+How to roll back a bad production deploy — and the one caveat that makes a schema
+migration different from a code deploy.
+
+## The caveat
+
+**An alias re-point does NOT undo a forward-only migration.** Pointing the
+production alias back at the previous deployment reverts the *code*, but the
+database schema has already moved forward — the dropped column is gone. Rolling
+back code without a compatible schema is its own outage.
+
+## The four-step alias re-point
+
+When a bad deploy reaches production, this restores the previous code in seconds.
+
+1. **Identify the previous green production deployment.** Vercel dashboard →
+   Deployments, or `vercel ls --prod` from a terminal. You want the last build
+   that was healthy before the bad one.
+2. **Promote it.** Open its menu → Promote to Production (UI), or
+   `vercel promote <deployment-url>` (CLI). The alias flips; no rebuild runs.
+3. **Verify the swap.** `curl -sI https://<APP_URL>` and confirm the `x-vercel-id`
+   header matches the deployment you promoted; cross-check the inspector's
+   build-source panel (the commit SHA) and watch Sentry's error rate fall.
+4. **Remember the caveat.** This restores code, not schema. If the incident was a
+   forward-only migration, the older code may now fail against the current schema
+   — plan a forward-fix migration (below) as the durable resolution.
+
+## The git revert follow-up
+
+The alias re-point is a stopgap; auto-assignment is now off, so the bad commit is
+still the tip of `main`. Make the rollback durable by reverting the code:
+
+1. Open a PR that reverts the bad commit — `git revert <bad-sha>` — and let CI run.
+2. Merge after green. The next production deploy ships the reverted code, and `main`
+   once again matches what's live.
+
+## Re-enabling auto-assignment
+
+Promoting an older deployment by hand turns off automatic alias assignment so a
+later merge can't silently overwrite your manual choice. Once the restored
+deployment has passed a smoke test, re-enable auto-assignment (Settings → Domains)
+so the next merge to `main` resumes shipping to production normally.
+
+## Application bug vs. schema mistake
+
+Before you reach for any of the above, decide which problem you have:
+
+- **An application bug** — the schema is fine, the new code is wrong. Alias re-point
+  to roll back instantly, then a code-only `git revert` to make it durable. The
+  database is never touched.
+- **A schema mistake** — a forward-only migration changed the shape and the change
+  itself was wrong. An alias re-point will NOT fix this; the old code fails against
+  the new schema. The durable fix is a forward-fix migration — for example, re-adding
+  a dropped `total` as `numeric GENERATED ALWAYS AS (subtotal + tax) STORED`. It is
+  expensive next to an alias re-point and cheap next to true data-loss recovery, and
+  it is warranted only when the contract itself was wrong.
+````
+
+Four decisions shaped it. The promotion gesture stays tool-agnostic — dashboard or `vercel ls --prod` / `vercel promote` — because the on-call engineer might be on a phone. Verification leans on three independent signals (`x-vercel-id`, the inspector's commit SHA, Sentry's error rate), because a rollback you can't confirm is one you can't trust. The `git revert` follow-up exists because the alias re-point leaves the bad commit at the tip of `main`. And the discriminator comes first, the section read under pressure, routing the engineer to the cheap instant fix or warning them off a rollback the schema won't accept.
+
+The two-layer model — instant alias re-point plus durable `git revert`, why auto-assignment flips off, why a rollback can't undo a migration — is taught in [Two-layer rollback when prod breaks](/098-deploy-to-production-on-vercel/7-two-layer-rollback-when-prod-breaks/); this runbook makes it project-specific. For the `git revert` mechanics, see [Reflog, bisect & rescue](/096-git-workflow-for-teams/2-reflog-bisect--rescue/).
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Vercel — Performing an Instant Rollback"
+    href="https://vercel.com/docs/instant-rollback"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The dashboard gesture you rehearse here, including why auto-assignment turns off after a manual promote."
+  />
+  <ExternalResource
+    title="Vercel CLI — vercel promote"
+    href="https://vercel.com/docs/cli/promote"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The scriptable variant of the alias re-point — the same flip from a terminal, not the dashboard."
+  />
+  <ExternalResource
+    title="PostgreSQL — Generated Columns"
+    href="https://www.postgresql.org/docs/current/ddl-generated-columns.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The GENERATED ALWAYS AS (subtotal + tax) STORED forward-fix the runbook names for a schema mistake."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```sh
+pnpm test:lesson 6
+```
+
+The suite reads `docs/runbooks/rollback.md` and passes when its load-bearing parts survive: each section filled with real guidance, the bolded "does not undo a migration" caveat still bold, and both recovery paths named — `git revert` for an application bug, a forward-fix `GENERATED ALWAYS` migration for a schema mistake.
+
+Everything else happened on the dashboard and against live Sentry and Neon, which no Node test reaches. Confirm those by hand:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Promoting the post-PR-2 deployment flips the alias in seconds; `curl -sI` and the inspector's build-source panel both confirm the PR-2 commit SHA is live.</ChecklistItem>
+  <ChecklistItem chip="untested">Hitting `/invoices` raises `column total does not exist`, and Sentry receives it during the rehearsal window.</ChecklistItem>
+  <ChecklistItem chip="untested">Auto-assignment is off after the manual promote.</ChecklistItem>
+  <ChecklistItem chip="untested">Re-promoting the PR-3 deployment restores schema and code: the inspector shows `subtotal`/`tax` `NOT NULL` and no `total`, and Sentry goes quiet after a refresh.</ChecklistItem>
+  <ChecklistItem chip="untested">All eight launch-checklist rows are green at the URL — the rollback rehearsal Lesson 2 deferred is now recorded.</ChecklistItem>
+</Checklist>
+
+That last tick closes the project: you leave with a recovery you have practiced and a runbook ready for whoever is next on call.

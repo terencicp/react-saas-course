@@ -868,7 +868,7 @@
 - 3 Rehearsing on a Neon preview branch (The four-check rehearsal that runs each cadence step against production-shaped data before merge, catching FK violations, missed dual-write sites, slow backfills, and leftover reads of the old shape.)
 - 4 Quiz
 
-### Chapter 100 — Project: ship to production, then live-migrate the schema
+### Chapter 100 — Project: ship, then live-migrate the schema
 - 1 Project Overview
 - 2 From green repo to a live production URL
 - 3 PR 1 (Expand): add the nullable subtotal and tax columns

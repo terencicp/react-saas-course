@@ -1,0 +1,294 @@
+---
+title: From green repo to a live production URL
+chapter-id: 100
+course-progress: 0.9451
+rewrites: 2
+sidebar:
+  order: 2
+  label: Ship to production
+---
+
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import { CardGrid, Steps } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Your goal is to put last lesson's green repo behind a real production URL, where every change ships by `git push` alone and no human clicks "deploy."
+
+Hit the live `<project>.vercel.app` address, sign in as a seeded admin, and the invoices list renders against the Neon `main` branch.
+Open `/inspector`: the deployment panel reads `production` with the commit SHA the build shipped from, and the schema-state panel still lists the single `total` column.
+Production is live, the migration cadence has not started, and that is where the next four lessons begin.
+
+## Your mission
+
+Wire this repo to deploy on Vercel against a Neon branch-per-PR workflow, then record the launch checklist proving the URL is safe to call production.
+The only file you edit is `docs/runbooks/launch-checklist.md`; the rest is dashboard and CLI wiring.
+
+Six constraints make this a recorded gate rather than a click-through.
+The git push is the deploy: merging to `main` produces a production deployment, and production is just an alias onto one immutable deployment, never built by hand.
+The build command, `pnpm db:migrate && next build`, is set at import time, so migration runs the first time the app boots against Neon.
+The env validator runs for real in production, so your first deploy, with no env vars set, fails loudly on a missing `DATABASE_URL`; that failure is the point.
+`main` is branch-protected before you open any PR, so the schema cadence's app changes go through a reviewed PR, not a direct push.
+The Vercel function region matches the Neon region, so no query pays a cross-continent round trip.
+And no secret rides a `NEXT_PUBLIC_*` variable, since that prefix ships the value to the browser.
+
+Two habits keep you clear of the traps.
+The pooled `DATABASE_URL` host contains `-pooler` and the unpooled one does not: the app wants the pooled connection, the migration runner and long scripts want the direct one, and mixing them up is a classic first-deploy mistake.
+When a deploy fails, the build log tells you which kind it is: a migration failure is a SQL bug you fix and re-push, a build failure is the type system catching something before a single row is touched.
+
+Three things stay out of scope.
+The custom-domain swap is skipped, because the `*.vercel.app` URL is production here.
+The schema cadence is the next four lessons' work, and there are no rate-limit, security-header, backup, or uptime rows, because this repo does not ship that code.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">`docs/runbooks/launch-checklist.md` carries all eight checklist rows, each filled with its gesture and its evidence, under the runbook's three section headers.</ChecklistItem>
+  <ChecklistItem chip="untested">A live `<project>.vercel.app` URL serves the app; signing in as a seeded admin renders `/invoices` and `/inspector`, and the inspector's deployment badge reads `production`.</ChecklistItem>
+  <ChecklistItem chip="untested">The first deploy, attempted with no env vars set, fails on the env validator's missing-`DATABASE_URL` error; the second deploy, with the vars set, succeeds — the log shows `pnpm install`, then `pnpm db:migrate` applying migrations `0000`–`0004` against Neon `main`, then `next build`.</ChecklistItem>
+  <ChecklistItem chip="untested">`main` is branch-protected — a direct push is rejected, and a PR with green CI is required before merge.</ChecklistItem>
+  <ChecklistItem chip="untested">`curl -s https://<APP_URL>/api/health` returns `{ ok: true, db: 'up' }`, and the pooled `DATABASE_URL` host ends in `-pooler` with its Neon region matching the Vercel function region.</ChecklistItem>
+  <ChecklistItem chip="untested">The deliberate test error — the inspector's "Trigger test error" control — reaches the Sentry dashboard within seconds.</ChecklistItem>
+  <ChecklistItem chip="untested">`curl -sI https://<APP_URL>` shows an `x-vercel-id` header confirming the alias points at the latest production deployment.</ChecklistItem>
+  <ChecklistItem chip="untested">A throwaway PR proves the preview workflow end to end — four CI jobs plus `vercel-build` go green, the preview URL is gated behind Vercel Authentication, the inspector badge reads `preview` with the PR's HEAD commit SHA, and Neon shows a `preview/<branch>` branch that auto-deletes when the PR closes.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Wire the deployment in order, then fill and walk the launch checklist.
+The reference walkthrough below is collapsed on purpose: set up your Vercel and Neon accounts and try the wiring yourself first, because the value is in performing the gestures, not reading them.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+Almost none of this is code: five groups of dashboard and CLI gestures, performed top to bottom, each depending on the one before, ending with the one file you edit, the launch checklist.
+
+### Step group 1 — Create the Neon project
+
+Start with the database, because every later step needs its connection strings.
+
+<Steps>
+1. Create a Neon free-tier project in a single region. The course default is `aws-us-east-1`, which pairs with Vercel's `iad1` function region. The project's default branch, `main`, is your production branch — the cadence's preview branches will fork off it later.
+
+2. From the project dashboard, copy both the pooled and the unpooled connection strings. You set them as production env vars in step group 3. They differ by one token in the host:
+
+   ```text frame="none"
+   # pooled — the app's DATABASE_URL (host carries "-pooler")
+   postgresql://USER:PASSWORD@ep-example-123456-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require
+
+   # unpooled — DATABASE_URL_UNPOOLED, the direct connection for migrations and scripts
+   postgresql://USER:PASSWORD@ep-example-123456.us-east-1.aws.neon.tech/neondb?sslmode=require
+   ```
+</Steps>
+
+The `-pooler` host routes through Neon's pooler in transaction mode, which suits a serverless function fleet.
+The direct host serves later lessons' migration runner and backfill script: long-running, transaction-heavy work the pooler handles poorly.
+
+### Step group 2 — Push to GitHub and protect `main`
+
+<Steps>
+1. Push the starter to a fresh, private GitHub repo.
+
+2. Set branch protection on `main`: no direct pushes, a PR with green CI required before merge, and at least one review. In a solo course the review is a self-attestation, but you set the rule anyway — it is the same ruleset from the chapter on shipping discipline. Turn it on now, before you open the first PR.
+</Steps>
+
+:::tip
+The branch rule looks like bureaucracy for a solo project, but it is load-bearing.
+When the schema cadence lands its dual-write change in a couple of lessons, the rule forces that change through a reviewed PR — earning a preview deployment, a migration rehearsal, and a green CI run before it touches production.
+A direct push to `main` would skip all of that.
+:::
+
+### Step group 3 — Connect Vercel and watch env validation work
+
+<Steps>
+1. In the Vercel dashboard: **Add New → Project**, then install the Vercel for GitHub app *scoped to this one repo* — not your whole account. Import the repo; Vercel auto-detects Next.js.
+
+2. Before you click Deploy, override the Build Command to:
+
+   ```sh frame="none"
+   pnpm db:migrate && next build
+   ```
+
+   Set this *at import time*, not after the first deploy. The migration step has to run on the very first production deploy, because that build applies the baseline schema against Neon `main`.
+
+3. Click Deploy with no env vars set yet. The build fails — on purpose. The env validator in `src/env.ts` runs during `next build` and dies on the missing `DATABASE_URL`, naming the variable. Open the build log and read the failure shape; you want to recognize it on sight.
+
+4. Now add the production env vars the validator requires (the table below). Then redeploy.
+
+5. Watch the second build succeed. The log shows `pnpm install`, then `pnpm db:migrate` applying migrations `0000`–`0004` against the Neon `main` branch — the auth, app-role, audit-log, RLS, and invoices-baseline migrations — then `next build`, closing with the route summary of static versus dynamic routes and function bundle sizes.
+</Steps>
+
+:::caution
+The build-command override must be in place on the *first* production deploy, not added afterward.
+This is the build-time migration path from the Vercel deployment chapter: production migrations run on every deploy, which is only safe under the cadence's discipline.
+:::
+
+:::note[The first failure is the point]
+Deploying once *without* env vars is the lesson, not a misstep to skip.
+Production has to boot with the validator on, and "the build fails loudly on a missing secret" only lands once you have watched it happen.
+Read the log, confirm it names `DATABASE_URL`, then move on.
+:::
+
+The validator in `src/env.ts` is the gate every var passes through, so the set is exactly what it declares:
+
+| Variable | Purpose | How to obtain |
+| --- | --- | --- |
+| `DATABASE_URL` | The app's pooled connection (host carries `-pooler`). | Neon dashboard, pooled connection string. |
+| `DATABASE_URL_UNPOOLED` | Direct connection for the build's `db:migrate` and later scripts. | Neon dashboard, unpooled connection string. |
+| `BETTER_AUTH_SECRET` | Signs session cookies. | Generate a random 32-byte secret. |
+| `BETTER_AUTH_URL` | The auth base URL — the `*.vercel.app` URL once Vercel assigns it. | Vercel dashboard, after the first successful deploy. |
+| `RESEND_API_KEY` | Validated but unused this chapter — no email path runs. | A placeholder value satisfies the validator. |
+| `SENTRY_DSN` | The Sentry project the launch checklist's error-monitoring row depends on. | A real Sentry project from the observability chapter. |
+| `APP_URL` | The app's own URL, server-side. | The `*.vercel.app` URL. |
+| `NEXT_PUBLIC_APP_NAME` | The app name, exposed to the browser. | Any display name. |
+| `NEXT_PUBLIC_APP_URL` | The app URL, exposed to the browser. | The `*.vercel.app` URL. |
+
+Vercel sets `NODE_ENV`; you never set it yourself.
+Put nothing on a `NEXT_PUBLIC_*` variable except the two values meant for the browser, because a secret on a public var is a leak.
+
+### Step group 4 — Match the function region and wire the Neon integration
+
+<Steps>
+1. Set the Function Region to match the Neon region: **Project Settings → Functions**. `iad1` matches `aws-us-east-1`. Check your actual Neon region first — this is the one setting that, gotten wrong, makes every query pay a cross-continent round trip for no visible reason.
+
+2. Confirm <Term definition="Vercel's serverless mode that keeps a warm instance alive to handle many concurrent invocations, cutting cold starts; the default for this project.">Fluid Compute</Term> is on and the runtime is Node.js. Both are the project defaults; you are verifying, not changing.
+
+3. Install the Neon integration: **Vercel Marketplace → Neon (Neon-Managed) → Install → select your project**. This gives every future PR its own database. Confirm it at **Project Settings → Environment Variables**, filtered to Preview: `DATABASE_URL` now shows the integration's lock icon with no editable value — the integration manages it, one fresh branch per preview deployment.
+
+4. Turn on Vercel Authentication: **Project Settings → Deployment Protection**. It gates every preview deployment behind a Vercel sign-in — free on Pro, no add-on. Open the first preview URL in a private window and confirm you hit the sign-in gate.
+
+5. Locally, link the directory to the project and pull the Development-scope vars:
+
+   ```sh frame="none"
+   vercel link
+   vercel env pull .env.local
+   ```
+
+   Confirm `.env.local` is gitignored — it is in the starter — so your synced secrets never land in a commit.
+</Steps>
+
+:::caution
+The function-region match is the load-bearing diff from the Vercel deployment chapter's region lesson.
+Get it wrong and you see no error — the app just runs slow, the hardest kind of problem to notice.
+Set it deliberately and verify the pairing.
+:::
+
+<VideoCallout videoId="s4vIMI9rXeg" videoTitle="A Postgres database for every Vercel preview deployment">
+  Neon's 10-minute walkthrough of the integration you just wired: scoping it to one project, the pooled vs. unpooled strings, and the build-command migration that gives every PR its own branch. It uses Prisma, but the wiring matches your `pnpm db:migrate`.
+</VideoCallout>
+
+### Step group 5 — Confirm the production URL and walk the launch checklist
+
+Hit `<project>.vercel.app`. Sign in as a seeded admin — `alice@acme.test`, password `inspector-password-12` — and confirm the invoices list renders. Open `/inspector`: the deployment panel reads `production`, the schema-state probe runs against Neon `main`, and the audit tail shows the seeded baseline rows.
+
+Then fill `docs/runbooks/launch-checklist.md`, the only file you edit in this lesson.
+The starter ships it as a stub: a table header plus three section headers.
+You record eight rows, each with the gesture you performed and the evidence you captured.
+Two gestures need a command and an expected reply:
+
+```sh
+# health check — expects { ok: true, db: 'up' }
+curl -s https://<APP_URL>/api/health
+
+# alias check — look for the x-vercel-id header in the response
+curl -sI https://<APP_URL>
+```
+
+The health endpoint pings the database and returns an opaque body — never a connection string or an error detail:
+
+```json
+{ "ok": true, "db": "up" }
+```
+
+Record each of these eight rows under the runbook's section headers, then tick them here as you go:
+
+<Checklist id="launch">
+  <ChecklistItem>Env validator — green in the production build log, plus the deliberate first-build failure you saw on the missing `DATABASE_URL`.</ChecklistItem>
+  <ChecklistItem>`/api/health` — `curl -s https://<APP_URL>/api/health` returns `{ ok: true, db: 'up' }`; the pooled `DATABASE_URL` host ends in `-pooler` and its Neon region matches the Vercel function region.</ChecklistItem>
+  <ChecklistItem>Sentry test error — admin → `/inspector` → "Trigger test error"; the error appears in the Sentry dashboard within seconds.</ChecklistItem>
+  <ChecklistItem>Branch-protected `main` — a direct push is rejected; a PR with green CI is required.</ChecklistItem>
+  <ChecklistItem>Four-job CI gate — typecheck, lint, test, and build go green on the PR (plus the `audit` and `actionlint` supplementary jobs).</ChecklistItem>
+  <ChecklistItem>Neon-branch-per-PR rehearsal — proved by the throwaway PR below: the preview branch is created and the build-time migration applies against it.</ChecklistItem>
+  <ChecklistItem>Production alias — `curl -sI https://<APP_URL>` shows the `x-vercel-id` header confirming the alias points at the latest production deployment.</ChecklistItem>
+  <ChecklistItem>Rollback rehearsal — forward-pointer: recorded in the rollback lesson, run against the contract deployment once the cadence is complete.</ChecklistItem>
+</Checklist>
+
+The rollback row is the one you cannot fully record yet: it is rehearsed against the contract deployment in this chapter's final lesson, after the schema change ships.
+Record it as a forward-pointer so the checklist stays honest about what is and is not proven.
+
+### Verify the preview-branch workflow
+
+Prove the preview-per-PR machinery works: opening a PR spins up an isolated database, runs the migration against it, and gates the URL.
+Rehearse it now with a throwaway PR, so the first *real* PR — the expand migration, next lesson — is not where you find out whether any of this is wired.
+
+<Steps>
+1. Branch off `main`, make a trivial copy change — a label on the dashboard or the sign-in shell — push, and open the PR.
+
+2. Wait for the four CI jobs and `vercel-build` to go green. The PR comment carries the preview URL.
+
+3. Visit the preview URL. Vercel Authentication prompts you to sign in — that is the gate working. On the page, the inspector's deployment badge reads `preview`, and the build-source panel's commit SHA matches the PR's HEAD. In the Neon dashboard, confirm the preview's `DATABASE_URL` points at a branch named `preview/<branch-name>`.
+
+4. Close the PR without merging. Neon auto-deletes the preview branch within seconds.
+</Steps>
+
+The production URL is live, serving invoices against Neon `main`; the preview-per-PR workflow is verified end to end; the launch checklist is recorded and green.
+Production is ready to begin the cadence.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Neon-Managed Vercel integration"
+    href="https://neon.com/docs/guides/neon-managed-vercel-integration"
+    icon="simple-icons:neon"
+    iconColor="#00E599"
+    description="The integration from step group 4: scoped to one project, branch-per-preview, and the env vars it manages."
+  />
+  <ExternalResource
+    title="Vercel Deployment Protection"
+    href="https://vercel.com/docs/deployment-protection"
+    icon="simple-icons:vercel"
+    description="How Vercel Authentication gates every preview URL behind a sign-in — the step-group-4 toggle you confirm in a private window."
+  />
+  <ExternalResource
+    title="Drizzle — Migrations"
+    href="https://orm.drizzle.team/docs/migrations"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="What `pnpm db:migrate` runs in your build command, and why applying generated SQL on deploy is the production path."
+  />
+</CardGrid>
+
+## Moment of truth
+
+The test sees only the file you committed, the launch-checklist runbook, so it checks that runbook's structure: eight rows filled across four columns under three section headers, the scaffold `TODO` gone.
+Run it:
+
+```sh
+pnpm test:lesson 2
+```
+
+A pass looks like this:
+
+```sh frame="none"
+ ✓ tests/lessons/Lesson 2.test.ts (4 tests)
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+```
+
+The test cannot reach the live deployment, the whole point of this lesson.
+Verify the rest by hand against your Vercel, Neon, GitHub, and Sentry dashboards:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">The `<project>.vercel.app` URL serves the app; signing in as a seeded admin renders `/invoices` and `/inspector`, and the inspector's deployment badge reads `production`.</ChecklistItem>
+  <ChecklistItem chip="untested">The first deploy with no env vars failed on the env validator's missing-`DATABASE_URL` error, and the second deploy (vars set) succeeded with `pnpm install` → `pnpm db:migrate` (applying `0000`–`0004` against Neon `main`) → `next build` in the log.</ChecklistItem>
+  <ChecklistItem chip="untested">A direct push to `main` is rejected; a PR with green CI is required before merge.</ChecklistItem>
+  <ChecklistItem chip="untested">`curl -s https://<APP_URL>/api/health` returns `{ ok: true, db: 'up' }`, the pooled `DATABASE_URL` host ends in `-pooler`, and its Neon region matches the Vercel function region.</ChecklistItem>
+  <ChecklistItem chip="untested">Hitting the inspector's "Trigger test error" lands the error in the Sentry dashboard within seconds.</ChecklistItem>
+  <ChecklistItem chip="untested">`curl -sI https://<APP_URL>` shows an `x-vercel-id` header confirming the alias points at the latest production deployment.</ChecklistItem>
+  <ChecklistItem chip="untested">A throwaway PR goes green across the four CI jobs and `vercel-build`, its preview URL is gated by Vercel Authentication, the inspector reads `preview` with the PR's HEAD SHA, and Neon shows a `preview/<branch>` branch that auto-deletes when the PR closes.</ChecklistItem>
+</Checklist>

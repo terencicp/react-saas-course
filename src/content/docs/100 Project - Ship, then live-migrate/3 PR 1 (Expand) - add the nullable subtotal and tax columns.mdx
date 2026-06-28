@@ -1,0 +1,198 @@
+---
+title: "PR 1 (Expand): add nullable subtotal and tax"
+chapter-id: 100
+course-progress: 0.946
+rewrites: 2
+sidebar:
+  order: 3
+  label: "PR 1: Expand"
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Production is live: the invoices app you wired to Vercel and Neon last lesson is serving real traffic against the Neon `main` branch.
+Now you begin the schema change the whole chapter is built around, starting with the safest move available.
+
+This lesson ships the expand step of the cadence: an additive-only migration that adds `subtotal` and `tax` as two nullable columns, rehearsed on a Neon preview branch and merged to production through a green PR.
+Your proof is the inspector: the schema-state panel at `/inspector` shows `subtotal` and `tax` present and nullable, and split-coverage reads 0%, because every existing row still has them empty.
+
+## Your mission
+
+Expand is the safe opening move of a destructive schema change: you widen the schema so the old and new shapes coexist, touching no application code and rewriting no existing row.
+Nullability is what makes that true, and it is the safety argument of this PR.
+A migration that rewrites rows takes a lock and runs as long as the table is big; a nullable column-add rewrites nothing, so it applies in milliseconds against a live database while traffic keeps flowing.
+The running app reads neither column yet, so they can sit empty on every row.
+Add them `NOT NULL` instead and Postgres rejects the migration, because a `NOT NULL` column with no default has no value to put in the rows already there.
+That promotion is real and necessary, but it belongs at the tail of the next PR, after a backfill populates every row.
+Here, nullable is what deploys a column-add against a live app with no <Term definition="A span during a deploy when the running code and the live schema disagree, so requests can fail; the expand-migrate-contract cadence is designed to avoid one.">incompatibility window</Term>.
+
+Copy `total`'s `numeric(12, 2)` precision and scale onto both new columns exactly.
+A mismatched scale is one of the quietest ways to corrupt money: a column that rounds differently than the one feeding it silently drops or pads cents, and you notice only when an invoice is a penny off and a customer emails about it.
+`total` produces these values, so its precision is the precision to copy.
+
+Keep the PR ruthlessly narrow: the schema change, the generated migration, and the runbook entry, nothing else.
+No edits to actions or queries, no new helper, no tests, no env changes.
+Resist the urge to start writing the new columns "while you're here": the instant this PR writes to them, its rollback story stops being "revert the migration, nothing reads them" and becomes "revert the migration and reason about the data the deploy wrote in between."
+Dual-write is the next PR's job, so leave `total` and the `TODO(L4)` and `TODO(L5)` markers in place.
+
+The most valuable habit you build here is reading the preview build log line by line.
+When you push the branch, Vercel builds a preview against this PR's own copy-on-write Neon branch, running `pnpm db:migrate` before `next build`, and the log is where you confirm the change is real: which migrations applied, whether the statement-breakpoint produced two separate `ADD COLUMN` statements, and, if `vercel-build` goes red, whether the migration SQL or the type-checked build failed — two different fixes.
+A corrupt preview branch is not repaired by hand: close and reopen the PR, and Neon recreates it fresh from `main`.
+The preview is a disposable rehearsal stage; treat it as one.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">The migration is additive only — it adds the two columns and contains no `DROP`, no `NOT NULL` add, and no `RENAME`.</ChecklistItem>
+  <ChecklistItem chip="tested">Both new columns are nullable and declared `numeric(12, 2)`, matching `total`'s precision and scale.</ChecklistItem>
+  <ChecklistItem chip="untested">The migration applies cleanly against the live database without rewriting existing rows — confirmed by the preview build log and a sub-second completion on the seed data.</ChecklistItem>
+  <ChecklistItem chip="untested">On the preview deployment the existing app behaves identically — the list renders and create / edit / archive / restore all succeed — while the inspector shows `subtotal` and `tax` present, nullable, and unwritten (split-coverage 0%).</ChecklistItem>
+  <ChecklistItem chip="untested">The PR merges green across all CI checks and `vercel-build`, producing a production deployment whose commit SHA matches the merge commit.</ChecklistItem>
+  <ChecklistItem chip="untested">After the merge, production keeps working against the expanded schema — the list renders, mutations succeed reading and writing `total`, the inspector shows the two new nullable columns — and Sentry stays quiet across a two-minute observation window.</ChecklistItem>
+  <ChecklistItem chip="untested">A PR-1 entry in `docs/runbooks/migration-subtotal-tax.md` records what is true in production now and the cheap rollback available while nothing reads the new columns.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement the expand PR against the brief above, then rehearse it on the preview before merging.
+Try it before opening the walkthrough.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+Work it in the order you would on the job: schema, generate, PR, merge, runbook.
+
+### Add the two columns
+
+Branch first — `git switch -c expand/subtotal-tax` — then open `src/db/schema.ts`.
+The `total` column sits there with three TODO markers beneath it:
+
+```ts
+    // The combined-amount anti-pattern this cadence fixes: one numeric(12,2)
+    // column holding subtotal + tax mashed together.
+    total: numeric('total', { precision: 12, scale: 2 }).notNull(),
+    // TODO(L3) — add subtotal + tax nullable numeric(12,2)
+    // TODO(L4) — promote subtotal/tax to NOT NULL after backfill
+    // TODO(L5) — drop the total column
+```
+
+Replace the `// TODO(L3)` marker with the two new columns, leaving `total` and the other two markers in place:
+
+```ts
+    subtotal: numeric('subtotal', { precision: 12, scale: 2 }),
+    tax: numeric('tax', { precision: 12, scale: 2 }),
+```
+
+Neither column carries `.notNull()`, and both match `total`'s `numeric(12, 2)` — the two details the safety of this PR rests on.
+
+### Generate the migration
+
+Let Drizzle Kit translate the schema diff into SQL:
+
+```sh
+pnpm db:generate
+```
+
+It writes `drizzle/0005_expand_subtotal_tax.sql`:
+
+```sql
+ALTER TABLE "invoices" ADD COLUMN "subtotal" numeric(12, 2);--> statement-breakpoint
+ALTER TABLE "invoices" ADD COLUMN "tax" numeric(12, 2);
+```
+
+Two `ADD COLUMN` statements split by Drizzle's `--> statement-breakpoint` marker, which tells the migration runner to send each one to Postgres on its own.
+
+:::note
+This migration doesn't need the breakpoint.
+Adding a nullable column with no default is a metadata-only change in modern Postgres, so both statements run instantly whether split or not.
+It stays only so this migration reads like every other one in the cadence.
+`generate`, the `migrate` runner, and `--> statement-breakpoint` all come from [the Drizzle Kit daily loop](/040-database-migrations-and-seeding/1-the-drizzle-kit-daily-loop/), now pointed at a live database.
+:::
+
+### Open the PR and rehearse on the preview
+
+Commit the schema change and the migration together, push the branch, and open a PR titled `expand: add subtotal and tax columns (nullable)`.
+The push is the deploy: Vercel builds a preview against this PR's own Neon branch, copy-on-write off `main`, and the build command runs `pnpm db:migrate && next build`, so `0005` applies before the app boots.
+This is the preview-per-PR workflow from [a Neon branch per preview](/098-deploy-to-production-on-vercel/5-a-neon-branch-per-preview/), now rehearsing a real schema change.
+
+Read the build log: you want `0005_expand_subtotal_tax` applied with a success line and sub-second timing.
+Then open the preview URL (Vercel Authentication prompts you to sign in) and check the inspector — the schema-state panel lists `subtotal` and `tax` as nullable, and split-coverage reads 0% because every seeded row still has them empty.
+Exercise the app — list, create, edit, archive, restore — and watch it behave exactly as before.
+
+Self-review in one sentence: the diff is two column additions plus the generated migration, nothing else.
+If anything in `actions.ts`, `queries.ts`, or a component changed, that work belongs to the next PR — back it out.
+
+### Merge and watch production
+
+Merge once CI and `vercel-build` are green.
+The merge to `main` triggers the production build: `pnpm install`, then `pnpm db:migrate` applying `0005` against the Neon `main` branch, then `next build`.
+The new function fleet rolls out over a few minutes; the inspector's build-source panel confirms the live commit SHA matches the merge commit.
+
+Then watch production keep working.
+Hit `/invoices`, run a mutation or two, confirm they still read and write `total` as before, and check the inspector shows the two new nullable columns.
+Give Sentry a two-minute window to stay quiet.
+
+### Fill the runbook
+
+The last deliverable is the PR-1 section of `docs/runbooks/migration-subtotal-tax.md`, which ships as a stub with empty headers.
+Record what is now true and the rollback you have while it's true:
+
+- The `0005_expand_subtotal_tax` migration added `subtotal` and `tax` as nullable `numeric(12, 2)` columns alongside `total`.
+- No application code reads or writes the new columns yet, and no existing row was rewritten.
+- Rollback is cheap while nothing reads them: revert the migration, or just drop the two columns. Unread and unwritten, they lose no data and break nothing when dropped — a property that disappears the moment the next PR writes to them.
+
+The cadence itself, and why forward-only migrations never open an incompatibility window, live in [Expand, migrate, contract](/099-zero-downtime-schema-migrations/1-expand-migrate-contract/).
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="drizzle-kit generate"
+    href="https://orm.drizzle.team/docs/drizzle-kit-generate"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The command that diffs your schema and writes 0005's ADD COLUMN SQL — the reference for the generate step."
+  />
+  <ExternalResource
+    title="PostgreSQL — ALTER TABLE"
+    href="https://www.postgresql.org/docs/current/sql-altertable.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The Notes section confirms a nullable ADD COLUMN needs no table rewrite — the safety claim this PR rests on."
+  />
+</CardGrid>
+
+## Moment of truth
+
+The tests read the migration Drizzle Kit generated and confirm `0005` is an additive, nullable, correctly-typed pair of `ADD COLUMN`s, the shape the safety argument rests on.
+They can't reach the live database or the preview, so confirm the rest by hand.
+Run them:
+
+```sh
+pnpm test:lesson 3
+```
+
+A clean pass means the migration's source shape is green:
+
+```sh frame="none"
+ ✓ tests/lessons/Lesson 3.test.ts (6 tests)
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+```
+
+Everything else is deploy-and-observe.
+Work down this list by hand as you rehearse and merge:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">The preview build log shows `0005_expand_subtotal_tax` applied with a success line and sub-second timing.</ChecklistItem>
+  <ChecklistItem chip="untested">On the preview, the inspector's schema-state probe shows `subtotal` and `tax` as nullable, and `information_schema.columns` reports `is_nullable = YES` for both.</ChecklistItem>
+  <ChecklistItem chip="untested">On the preview, create / edit / archive / restore all succeed and the split-coverage panel shows `subtotal` and `tax` null for every row (0%).</ChecklistItem>
+  <ChecklistItem chip="untested">After the merge, production `/invoices` renders, mutations succeed reading and writing `total`, the inspector shows the two new nullable columns, and Sentry reports zero new errors after a two-minute wait.</ChecklistItem>
+  <ChecklistItem chip="untested">`docs/runbooks/migration-subtotal-tax.md` carries the PR-1 state and the cheap-rollback note.</ChecklistItem>
+</Checklist>
