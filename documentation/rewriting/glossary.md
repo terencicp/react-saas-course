@@ -1495,7 +1495,7 @@ drizzle.config.ts | drizzle config | Repo-root file giving Drizzle Kit the diale
 ephemeral branch | - | A short-lived Neon database branch you throw away once its feature merges. | first defined: Chapter 040 L2
 backfill | - | Writing values into a newly added column for the rows that already existed. | first defined: Chapter 040 L2
 ACCESS EXCLUSIVE | - | The strongest Postgres lock; blocks reads and writes, not just writes. | first defined: Chapter 040 L2
-expand-backfill-contract | expand-contract | Safe schema change: add the new shape, populate it, then drop the old shape once nothing reads it. | first defined: Chapter 040 L2
+expand-backfill-contract | expand-contract, expand-migrate-contract, the cadence | Safe schema change: add the new shape, populate it, then drop the old shape once nothing reads it. | first defined: Chapter 040 L2
 dual-write | - | Writing to both old and new columns during a migration so both stay populated. | first defined: Chapter 040 L2
 fix forward | fix-forward | Correcting a failed migration with a new migration rather than rolling back. | first defined: Chapter 040 L2
 statement-breakpoint | --> statement-breakpoint | Drizzle Kit marker splitting a migration file into separate statements. | first defined: Chapter 040 L2
@@ -2835,3 +2835,23 @@ actionlint | - | Static checker for GitHub Actions: type-checks ${{ }} expressio
 shellcheck | - | Static analyzer for shell scripts; actionlint runs it over run: blocks to catch quoting and command bugs. | first defined: Chapter 097 L3
 workflow_dispatch | - | A trigger adding a manual "Run workflow" button; needed to test a scheduled workflow without waiting for cron. | first defined: Chapter 097 L3
 on: schedule | scheduled workflow | GitHub Actions cron trigger; always runs the workflow as it exists on the default branch. | first defined: Chapter 097 L3
+alias swap | - | Vercel points the production domain at a new immutable deployment in one instant; atomic, no in-between. | first defined: Chapter 099 L1
+immutable deployment | - | A built, frozen snapshot of the app the alias can point at; re-promotable, never edited in place. | first defined: Chapter 099 L1
+fleet | warm fleet | The pool of serverless instances serving a deployment; old and new fleets overlap during a cutover. | first defined: Chapter 099 L1
+Rolling Releases | rolling release | Vercel feature routing a configurable share of traffic to the new deployment before promoting to 100%. | first defined: Chapter 099 L1
+dual-read | dual-read fall-through | Read path that coalesces the new value with the old, falling back while the backfill catches up; scaffolding contract removes. | first defined: Chapter 099 L1
+forward-only migration | forward-only | Migrations only move forward; no down migrations, so rollback means a new forward migration to a safe state. | first defined: Chapter 099 L1
+overlap window | - | The seconds to minutes after a deploy when old and new fleets both run against the same database, so the schema must serve both. | first defined: Chapter 099 L1
+SHARE UPDATE EXCLUSIVE | - | A light Postgres table lock; concurrent reads and writes proceed while it's held. Taken by CREATE INDEX CONCURRENTLY and VALIDATE CONSTRAINT. | first defined: Chapter 099 L2
+NOT VALID | - | Constraint flag registering it for new rows but skipping the upfront scan of existing rows; governs when validation happens, not what is allowed. | first defined: Chapter 099 L2
+VALIDATE CONSTRAINT | - | Second step after NOT VALID; scans existing rows under SHARE UPDATE EXCLUSIVE to confirm they satisfy the constraint, so reads and writes keep flowing. | first defined: Chapter 099 L2
+overlap-window axis | - | The question of whether a schema change alters a shape the running code reads or writes, breaking a fleet during the window. | first defined: Chapter 099 L2
+lock axis | - | The question of whether a migration's SQL grabs a lock long enough to be an outage on its own, independent of the code. | first defined: Chapter 099 L2
+maintenance window | - | A planned period of announced downtime to run a change that can't be made safely while the app serves traffic. | first defined: Chapter 099 L2
+read-replica swap | - | Promoting a standby copy that already holds the new shape to become the primary, instead of altering the live database in place. | first defined: Chapter 099 L2
+pgroll | - | Xata's open-source tool that automates the expand/contract cadence by running both schema versions at once behind Postgres views. | first defined: Chapter 099 L2
+automatic ring | automatic verification ring | The unattended layer of preview verification: the build applies the migration and CI type-checks and tests; proves the migration applies and code compiles, nothing more. | first defined: Chapter 099 L3
+manual ring | manual verification ring | The by-hand layer of preview verification: walk the preview URL and query the branch directly; the only layer that proves the change is correct. | first defined: Chapter 099 L3
+synthetic load | manufactured contention | A small script hammering the relevant mutation in a tight loop on a branch, to surface lock contention a traffic-free rehearsal would hide. | first defined: Chapter 099 L3
+IS DISTINCT FROM | - | SQL comparison treating NULL as an ordinary value, so neither side vanishes from a result the way a plain <> would. | first defined: Chapter 099 L3
+neonctl | Neon CLI | Neon's command-line tool; the manual escape hatch for creating and resetting branches outside the automatic Vercel integration. | first defined: Chapter 099 L3

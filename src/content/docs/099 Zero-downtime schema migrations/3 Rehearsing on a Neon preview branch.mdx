@@ -1,0 +1,333 @@
+---
+title: Rehearsing on a Neon preview branch
+chapter-id: 99
+course-progress: 0.9425
+tagline: Rehearse each expand-migrate-contract step on a per-pull-request Neon preview branch carrying production-shaped data, before it touches production.
+sidebar:
+  order: 3
+  label: Rehearse on a preview branch
+rewrites: 2
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import RingsOfVerification from '../../../components/lessons/099/3/RingsOfVerification.astro';
+import ChecksAcrossSteps from '../../../components/lessons/099/3/ChecksAcrossSteps.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Matching from '../../../components/exercises/matching/Matching.astro';
+import Pair from '../../../components/exercises/matching/Pair.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You can now plan a safe migration and read its SQL closely enough to know whether it crosses the trigger.
+But a migration you have only planned and reviewed is a hypothesis, not a fact.
+You believe the `ALTER TABLE` applies cleanly, the app keeps working while both schemas coexist, and the backfill finishes before anyone notices, and a hypothesis that has never met real data is exactly what passes review and then fails in production.
+
+You already own what turns those beliefs into facts.
+When you wired up the Native Vercel-Neon Integration, every pull request started getting its own throwaway Neon branch: a full copy of production's data that production can never see.
+You met it as a safety net; this lesson reuses it as a rehearsal stage, the most production-like environment you have that is completely free to break.
+You run the risky migration there first and watch what happens.
+By the end you will have a four-check loop for every step of the cadence, so a missed dual-write or a table-locking backfill surfaces on a throwaway branch instead of in an incident channel.
+
+## Rehearsing each migration step on its own branch
+
+When a pull request opens, the integration cuts a copy-on-write Neon branch off `main`, production's branch, carrying production's data: the same row counts, value distribution, and indexes.
+The preview deployment's build command runs `pnpm db:migrate && next build`, so the pull request's migration is applied to that branch before the app boots.
+
+So the branch is not an empty sandbox you seed by hand; it is a fair copy of production with your migration already run against it, which makes it the ideal place to rehearse a change you are nervous about.
+And because each step of expand-migrate-contract ships as its own pull request, each step gets its own branch and its own rehearsal.
+
+This is where people slip: rehearsing the cadence does not mean rehearsing once before you start, it means rehearsing every step.
+Expand, migrate, and contract are three hypotheses, and each earns its own test.
+
+<VideoCallout videoId="6XezQQJGdjI" videoTitle="Ship better apps with this CI/CD flow — database branching for preview deployments">
+  Neon's 7-minute walkthrough of the wiring this lesson builds on: a data-carrying branch per pull request, migrations applied in the deploy workflow, and resetting a branch from its parent.
+</VideoCallout>
+
+Verification happens in two layers.
+An **automatic ring** runs without you: the build applies your migration to the branch, and the CI gate type-checks and tests your code.
+A **manual ring** happens only because you do it by hand: you open the preview URL and walk the app, and you query the branch directly to see what the migration did to the data.
+The automatic ring proves the migration applies and your typed code compiles; only the manual ring proves the change is correct.
+A green build is necessary, but nowhere near sufficient.
+
+<RingsOfVerification />
+
+## What a green build does and doesn't prove
+
+Start with the automatic ring: your cheapest verification, and the easiest to overtrust.
+
+The moment your pull request lands, Vercel's build runs `pnpm db:migrate` against the preview branch, the `db:migrate &&` you prepended to the build command earlier.
+If the migration breaks in a way Postgres can detect (invalid SQL, a type mismatch, a lock timeout), the migration step fails, the build fails, and the failure posts to the pull request without ever reaching production.
+Free verification.
+
+The automatic ring's other half is the CI gate, where type-check and tests run against what your code expects.
+Here Drizzle hands you a property worth pausing on: **its typed query builder catches every dropped-column read at compile time.**
+Remove `customer_name` from the schema and `invoices.customerName` stops existing on Drizzle's inferred row type, so every typed read of it becomes a type error before a human reviews the diff.
+The contract step's nagging question, "did I miss a read of the old column somewhere?", is mostly answered for you.
+
+That "mostly" marks the boundary.
+The automatic ring proves your migration **applies** and your typed code **compiles**.
+It does not prove the app behaves correctly, that the dual-write path is reached for every mutation, that the backfill finishes in time, or that the backfilled values are right.
+Those four are the manual ring's job, the subject of the next section: a machine can check that the SQL ran and the code compiled, but not that the change is correct.
+
+:::caution
+This entire ring depends on the build command actually carrying `pnpm db:migrate &&`.
+Drop it, and the preview deploys your new code against the old schema, the exact broken in-between state the cadence exists to prevent.
+The build still goes green, and the app returns a 500 the moment you open it.
+Confirm the override is in place before you trust a single rehearsal.
+:::
+
+<MultipleChoice>
+  Your contract pull request's preview build is fully green: `db:migrate` ran clean against the branch, and CI type-check and tests both pass. What can you conclude from that — and only that?
+
+  <McqChoice correct>The schema change landed and nothing in your typed code still references the dropped column — but whether the app actually behaves correctly is still untested.</McqChoice>
+  <McqChoice>Every reviewer concern is now covered, so you can merge straight to production without opening the preview URL.</McqChoice>
+  <McqChoice>The data the backfill wrote into the new column is correct.</McqChoice>
+  <McqChoice>The migration won't stall once it's competing with production's live write traffic.</McqChoice>
+
+  <McqWhy>A green build is the automatic ring: it proves the migration *applies* and your typed code *compiles*, nothing more. Value correctness, runtime behavior, and performance under real write contention are exactly the gaps the manual ring exists to close — the branch never saw real traffic, and a structurally valid column can still hold wrong data.</McqWhy>
+</MultipleChoice>
+
+## The four-check rehearsal
+
+The build is green, so the SQL applies and the code compiles.
+Now you prove the change is correct: four checks, run in order, on every cadence step.
+The checks never change; what shifts between steps is which one carries the most weight.
+
+**Check one: the migration applied, and it matches the pull request.**
+The Vercel build log shows `db:migrate` succeeded, and a new row appears in the branch's <Term definition="The bookkeeping table Drizzle's migrator records each applied migration in.">`__drizzle_migrations`</Term> table.
+Now confirm the live schema matches what the pull request promised: open <Term definition="Drizzle's browser-based table viewer, here pointed at the preview branch.">Drizzle Studio</Term> against the branch (or run `\d invoices`) and check the column is there with the type and nullability you intended.
+A migration that ran but produced a different shape than the SQL you reviewed is a real failure, and this catches it.
+
+```sql
+SELECT id, hash, created_at
+FROM drizzle.__drizzle_migrations
+ORDER BY id DESC
+LIMIT 1;
+
+-- in psql, inspect the live shape of the table:
+-- \d invoices
+```
+
+**Check two: it finished in a reasonable time.**
+A migration that takes ten minutes against a production-shaped branch takes longer against production proper, which is busier with narrower lock windows.
+A slow run on the branch is the cheapest early warning you get of a slow run on production.
+The fix is almost always one of two things: a `CREATE INDEX` that should have been `CONCURRENTLY`, or a backfill that should have batched.
+
+**Check three: the app still works against the new schema.**
+Open the preview URL and walk the critical paths like a user: list pages render, mutations succeed, dashboard counts match.
+Because the branch is fully populated, a broken query breaks visibly: an empty table, a 500, a count suddenly wrong.
+This is the check the type system can't do for you, because it exercises what never goes through Drizzle's typed builder: raw SQL fragments, external integrations, runtime behavior.
+
+**Check four: the old shape still works where it is supposed to.**
+This guards the cadence's invariant, that the schema must satisfy both live versions of your code at once, and what "works" means depends on the step.
+For **expand**, query the old column directly in Studio; an additive change broke nothing, so it should still read and write.
+For **migrate**, hit the real code paths through the preview URL: every mutation writes both columns, and every read returns the new value when present, falling through to the old when not.
+
+### Inspecting the dual-write
+
+The migrate step hides the rehearsal's most-skipped check, the one the type system can't help with at all.
+
+Through the preview URL, perform a real mutation: create an invoice, or edit one.
+Then open Studio against the branch and look at that exact row.
+Both `customer_name` (the old column) and `customer_id` (the new one) should be populated.
+
+```sql
+SELECT customer_name, customer_id FROM invoices WHERE id = '...';
+```
+
+If only one is populated, you have found a mutation site the dual-write never reached: fix it, push, and re-verify.
+The type system never proves the dual-write runs at every site, since an `update` that sets only the old column type-checks perfectly, so only a row-level look at data you wrote yourself proves coverage.
+
+<ChecksAcrossSteps />
+
+## Escalations beyond the four checks
+
+The four checks handle most migrations.
+These three escalations each close a gap they leave open, with a threshold telling you when each earns the effort.
+
+### Timing the backfill and extrapolating to production
+
+The four checks tell you the backfill ran, not how long it runs against ten times the rows.
+When the table is large enough that "how long?" is a real question, time the backfill on the branch.
+
+```bash
+time pnpm tsx scripts/backfill_customer_ids.ts
+```
+
+Then extrapolate against production's row counts.
+A backfill clearing 200K rows in 90 seconds on the branch takes roughly 900 seconds against a 2-million-row production table.
+That scales linearly, and reality runs a little kinder as the OS page cache warms, so treat the number as a ceiling.
+If 900 seconds fits your window, ship it; if not, batch smaller or move the backfill to a Trigger.dev background job.
+Finding a multi-hour backfill on a throwaway branch beats finding it halfway through the real run.
+
+### Lock contention under synthetic load
+
+A rehearsal branch sees zero traffic, which hides one failure: a migration that is only slow under write contention looks instant on a branch nobody is writing to.
+Manufacture the contention.
+Load the branch with a script that runs the relevant mutation in a tight loop, and run the migration while it loops.
+If the migration grabs a long lock, those writes stall and Neon's metrics show the spike.
+This is the empirical companion to the previous lesson's lock reasoning: there you reasoned about whether a statement takes an `ACCESS EXCLUSIVE` lock; here you measure whether it actually stalls real writes.
+Reach for it only when the target table's write traffic is measured in writes per second, not per minute.
+
+### The data-integrity diff: proving the values are right
+
+Check one proves the column exists; it says nothing about what is in it.
+A backfill can populate a new column with completely wrong values and still pass every schema check: the column is there, the type is right, nothing is null.
+Only a value-level audit catches that.
+Run two queries as a pair.
+The first counts nulls; after a complete backfill it should be zero, proving completeness.
+The second compares each backfilled value against the source of truth: for our rename, every invoice's old `customer_name` should match the `name` on the customer its new `customer_id` points to.
+That count should be zero too, proving correctness.
+
+<div data-mark-color="blue">
+
+```sql "IS DISTINCT FROM"
+SELECT count(*) FROM invoices WHERE customer_id IS NULL;
+
+SELECT count(*)
+FROM invoices i
+WHERE i.customer_name IS DISTINCT FROM (
+  SELECT c.name FROM customers c WHERE c.id = i.customer_id
+);
+```
+
+</div>
+
+The second query uses <Term definition="A SQL comparison that treats NULL as an ordinary value: `NULL IS DISTINCT FROM 5` is true and `NULL IS DISTINCT FROM NULL` is false. A plain `<>` returns NULL whenever either side is NULL, silently dropping those rows from the count.">`IS DISTINCT FROM`</Term> rather than a plain `<>`, so rows with a null on either side still compare as you expect instead of vanishing from the count.
+Reach for this diff whenever the backfill derives a value through a join, a lookup, or a computation rather than copying a column straight across.
+
+## How each cadence step fails, and what catches it
+
+Each cadence step fails its own way, and each failure has a check that catches it on the branch.
+
+**Expand fails when the new foreign key rejects a value the backfill writes.**
+`customer_id uuid REFERENCES customers(id)` promises every backfilled value points at a real customer row.
+If an invoice's derived customer doesn't exist, the key rejects it.
+Running the backfill against production-shaped data surfaces the violation on the branch, and you fix it in the migrate pull request before it merges.
+
+**Migrate fails two ways.**
+The dual-write misses a code path, so a row written through it has only the old column, invisible to the type system but plain in a row-level Studio look.
+Or the backfill runs too long, caught by timing it on the branch and extrapolating, with smaller batches or Trigger.dev as the fallback.
+
+**Contract fails when something still reads the old column.**
+Drizzle's types catch every typed read at compile time and break the build.
+The preview URL catches the rest, the raw SQL and external integrations the types can't see, where the dropped column breaks the reads visibly on the page.
+Before merging, grep for the old column name to surface any raw-SQL straggler.
+
+**One failure spans the whole cadence: a CI job that still names the old column.**
+A test fixture or seed script that references `customer_name` after contract fails the build and blocks the pull request until it's updated.
+
+<Matching instructions="Match each cadence-step failure mode to the rehearsal check that catches it.">
+  <Pair>
+    <Fragment slot="left">The dual-write skips a mutation site</Fragment>
+    <Fragment slot="right">Direct row inspection in Drizzle Studio</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">The backfill maps rows to the wrong customer</Fragment>
+    <Fragment slot="right">The value-match audit query</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A destructive migration locks the table under write load</Fragment>
+    <Fragment slot="right">The synthetic-load lock rehearsal</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">A raw-SQL query still reads the dropped column</Fragment>
+    <Fragment slot="right">Walking the preview URL</Fragment>
+  </Pair>
+  <Pair>
+    <Fragment slot="left">The new foreign key rejects a backfill value</Fragment>
+    <Fragment slot="right">Running the backfill against production-shaped data</Fragment>
+  </Pair>
+</Matching>
+
+## What the rehearsal can't catch, and the production handoff
+
+The preview branch builds confidence, but the most dangerous belief here is "the preview worked, so production can't fail."
+It almost always works, and three things the rehearsal cannot see explain that gap.
+
+**Production-scale concurrency.**
+The branch sees no real traffic, so a migration that is only slow under contention looks fast.
+Synthetic load narrows the gap but only approximates the real thing.
+
+**Post-branch data.**
+The branch is a snapshot frozen at creation, so every row added to production since then is missing.
+A migration that is flawless on the snapshot can still trip over a value in the rows it never saw.
+
+**Long-running production transactions.**
+A slow analytics report or a connection stuck open can block a migration, and the branch has no such transactions to reveal the stall.
+
+So **the rehearsal is necessary but not sufficient.**
+For a high-stakes migration, pair it with a low-traffic deploy window and a watchful eye on your error and database dashboards as it runs.
+"Merge and look away" is never the move for a risky change.
+
+Once the four checks pass, you merge the pull request, and Vercel re-runs `pnpm db:migrate` against production's `main` branch.
+Because the branch already validated this exact migration, **the production run is a repeat**: same SQL, same runner, same shape of data, just the real rows this time.
+That is the payoff of a production-shaped branch.
+
+:::caution
+The rehearsal is only a fair copy if the branch's data still matches production now.
+If `main` has advanced since the branch was created, say a backfill populated a column, the snapshot is stale and your rehearsal proved something about a database that no longer exists.
+Refresh it: close and reopen the pull request for a new branch, or run `neonctl branches reset <branch> --parent` to overwrite the branch from its parent, the database equivalent of `git reset --hard`.
+:::
+
+### The fresh-branch reach
+
+For the busiest tables, where post-branch data is a real risk, add one step.
+The `neonctl` CLI is the manual escape hatch under the automatic integration: it cuts a branch when the pull request opens, but you can cut a fresh one at any moment.
+
+```bash
+neonctl branches create --parent main
+```
+
+Cut a fresh branch the moment the pull request is ready, run the cadence step against it under synthetic load, and watch.
+Reach for this only when the first rehearsal raised a question that only a current snapshot can answer; for most migrations, the branch the integration gave you is current enough.
+
+## Your rehearsal checklist
+
+Run this gate on every expand-migrate-contract step, three times across a full change.
+The point is the last row: you watched the migration run, not just reviewed it.
+
+<Checklist id="rehearsal-checklist">
+  <ChecklistItem chip="tested">The preview build's `db:migrate` step is green and the new row is in `__drizzle_migrations`.</ChecklistItem>
+  <ChecklistItem chip="untested">Studio confirms the live schema matches the PR's SQL: column, type, nullability.</ChecklistItem>
+  <ChecklistItem chip="untested">The migration finished fast on the branch, with no unexpectedly long run.</ChecklistItem>
+  <ChecklistItem chip="untested">Every critical path on the preview URL still works.</ChecklistItem>
+  <ChecklistItem chip="untested">The old shape behaves: it still reads/writes where it should (expand), or a mutation populates both columns (migrate), or nothing broke when it vanished (contract).</ChecklistItem>
+  <ChecklistItem chip="untested">For a backfill step: the branch timing, extrapolated to production row counts, fits an acceptable window.</ChecklistItem>
+  <ChecklistItem chip="untested">For a derived backfill: the null-count and value-match audit queries both return zero.</ChecklistItem>
+  <ChecklistItem chip="tested">CI type-check and tests are green against the PR.</ChecklistItem>
+</Checklist>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Neon — Database branching workflow primer"
+    href="https://neon.com/docs/get-started/workflow-primer"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The authoritative source for the wiring this lesson rehearses on — a data-carrying branch per pull request, plus the testing and naming conventions."
+  />
+  <ExternalResource
+    title="Neon — Reset from parent"
+    href="https://neon.com/docs/guides/reset-from-parent"
+    icon="simple-icons:neon"
+    iconColor="#00E599"
+    description="Backs the lesson's stale-branch caution: a full overwrite of a branch's schema and data from its parent, the database equivalent of git reset --hard."
+  />
+  <ExternalResource
+    title="Neon — A practical guide to database branching"
+    href="https://neon.com/blog/practical-guide-to-database-branching"
+    icon="lucide:git-branch"
+    iconColor="#00E599"
+    description="A hands-on tour of how teams actually use branching in practice — branch-per-PR, debugging migrations, and keeping branches fresh against production."
+  />
+</CardGrid>

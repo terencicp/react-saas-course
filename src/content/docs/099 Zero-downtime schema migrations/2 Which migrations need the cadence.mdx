@@ -1,0 +1,448 @@
+---
+title: Which migrations need the cadence
+tagline: Routing a Postgres schema change to one deploy or the full expand-migrate-contract cadence, judged by overlap-window safety and lock cost.
+chapter-id: 99
+course-progress: 0.9408
+rewrites: 2
+sidebar:
+  order: 2
+  label: Which migrations need the cadence
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import { CardGrid } from '@astrojs/starlight/components';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import CodeReview from '../../../components/exercises/code-review/CodeReview.astro';
+import ReviewFile from '../../../components/exercises/code-review/ReviewFile.astro';
+import ReviewIssue from '../../../components/exercises/code-review/ReviewIssue.astro';
+import ReviewWhy from '../../../components/exercises/code-review/ReviewWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import AxesMatrix from '../../../components/lessons/099/2/AxesMatrix.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson's expand-migrate-contract cadence costs three pull requests, three reviews, three deploys, and a week or two to rename one column without an outage.
+You will not pay that for `ALTER TABLE invoices ADD COLUMN notes text`.
+Most schema changes ship in a single deploy, so the daily call isn't running the cadence, it's the one before it: three deploys, or one?
+This lesson shows you how to tell from a schema diff in seconds.
+
+The answer turns on the rule from last lesson: a change is safe in one deploy only if the schema keeps working for both old and new code during the overlap window, the seconds to minutes after a Vercel deploy when both fleets hit the same database.
+
+## The two axes: does it break code, does it lock the table?
+
+Two questions decide whether a change is safe, and it can fail either one.
+Treat them as a single "is this dangerous?" and you can't explain why an additive index took production down.
+
+The first is the **overlap-window axis**: does the change alter a shape the running code reads or writes?
+A nullable column, a new table, or a new index is invisible to the old code: no compiled query names them.
+Drop, rename, or repurpose something the old code reads, and you break one of the two fleets live during the window.
+
+The second is the **lock axis**, and it has nothing to do with your code: does the migration's SQL grab a lock that freezes the table long enough to be an outage on its own, even with one version running?
+Every change takes some lock; the question is which, and for how long.
+
+The heavy one is <Term definition="The strongest Postgres table lock. Blocks every other operation on the table, including plain SELECT reads. Taken by table rewrites and non-concurrent index builds.">ACCESS EXCLUSIVE</Term>: hold it for two minutes on a table your app reads on every page, and your app is down for those two minutes.
+The light one is <Term definition="A light Postgres table lock. Concurrent reads and writes proceed while it's held. Taken by CREATE INDEX CONCURRENTLY and VALIDATE CONSTRAINT.">SHARE UPDATE EXCLUSIVE</Term>, taken by `CREATE INDEX CONCURRENTLY` and the `VALIDATE CONSTRAINT` you'll meet shortly: same work, no outage.
+
+<VideoCallout videoId="URwmzTeuHdk" videoTitle="All Postgres Locks Explained | A Deep Dive">
+  Hussein Nasser's deep dive on Postgres locks. Jump to `ACCESS EXCLUSIVE` (11:40), `SHARE UPDATE EXCLUSIVE` (21:15), and `CREATE INDEX CONCURRENTLY` to see why one freezes the table and the other doesn't.
+</VideoCallout>
+
+The axes are independent, and the two orange corners prove it.
+A rename desyncs the fleets while locking nothing; no SQL trick lets the old code understand a renamed column, so it needs the cadence.
+A non-concurrent index on a ten-million-row table is invisible to your code but freezes the table for minutes; it needs no cadence, only a rewrite into its lock-light form.
+
+<Figure caption="Two independent gates. A change can fail either axis, both, or neither, and the fix differs by corner.">
+  <AxesMatrix />
+</Figure>
+
+## Three questions that route a migration
+
+A verdict list, "rename equals three deploys, add-column equals one," strands you the moment a change isn't on it, like tightening a `CHECK` constraint.
+A short sequence of questions generalizes where a list can't, and the order is the point.
+
+**Q1, is the change additive only?**
+Does the old code keep working untouched?
+If yes, you're a candidate for one PR, but additive isn't lock-free, so fall through to Q2.
+If no, the change mutates a live shape and you're heading for the cadence.
+
+**Q2, does any single statement hold `ACCESS EXCLUSIVE` long enough to matter?**
+This is a redesign gate, not a verdict.
+An index without `CONCURRENTLY`, a type change that rewrites the table, and a constraint validated without `NOT VALID` all grab the heavy lock.
+If so, rewrite the migration into its lock-light form, `CONCURRENTLY` or `NOT VALID` then `VALIDATE`, and ask Q1 again from the top.
+Only an unavoidable rewrite, like `int` → `bigint`, which physically rewrites every row, reaches the cadence on lock grounds alone.
+
+**Q3, does the running code read or write a shape about to disappear or change meaning?**
+If yes, three deploys: expand, migrate, contract.
+If no, one PR, ship it.
+
+The order is forced.
+Ask Q3 first and you wave through a slow additive index that breaks no code, shipping an `ACCESS EXCLUSIVE` outage.
+Ask Q2 first and you waste an afternoon lock-proofing a column rename that needs the full cadence anyway.
+
+<StateMachineWalker kind="decision" title="Route the migration">
+  <Question id="q1-additive" prompt="Q1 — Is the change additive only? Does the old code keep working untouched?">
+    <Branch label="It's additive — old code is unaware of the new shape" to="q2-lock" />
+    <Branch label="It mutates a shape the old code reads or writes" to="q3-readwrite" />
+  </Question>
+
+  <Question id="q2-lock" prompt="Q2 — Does any single statement hold ACCESS EXCLUSIVE long enough to matter?" description="This is a redesign gate, not a verdict — a heavy lock here usually means rewrite the statement, not run the cadence.">
+    <Branch label="No long lock — it's already polite" to="q3-readwrite" />
+    <Branch label="Yes, but avoidable with CONCURRENTLY or NOT VALID + VALIDATE" to="leaf-redesign" rationale="A non-concurrent index or a validated-in-place constraint — reshapeable." />
+    <Branch label="Yes, and unavoidable — the table must be rewritten" to="leaf-rewrite" rationale="int → bigint and friends physically rewrite every row." />
+  </Question>
+
+  <Question id="q3-readwrite" prompt="Q3 — Does the running code read or write a shape about to disappear or change meaning?">
+    <Branch label="No — nothing live touches the changed shape" to="leaf-one-pr" />
+    <Branch label="Yes — the old fleet still reads the old shape" to="leaf-cadence" />
+  </Question>
+
+  <Leaf id="leaf-redesign" verdict="Rewrite the migration, then re-run from Q1">
+    The statement locks only because of how it's written. Swap in `CREATE INDEX CONCURRENTLY`, or split the constraint into `ADD CONSTRAINT ... NOT VALID` then `VALIDATE CONSTRAINT`. With the heavy lock gone, restart at Q1: the reshaped migration is usually additive and ships in one PR.
+  </Leaf>
+
+  <Leaf id="leaf-rewrite" verdict="Three deploys — table rewrite">
+    When the rewrite is unavoidable, as with `int` → `bigint`, `ACCESS EXCLUSIVE` can't be made light. Treat it like any breaking change: add a new column of the target type, dual-write, backfill, switch reads, drop the old. The lock escalates it here, not the code.
+  </Leaf>
+
+  <Leaf id="leaf-one-pr" verdict="One PR, ship it">
+    Additive, lock-light, and nothing live depends on a vanishing shape. The green list: a new nullable column, a new table, `CREATE INDEX CONCURRENTLY`, or a `NOT VALID` + `VALIDATE` constraint on clean data. Generate, review the SQL, merge.
+  </Leaf>
+
+  <Leaf id="leaf-cadence" verdict="Three deploys — expand, migrate, contract">
+    The old fleet still reads the old shape during the window, so the schema serves both. Last lesson's cadence: expand with the new shape, migrate with dual-write and backfill, contract once the old shape is unread.
+  </Leaf>
+</StateMachineWalker>
+
+## The one-deploy changes: additive and lock-light
+
+These ship in a single PR.
+Read each for how it passes Q1, and where it clears a lock that would trip Q2.
+
+A **new table** is the easiest case: no old query names a table that didn't exist when the code compiled.
+Zero risk on either axis.
+
+A **new nullable column the app doesn't read yet** is a pure `ADD COLUMN`.
+The old code is unaware of it; the new code writes to it when ready.
+
+A **new nullable column the new code does read** adds one wrinkle.
+The old code is still unaware, and the new code reads `null` for every historical row that predates the column, usually handling it with a `coalesce` to a default.
+The column is nullable so those rows stay legal.
+
+A **new index** is the trap in the green list.
+It's additive, so Q1 waves it through, but Q2 catches it: a plain `CREATE INDEX` takes `ACCESS EXCLUSIVE` and blocks every write for the whole build, minutes of downtime on a large table.
+The fix is `CREATE INDEX CONCURRENTLY`, which builds under `SHARE UPDATE EXCLUSIVE` while reads and writes keep flowing.
+An index is one PR only in that concurrent form, which needs the statement-breakpoint marker.
+
+A **new `CHECK` or foreign-key constraint** ships in one PR via the `NOT VALID` then `VALIDATE` two-step below, as long as the existing data already satisfies it.
+
+A **new enum value** via `ALTER TYPE ... ADD VALUE` is one PR on current Postgres.
+Like `CONCURRENTLY`, it can't run inside a transaction block, so it too needs the statement-breakpoint marker.
+
+```sql title="migrations that ship in one PR"
+ALTER TABLE invoices ADD COLUMN notes text;
+
+CREATE INDEX CONCURRENTLY idx_invoices_status ON invoices (status);
+
+ALTER TYPE invoice_status ADD VALUE 'partially_paid';
+```
+
+## The lock-light two-step: `NOT VALID` then `VALIDATE`
+
+This new SQL mechanic turns a category of expensive changes into one-deploy changes.
+
+`ALTER TABLE invoices ADD CONSTRAINT ... CHECK (...)` makes Postgres prove the constraint holds for every existing row before accepting it, scanning the whole table under a lock: minutes of blocked writes on a big table.
+The scan is necessary; doing it in one blocking statement is not.
+
+Postgres lets you split the work into two statements that each take a cheap lock.
+`ADD CONSTRAINT ... NOT VALID` registers the constraint and enforces it on every new row, but skips the existing ones: no scan, so a brief lock and you're done.
+`VALIDATE CONSTRAINT` then scans the existing rows to confirm they satisfy it too, under `SHARE UPDATE EXCLUSIVE`, so reads and writes keep flowing.
+The result is identical to a constraint added the blocking way.
+
+<CodeVariants>
+  <CodeVariant label="Naive — locks the table">
+    <div data-mark-color="orange">
+
+    ```sql
+    ALTER TABLE invoices
+      ADD CONSTRAINT invoices_amount_nonneg CHECK (amount_cents >= 0);
+    ```
+
+    </div>
+    **One statement, full scan, blocked writes.** Postgres validates every existing row before accepting the constraint, holding `ACCESS EXCLUSIVE` for the whole scan. On a large `invoices` table that's minutes of no writes, an outage hiding inside a one-line diff.
+  </CodeVariant>
+
+  <CodeVariant label="Lock-light — two statements">
+    <div data-mark-color="green">
+
+    ```sql "NOT VALID" "VALIDATE CONSTRAINT"
+    ALTER TABLE invoices
+      ADD CONSTRAINT invoices_amount_nonneg CHECK (amount_cents >= 0) NOT VALID;
+
+    ALTER TABLE invoices VALIDATE CONSTRAINT invoices_amount_nonneg;
+    ```
+
+    </div>
+    **`NOT VALID` is instant; `VALIDATE` scans politely.** The first enforces the rule on new rows with a brief lock and no scan. The second scans the existing rows under `SHARE UPDATE EXCLUSIVE`, so reads and writes never stall. Same constraint, no outage.
+  </CodeVariant>
+</CodeVariants>
+
+One naming trap, because the words look alike: `NOT VALID` is not `NOT NULL`.
+`NOT VALID` flags a constraint to validate later and governs *when* validation happens.
+`SET NOT NULL` permanently forbids nulls in a column and governs *what* is allowed.
+You'll use both in the same sequence, so keep them straight.
+
+:::note
+The two statements are one PR only when the existing rows already satisfy the constraint. If some violate it, `VALIDATE` fails, and you must backfill them first, a migrate-style step that puts you back in the cadence. Clean data is one PR; dirty data is three deploys.
+:::
+
+## The three-deploy changes: when the cadence earns its cost
+
+These fail Q3: the running code reads or writes a shape about to change under it, so each needs the full expand-migrate-contract cadence.
+
+A **column rename** is the canonical case.
+Rename `invoices.customer_name` to `invoices.client_name`, same type, and during the overlap window the old fleet still selects `customer_name` while the new fleet selects `client_name`.
+A single deploy satisfies only one, and no SQL trick teaches the old code a new column name.
+Swapping `customer_name` for a `customer_id` foreign key is the same problem plus a type and a constraint, classified below.
+
+A **type change that rewrites the table** is subtler, because not every type change rewrites.
+`varchar(50)` to `text` is metadata-only: free, instant, one PR.
+But `int` to `bigint` rewrites every row under `ACCESS EXCLUSIVE`.
+Anything that rewrites gets the cadence: add a column of the target type, dual-write, backfill, switch reads, drop the old.
+Here the code survives; the lock is what would take you down.
+
+**Dropping a column the running code still reads** collapses to two deploys, not three.
+The old fleet in the window still reads it, so dropping it now would 500 those requests.
+One deploy ships code that no longer reads the column; the second drops it once the old fleet drains.
+
+**Adding `NOT NULL` to an existing column** fails both axes at once and gets its own section below.
+
+**Adding a foreign-key column that becomes required** is the running example.
+Expand adds `customer_id uuid` as nullable with the FK constraint `NOT VALID`; migrate dual-writes it alongside `customer_name`, backfills, and `VALIDATE`s the FK; contract drops `customer_name` and promotes `customer_id` to `NOT NULL`, using last lesson's `--name` convention so the three migration files read as a sequence.
+
+```sql title="one change, three PRs"
+-- PR 1 — expand  (drizzle-kit generate --name expand_invoices_customer_id)
+ALTER TABLE invoices ADD COLUMN customer_id uuid REFERENCES customers (id);
+
+-- PR 2 — migrate  (dual-write + backfill live in app code; no DDL)
+
+-- PR 3 — contract  (drizzle-kit generate --name contract_invoices_customer_id)
+ALTER TABLE invoices DROP COLUMN customer_name;
+ALTER TABLE invoices ALTER COLUMN customer_id SET NOT NULL;
+```
+
+One more is named for recognition only: **changing the primary key**.
+It's the most expensive class, often needing a <Term definition="A planned period of announced downtime where you take the app offline to run a change that can't be made safely while it serves traffic.">maintenance window</Term> or a <Term definition="Promoting a standby copy of the database that already holds the new shape to become the primary, instead of altering the live one in place.">read-replica swap</Term> well beyond the three-deploy cadence.
+Recognize it as its own tier when you meet it.
+
+### Promoting a column to `NOT NULL` without locking the table
+
+`ALTER TABLE invoices ALTER COLUMN customer_id SET NOT NULL` does two bad things at once.
+It fails outright if any row holds a null, and even when every row is non-null it takes `ACCESS EXCLUSIVE` and scans the whole table to prove it, blocking all access, reads included, for the scan's length.
+On a large hot table that's an outage, and checking the data first won't help: the lock is the problem regardless of the nulls.
+
+The safe version is five moves mapped onto the cadence; the payoff is the last step, where the scan goes.
+
+<AnnotatedCode lang="sql" maxLines={12} code={`
+ALTER TABLE invoices
+  ADD CONSTRAINT invoices_customer_id_not_null
+  CHECK (customer_id IS NOT NULL) NOT VALID;
+ALTER TABLE invoices
+  VALIDATE CONSTRAINT invoices_customer_id_not_null;
+ALTER TABLE invoices
+  ALTER COLUMN customer_id SET NOT NULL;
+ALTER TABLE invoices
+  DROP CONSTRAINT invoices_customer_id_not_null;
+`}>
+  <AnnotatedStep>
+    **Deploy one, stop the new nulls.** Make the app write `customer_id` on every insert and update path, via last lesson's shared mutation path. Application code, not SQL. No new nulls appear from here, so the set left to fix is frozen.
+  </AnnotatedStep>
+
+  <AnnotatedStep>
+    **Backfill the existing nulls** to a sensible value, batched and idempotent. Application code again, clearing the historical nulls that would make a bare `SET NOT NULL` fail.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{1-3}" color="orange">
+    Add a `CHECK (customer_id IS NOT NULL)` as `NOT VALID`. Instant: a brief lock, no scan. It guards new nulls, but it's a CHECK constraint, not the column's own `NOT NULL`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4-5}" color="orange">
+    Validate it. The scan runs under `SHARE UPDATE EXCLUSIVE`, so reads and writes keep flowing while it proves no nulls remain. The expensive part, reading every row, runs under a light lock.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6-7}" color="green">
+    Promote to `NOT NULL`. Postgres sees the validated CHECK already proving no nulls and skips the scan, so the promotion is a near-instant metadata flip, not a minutes-long `ACCESS EXCLUSIVE` outage.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8-9}" color="blue">
+    Drop the scaffolding CHECK. The column's own `NOT NULL` now carries the guarantee, so the CHECK is a redundant tidy-up.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+## The middle list: when context decides
+
+These changes have no fixed verdict.
+A memorized answer fails here because the verdict depends on usage or data, not on the change's name, so run the three questions.
+
+**Renaming a table** turns on Q3.
+`ALTER TABLE ... RENAME TO` is metadata-only and instant, clearing Q2.
+But like a column rename, the old fleet still queries the old name during the app-code window, so a table taking live writes needs the cadence.
+For a write-rare lookup table, a brief maintenance-window cutover can beat three PRs.
+
+**Adding a default to an existing column** is one PR on current Postgres.
+`ALTER COLUMN ... SET DEFAULT` is metadata-only: existing rows keep their values, future inserts get the default.
+Older Postgres rewrote the whole table to stamp the default onto every row, a Q2 problem, but the course's Neon is current, so take the fast path.
+
+**Removing a default** is metadata-only too, always one PR.
+
+**Tightening a `CHECK` constraint** depends on the data.
+If every existing row already passes the stricter rule, it's `NOT VALID` + `VALIDATE` in one PR.
+If some rows fail, you must backfill the violators first, a migrate step, so it becomes the cadence.
+
+<Buckets twoCol instructions="Route each schema change to the number of deploys it needs. Read the middle-list items carefully — the stated condition decides the answer.">
+  <Bucket name="one-pr" label="One PR" description="Additive and lock-light" />
+  <Bucket name="cadence" label="Three deploys" description="Expand, migrate, contract" />
+
+  <Item bucket="one-pr">Add a new table</Item>
+  <Item bucket="one-pr">Add an index with `CREATE INDEX CONCURRENTLY`</Item>
+  <Item bucket="one-pr">Change a column from `varchar(50)` to `text`</Item>
+  <Item bucket="one-pr">Add a `CHECK` constraint when every existing row already passes it</Item>
+  <Item bucket="one-pr">Add a default to a column (current Postgres)</Item>
+
+  <Item bucket="cadence">Swap text `customer_name` for a `customer_id` FK column</Item>
+  <Item bucket="cadence">Drop a column the running code still reads</Item>
+  <Item bucket="cadence">Promote an existing column to `NOT NULL`</Item>
+  <Item bucket="cadence">Change a column from `int` to `bigint`</Item>
+  <Item bucket="cadence">Add a `CHECK` constraint when some existing rows violate it</Item>
+</Buckets>
+
+## Reading the Drizzle diff to route the PR
+
+The generated `migration.sql` is the diff, and it answers Q1 and Q2 by inspection: `ADD COLUMN` versus `DROP COLUMN`, whether an index has `CONCURRENTLY`, any type change.
+Routing the PR is mostly reading.
+
+The rename is the one case needing a human eye.
+Drizzle Kit can't see intent: rename a column and it sees one disappear and a similar one appear, so it emits a `DROP COLUMN` beside an `ADD COLUMN`.
+That pairing is your prompt to decide what happened, a true rename that routes through the cadence, or a real remove-and-add that routes by Q3 on each half.
+Catch it above all: a rename shipped as a one-PR `DROP` + `ADD` is the textbook one-deploy outage.
+
+So review the generated SQL every time, and never `push` in production.
+The PR below pairs a real generated `migration.sql` with the app-code change that prompted it.
+Leave a comment on anything you'd flag before approving.
+
+<CodeReview instructions="You're reviewing a schema-change PR before it merges. Leave a comment on any line that shouldn't ship as one deploy.">
+  <ReviewFile name="drizzle/0007_change_invoices.sql">
+    ```sql ins={1-3}
+    ALTER TABLE invoices ADD COLUMN customer_id uuid REFERENCES customers (id);
+    ALTER TABLE invoices DROP COLUMN customer_name;
+    CREATE INDEX idx_invoices_customer_id ON invoices (customer_id);
+    ```
+  </ReviewFile>
+
+  <ReviewFile name="src/db/schema.ts">
+    ```ts del={4} ins={5}
+    export const invoices = pgTable('invoices', {
+      id: uuid('id').primaryKey().defaultRandom(),
+      orgId: uuid('org_id').notNull(),
+      customerName: text('customer_name').notNull(),
+      customerId: uuid('customer_id').references(() => customers.id),
+      amountCents: integer('amount_cents').notNull(),
+    });
+    ```
+  </ReviewFile>
+
+  <ReviewIssue file="drizzle/0007_change_invoices.sql" line={2} kernel="this DROP + ADD swaps customer_name for a customer_id FK in one PR — a destructive column swap (text → uuid FK, a type and constraint change); the old fleet still reads customer_name during the overlap window, so it needs expand-migrate-contract, not a single deploy">
+    This `DROP COLUMN customer_name` sitting next to the `ADD COLUMN customer_id` above is a destructive column swap — the schema edit confirms it: `customerName` (text) deleted, `customerId` (uuid FK) added. It's a type and constraint change, not just a rename.
+    That's the Q3 miss.
+    During the overlap window the old fleet is still selecting `customer_name`; dropping it in the same deploy that adds `customer_id` 500s every old-code request until the old functions drain.
+    A swap like this has no SQL workaround — it needs the full expand-migrate-contract cadence (add `customer_id`, dual-write and backfill, then drop `customer_name` in a later deploy), so this one line is what should block the merge.
+  </ReviewIssue>
+
+  <ReviewIssue file="drizzle/0007_change_invoices.sql" line={3} kernel="non-concurrent index build takes ACCESS EXCLUSIVE and blocks all writes for the whole build; add CONCURRENTLY">
+    The index is additive — no running code names it — so Q1 and Q3 wave it through.
+    But this is the Q2 miss: a plain `CREATE INDEX` takes `ACCESS EXCLUSIVE` and blocks every write to `invoices` for the entire build, which on a large table is minutes of downtime hiding inside a one-line diff.
+    The fix is the lock-light form, `CREATE INDEX CONCURRENTLY`, which builds under `SHARE UPDATE EXCLUSIVE` while reads and writes keep flowing.
+  </ReviewIssue>
+
+  <ReviewWhy>
+    One PR, two independent failures — one per axis.
+    Line 2 fails the **overlap-window axis** (Q3): swapping out a column the old code still reads breaks it mid-window.
+    Line 3 fails the **lock axis** (Q2): a non-concurrent index freezes the table no matter how the code reads it.
+    Catching one and missing the other still ships an outage, which is the whole point — the trigger map ("does this break the old code?") and the locking checklist ("does this hold a long lock?") are separate reviews, and an experienced reviewer runs both on every schema diff.
+  </ReviewWhy>
+</CodeReview>
+
+## Why we hand-roll the cadence
+
+**pgroll**, an open-source tool from Xata, automates the whole cadence.
+It runs both schema versions at once behind Postgres views, so old and new code each see the schema they expect, and it sequences expand/contract and lock-safe backfills for you.
+
+<Aside type="note">
+This course stays hand-rolled with Drizzle Kit, because reading the diff, routing it, and sequencing the deploys is the skill worth learning, and it transfers to any tool or none.
+For a minimum-viable stack, one more piece of infrastructure is one too many.
+
+<ExternalResource
+  title="pgroll — zero-downtime, reversible Postgres migrations"
+  href="https://github.com/xataio/pgroll"
+  icon="simple-icons:github"
+  description="Xata's open-source tool that runs both schema versions side by side via views."
+/>
+</Aside>
+
+## When unsure, bias toward the cadence
+
+When the three questions don't give a clean answer, let the cost of guessing wrong decide, because it is wildly lopsided.
+
+Run the cadence on a change that didn't need it and you've spent three PRs where one would have done: no outage, no pager.
+Ship a rename or a drop in a single deploy and you take production down during the cutover, then the failure clears on its own, leaving nothing to revert.
+That downside has no ceiling, so when unsure, treat the change as cadence-class.
+
+And run both gates every time: a clearly additive change passes Q1 and Q3 yet can still need `CONCURRENTLY` for Q2.
+Distrust "no one will hit this table during the deploy": the cutover window is exactly when cron jobs fire, ops scripts run, and a stray health check reads the row you just dropped.
+There is no quiet table during a deploy, only the one whose traffic you didn't think about.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="PostgreSQL at Scale: Schema Changes Without Downtime"
+    href="https://medium.com/paypal-tech/postgresql-at-scale-database-schema-changes-without-downtime-20d3749ed680"
+    icon="simple-icons:medium"
+    iconColor="#000000"
+    description="The canonical reference on safe vs. unsafe DDL, NOT VALID/VALIDATE, and lock-free SET NOT NULL."
+  />
+  <ExternalResource
+    title="Postgres docs — Explicit Locking"
+    href="https://www.postgresql.org/docs/current/explicit-locking.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The authoritative lock reference: every table lock mode and the full conflict matrix."
+  />
+  <ExternalResource
+    title="Prisma — The expand and contract pattern"
+    href="https://www.prisma.io/dataguide/types/relational/expand-and-contract-pattern"
+    icon="simple-icons:prisma"
+    iconColor="#2D3748"
+    description="A diagram-driven walkthrough of the seven-step cadence, tool-agnostic in its concepts."
+  />
+  <ExternalResource
+    title="Postgres expand/contract migrations (PGConf.EU 2024)"
+    href="https://www.youtube.com/watch?v=Wbg2HoYjLHU"
+    icon="simple-icons:youtube"
+    iconColor="#FF0000"
+    description="Andrew Farries (pgroll author) on the pattern, lock avoidance, and serving two schema versions via views."
+  />
+</CardGrid>

@@ -862,7 +862,7 @@
 - 8 The launch checklist (The eight rows that make a URL defensible — env validation, error monitoring, rate limits, audit logs, security headers, pooled DB with matching region, tested backups, and external uptime monitoring with a human paged.)
 - 9 Quiz
 
-### Chapter 099 — Migrating a live schema without an outage
+### Chapter 099 — Zero-downtime schema migrations
 - 1 Expand, migrate, contract (The three-deploy cadence that ships a breaking schema change without an outage: add the new shape alongside the old, dual-write and backfill from app code, then drop the old shape once nothing reads it.)
 - 2 Which migrations need the cadence (The trigger map and three-question decision tree that separate one-deploy additive changes from three-deploy renames, type rewrites, NOT NULL promotions, and FK-required columns.)
 - 3 Rehearsing on a Neon preview branch (The four-check rehearsal that runs each cadence step against production-shaped data before merge, catching FK violations, missed dual-write sites, slow backfills, and leftover reads of the old shape.)

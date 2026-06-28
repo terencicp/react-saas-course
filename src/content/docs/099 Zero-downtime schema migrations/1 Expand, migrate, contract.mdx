@@ -1,0 +1,324 @@
+---
+title: Expand, migrate, contract
+tagline: The expand-migrate-contract cadence, a three-deploy pattern for changing a live Postgres schema without downtime.
+chapter-id: 99
+course-progress: 0.9385
+rewrites: 2
+sidebar:
+  order: 1
+  label: Expand, migrate, contract
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import OverlapWindow from '../../../components/lessons/099/1/OverlapWindow.astro';
+import CadenceStrip from '../../../components/lessons/099/1/CadenceStrip.astro';
+import ReversibilityTable from '../../../components/lessons/099/1/ReversibilityTable.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Picture this scenario. The invoices table stores the customer's name as plain text in `customer_name`; a teammate replaces it with a foreign key, `customer_id`, into a `customers` table. They rename the column, generate the migration, and merge. The migration runs as the deploy goes out. For ninety seconds, half the app returns 500s. Then the errors stop on their own, which is the unsettling part: there's nothing left to point at and nothing obvious to revert.
+
+Each piece was correct on its own, the migration, the new code, and the old code; together they broke. The key is from the previous chapter: a production deploy is an atomic alias swap, so for a moment the old code and the new code are both live.
+
+## The alias swap is atomic; the cutover is not
+
+When a build finishes, Vercel performs an <Term definition="Vercel points the production domain at a new immutable deployment; this is instantaneous (you saw it in the previous chapter).">alias swap</Term>: the production domain stops pointing at the old immutable deployment and points at the new one. The swap is atomic.
+
+But an atomic *alias swap* is not an atomic *cutover*. The alias flips instantly; the running code does not. When the alias moves, a <Term definition="The set of serverless instances serving your code. The new set warms over seconds while the old set keeps draining in-flight requests.">fleet</Term> of warm serverless instances is already running the *old* code. The new deployment's fleet has to warm up, and the old fleet keeps draining in-flight requests. For a window of seconds to minutes, the **old fleet (v1)** and the **new fleet (v2)** both serve traffic against the one shared database.
+
+That window isn't only an accident of warmup. Vercel's <Term definition="A Vercel feature that routes a configurable share of traffic to the new deployment before promoting it to 100%.">Rolling Releases</Term> let you *deliberately* route a fraction of traffic to the new deployment for as long as you choose, so two code versions live at once can be a deliberate, extended state of production, not just a corner case.
+
+The migration is a *separate event* from the swap: it commits at one instant, and one migration plus one swap can never be a single atomic step. Walk it through with the rename. The old code runs `SELECT customer_name`; the new code runs `SELECT customer_id`.
+
+- If the migration runs **before** the swap, the database has `customer_id` and not `customer_name`, but the v1 fleet is still live and still asking for `customer_name`. Its queries fail. That's the 500s.
+- If the migration runs **after** the swap, the v2 fleet is already asking for `customer_id`, but the column doesn't exist yet. Its queries fail. Same 500s, different fleet.
+
+There is no third ordering, and no way to wish the window away: two fleets that want different shapes are alive at once.
+
+Scrub the sequence below to watch the overlap moment appear, then disappear.
+
+<DiagramSequence>
+  <DiagramStep caption="Before the swap: the alias points at v1. One fleet, one database, one clean path.">
+    <OverlapWindow phase="before" />
+  </DiagramStep>
+
+  <DiagramStep caption="The alias has swapped to v2, but v1 is still draining in-flight requests. Both code versions now share one database, for seconds or as long as a rolling release lasts.">
+    <OverlapWindow phase="overlap" />
+  </DiagramStep>
+
+  <DiagramStep caption="v1 has fully drained; only v2 remains. The migration committed somewhere across these three moments, so the schema had to be readable by whichever fleets were live at that instant.">
+    <OverlapWindow phase="after" />
+  </DiagramStep>
+</DiagramSequence>
+
+:::caution
+The alias swap is instant; the cutover is not. Don't treat them as the same moment.
+:::
+
+**During the overlap window, the schema must be valid for every code version that is live.**
+
+A one-shot rename is an outage because it produces a schema valid for exactly one fleet at a time, while two fleets are live.
+
+## Three deploys: expand, migrate, contract
+
+If no single migration can satisfy both fleets, split the change across **three deploys**, arranged so every intermediate database state is valid for whatever code is live. The old and new shapes coexist, and that coexistence keeps the app up. Each deploy keeps both versions working at a different stage:
+
+- **Expand.** Add the new shape *alongside* the old one. The old code is untouched and reads nothing that changed, so it keeps working.
+- **Migrate.** Write *both* shapes on every mutation, and read the new one with a fallback to the old; a backfill fills the history. Now both columns hold the truth.
+- **Contract.** Once nothing reads the old shape, drop it. Only the new code is left, and it needs only the new shape.
+
+<VideoCallout videoId="cw5K2O4AHJc" videoTitle="How do software projects achieve zero downtime database migrations?">
+  Web Dev Cody whiteboards the whole expand-contract cadence in 7 minutes, using a column split as the example.
+</VideoCallout>
+
+This costs calendar time, often one to three weeks for a column rename, because each deploy must soak before the next ships: the wait lets the old fleet drain before you remove what it depends on. Not every change needs all three steps, a nullable column nothing reads is one deploy, but this lesson assumes yours does.
+
+<Figure caption="The schema carries both shapes through the middle; the app code grows scaffolding in migrate that contract tears back down.">
+  <CadenceStrip />
+</Figure>
+
+## Expand: add the new shape without touching old code
+
+The first deploy has one rule: **additive only, never destructive.** You add a *nullable* column, a table, or an index, and change nothing the old code already reads.
+
+The old code stays safe for two reasons. The new column is nullable, so every insert it performs still satisfies the schema, leaving the column null. And it never names the new column, so no query can break on it. The schema now carries *both* shapes, and v1 runs against it without noticing.
+
+The PR is small: the edit to `db/schema.ts`, the migration SQL it generates, and ideally no app-code change. You're not writing or reading the new column yet, just making room.
+
+Here's the migration the expand PR ships for the rename:
+
+```sql title="drizzle/0008_expand_invoices_customer_id.sql"
+ALTER TABLE invoices ADD COLUMN customer_id uuid REFERENCES customers(id);
+```
+
+Two facts about that line matter. The column is **nullable**, with no `NOT NULL`, because every existing row lacks a `customer_id` and would violate the constraint the instant it was added. And the foreign key is safe now, since it points at `customers(id)` without touching anything the old code reads. (Adding it without holding a heavy lock on a large table is the next lesson's topic.)
+
+This is still the ordinary migration loop: `drizzle-kit generate --name expand_invoices_customer_id`, review the SQL, then `migrate`.
+
+Rolling expand back is cheap, and it shows what rollback means across the cadence. There are no down migrations: to undo expand you `git revert` the (empty) app changes and ship a *forward* migration dropping the new, still-unread column, safe because nothing reads it. Already, "rolling back" means "rolling forward to a safe state."
+
+## Migrate: dual-write, backfill, dual-read
+
+The second deploy makes the system correct against *either* schema state: whichever fleet a request lands on, it reads and writes consistently.
+
+After expand, the new column is empty, both for historical rows and for any row written by code that doesn't know it exists. Migrate closes both gaps: new writes fill both columns, and a backfill fills in the past. **By the end, both columns hold the truth, and that redundancy is the safety the whole cadence buys you.** The next three parts are the write path, the history, then the read path.
+
+### Dual-write: the write path that feeds both columns
+
+Inside the server action (or the query helper it calls) that already mutates the invoice row, write *both* `customerName` and `customerId` in the *same* statement. Drizzle's `insert` and `update` don't care: hand them both fields and they go out together.
+
+The dual-write is safe because it's **structural, not opt-in.** It lives in the one code path the app already uses to mutate an invoice, so every create and update hits both columns, whether or not the developer touching some unrelated feature remembers a migration is in flight. Were it a per-call-site step, one missed site would silently rot a row you'd find weeks later. The dual-write is also temporary: contract removes it.
+
+The walkthrough shows it inside an otherwise-ordinary `updateInvoice` action, with auth and validation elided.
+
+<AnnotatedCode lang="ts" code={`
+'use server';
+
+export const updateInvoice = async (input: UpdateInvoiceInput) => {
+  const { id, customerId, customerName } = parse(input);
+  const { orgId } = await requireOrgUser();
+
+  await tenantDb(orgId)
+    .update(invoices)
+    .set({ customerId, customerName })
+    .where(eq(invoices.id, id));
+
+  updateTag(invoiceTags.record(orgId, id));
+  return ok({ id });
+};
+`}>
+  <AnnotatedStep meta="{4-5}" color="blue">
+    The familiar opening: parse the input, lift `orgId` off the session. The same `parse → authorize` shape you write for every action.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{8-11} "customerId" "customerName"`} color="green">
+    The mutation, and the whole point of the deploy. One `update`, both columns set in the *same* statement, so the row can never end up with one filled and the other stale.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{8}" color="blue">
+    This `tenantDb(orgId).update(invoices)` is the *only* place an invoice row is mutated, so every write flows through it and hits both columns automatically. No caller has to opt in.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+:::caution
+Don't skip dual-write because "the backfill is quick." Any write to the old column between the backfill finishing and the contract deploy leaves that row inconsistent, with a stale new column. Dual-write is what turns the backfill into a *one-time* job instead of a race you keep losing.
+:::
+
+### The backfill: bounded, batched, idempotent
+
+Dual-write handles every row written from now on. The rows that existed before migrate shipped are the backfill's job: a one-time pass that populates the new column for historical rows.
+
+Three properties make a backfill safe:
+
+- **Bounded and batched.** Update 1,000 to 10,000 rows at a time, never in one statement. A single `UPDATE` across millions of rows holds a lock for the whole run while the app's own writes pile up behind it: a self-inflicted outage. Loop instead, each batch in its own transaction, so locks release quickly.
+- **Idempotent.** Guard the update with `WHERE customer_id IS NULL`. Running the script twice is then a no-op on rows that already have a value, and if it crashes halfway you just run it again.
+- **Run from the right place.** For a small or medium table, a one-shot `scripts/backfill_customer_ids.ts` run from your machine against the *unpooled* connection (`dbUnpooled`) is plenty. For millions of rows you want observable, resumable, and off your laptop, reach for a background job on Trigger.dev, covered in its own chapter.
+
+```ts title="scripts/backfill_customer_ids.ts" {8} "WHERE customer_id IS NULL" "LIMIT ${BATCH_SIZE}"
+import { dbUnpooled } from '@/db';
+import { sql } from 'drizzle-orm';
+
+const BATCH_SIZE = 5000;
+
+while (true) {
+  const batch = await dbUnpooled.execute(sql`
+    UPDATE invoices
+    SET customer_id = customers.id
+    FROM customers
+    WHERE invoices.customer_name = customers.name
+      AND invoices.id IN (
+        SELECT id FROM invoices
+        WHERE customer_id IS NULL
+        LIMIT ${BATCH_SIZE}
+      )
+  `);
+  if (batch.rowCount === 0) break;
+}
+```
+
+All three properties show up in the loop: `WHERE customer_id IS NULL` is the idempotency guard; the `LIMIT ${BATCH_SIZE}` subquery is the batching, since Postgres `UPDATE` has no `LIMIT` of its own; and `if (batch.rowCount === 0) break` makes it resumable, running until a pass changes nothing.
+
+Don't run this blind: the lesson after next rehearses it on a production-shaped copy first, to learn how long it takes and what it locks.
+
+:::caution
+The single-transaction backfill, one big `UPDATE` over the whole table, is the classic table-lock outage. On any table large enough to matter, batching isn't an optimization; it's the difference between a background task and a dead app.
+:::
+
+### Dual-read: the fall-through while history catches up
+
+Inside migrate the data is mixed: the backfill is partway through, so some rows have `customer_id` and some still only have `customer_name`. The read path has to return a sensible value either way.
+
+The fix is a fall-through: read the new value, fall back to the old one when the new is null. In SQL that's a `coalesce`, placed in the **query helper** that reads invoices so it's defined once, not copy-pasted across every call site.
+
+```ts title="db/queries/invoices.ts" "coalesce"
+// Prefer the joined customer (reached via customer_id); fall back to the legacy text column.
+customerName: sql<string>`coalesce(${customers.name}, ${invoices.customerName})`,
+```
+
+It coalesces the *joined* `customers.name`, reached through the new `customer_id` foreign key, with the legacy `invoices.customerName` text column, not the two raw columns directly (one is a uuid, the other text). Every read then gets a consistent name however far the backfill has progressed.
+
+Like the dual-write, this fall-through is scaffolding contract removes once every row has a `customer_id`.
+
+When the new column powers a new feature rather than just renaming a value, gate the *read* path behind a <Term definition="A runtime switch that turns behavior on or off without a deploy (PostHog, from the analytics chapter).">feature flag</Term>: it rolls the new behavior out in stages and is the fastest rollback if the data has a quality problem, no deploy needed. Reach for it only when the change is also a behavior change; the next lesson draws that line.
+
+**The system is now correct against either schema state, and fully reversible by `git revert`, because the old column still holds the truth.** If migrate was a mistake, you revert the app PR and reads fall through to `customer_name` again. No migration to undo, no data lost.
+
+## Contract: drop the old shape once it's unread
+
+The third deploy returns the schema to one clean shape. It has one hard precondition.
+
+Contract is safe **only after** the new code has run long enough that *nothing* reads the old shape: no live function, no cron job, no one-off script, no integration you forgot about. The lesson after next shows how to prove that; here, hold it as the gate. Don't drop `customer_name` until you're certain nobody asks for it.
+
+The contract PR holds three things: the schema edit dropping the old column, the generated SQL, and the app-code cleanup that deletes the dual-write and dual-read fall-through from migrate.
+
+```sql title="drizzle/0012_contract_invoices_customer_name.sql" {2}
+ALTER TABLE invoices DROP COLUMN customer_name;
+ALTER TABLE invoices ALTER COLUMN customer_id SET NOT NULL;
+```
+
+The `SET NOT NULL` promotion is safe *now*. At expand it would have rejected every existing row, since none had a `customer_id` yet. The backfill filled the history and the dual-write covered everything since, so every row now holds a `customer_id`, with no nulls left to reject.
+
+Contract is the only irreversible step. `git revert` restores code, not dropped bytes: once `customer_name` is gone, its values are gone. That's why it ships last, and only once you're certain.
+
+:::danger
+Dropping the old column in the *same PR* that introduces the new one is the canonical "I broke prod" pattern. It collapses all three states into one and recreates the exact race the cadence exists to remove: the old fleet asking for a column that no longer exists. The whole point of three deploys is that the drop is the *last* one.
+:::
+
+## Forward-only migrations: what rollback can't undo
+
+Why the care, when instant rollback from the previous chapter recovers in seconds? Because re-promoting the last good deployment brings back code, not a dropped column.
+
+Recall the rule from Drizzle: migrations are **forward-only**, with no down migrations. Every step in the cadence is a forward migration that leaves the system runnable, so "rolling back" means rolling *forward* to a known-safe state, never running a migration in reverse. Each step gets there differently: expand and migrate roll back by deploy, while contract is a data-recovery job, which is why it ships last.
+
+<Figure caption="Two of the three steps roll back by deploy. The third is a data problem, which is why it goes last.">
+  <ReversibilityTable />
+</Figure>
+
+Each step earns its place by one test: does it leave production runnable on the *previous* deploy? Expand and migrate do. Contract does too, but only because by the time it ships, the previous deploy has already stopped needing the old column. Last chapter's rollback is the *cure*, and it works for code; the cadence is the *prevention*, and you need it because the cure can't reach a forward-only migration.
+
+:::caution
+Each step is reversible *only if each PR is small enough that `git revert` is sane.* Bundle the dual-write with three unrelated feature changes and you can't revert the migration without reverting the features, so the reversibility you worked for is gone. Keep each cadence PR focused on the cadence.
+:::
+
+## When the cadence isn't enough
+
+The cadence makes the *shape* change safe, not the change as a whole. A behavior change riding along needs its own feature-flag rollout to turn on for everyone at once. And a backfill that *corrects* existing values rather than *copying* them is a data migration with its own correctness story: you must verify the values are right, not just present.
+
+## Practice: order the cadence
+
+What matters here isn't the three words but their order. The drill below scrambles every step from all three deploys; put them back into the sequence they'd actually run.
+
+<Sequence instructions="Order the steps of a full expand-migrate-contract cadence for renaming `customer_name` to a `customer_id` foreign key.">
+  <Step>Add the nullable `customer_id` column (expand migration)</Step>
+  <Step>Dual-write both `customer_name` and `customer_id` in the invoice action</Step>
+  <Step>Run the batched, idempotent backfill over historical rows</Step>
+  <Step>Switch reads to fall back to `customer_name` when the `customer_id` join yields nothing, in the query helper</Step>
+  <Step>Wait until the new code has been live long enough that nothing reads `customer_name`</Step>
+  <Step>Drop the `customer_name` column (contract migration)</Step>
+  <Step>Promote `customer_id` to `NOT NULL`</Step>
+</Sequence>
+
+<MultipleChoice>
+  A teammate ships the `customer_name` → `customer_id` rename in a single PR — the schema migration and the code change deploy together — reasoning that "the Vercel deploy is atomic, so there's no gap to worry about." For roughly a minute after the deploy, a chunk of requests 500, then it heals on its own. What was actually happening during that minute?
+
+  <McqChoice correct>The migration had already flipped the schema to the new shape, but instances still running the previous build were live and querying the old shape — so their reads hit a column that no longer existed.</McqChoice>
+  <McqChoice>The alias swap genuinely *is* atomic, so the errors must have come from something unrelated to the rename — a cold-start spike or a network blip.</McqChoice>
+  <McqChoice>Only the new build was serving traffic once the alias moved, so the errors were the new code briefly mis-handling rows the backfill hadn't reached yet.</McqChoice>
+  <McqChoice>Vercel holds the migration until every old instance has drained, so old and new code never touch the database at the same time.</McqChoice>
+
+  <McqWhy>The alias swap is atomic, but the *cutover* is not: when the alias moves, a warm pool of previous-build instances is still draining in-flight requests against the one shared database. The migration commits at a single instant, so for a window the old fleet meets the new schema (or, in the other ordering, the new fleet meets the old schema) — and the mismatched fleet's queries fail. Nothing waits for anything to drain. The errors heal only once the old fleet finishes draining, which is exactly why there's no single thing to revert.</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  Suppose each of the three deploys has already shipped to production and you now need to walk one of them back. Which step is the **only** one where `git revert` plus re-promoting the previous deployment is *not* enough to recover?
+
+  <McqChoice>**Expand** — it added a new column, and undoing an `ADD COLUMN` is the hardest part to reverse.</McqChoice>
+  <McqChoice>**Migrate** — it changed live read and write paths, so reverting the app code can leave rows half-written.</McqChoice>
+  <McqChoice correct>**Contract** — it dropped the old column, and re-promoting the previous build can't bring those bytes back.</McqChoice>
+  <McqChoice>None — every step is forward-only, so re-promoting the previous deploy always recovers cleanly.</McqChoice>
+
+  <McqWhy>The recoverable steps are reversible because *no data was destroyed*. Expand only added an unread column — a forward-fix can drop it, and nothing missed it. Migrate only changed code paths; revert the app PR and reads fall through to `customer_name`, which still holds the truth. **Contract** is the odd one out because it `DROP COLUMN`s the old shape: `git revert` restores code, not deleted bytes. Recovering past a contract isn't a deploy at all — it's re-adding the column and backfilling it from a snapshot or replica. That irreversibility is exactly why contract ships last, and only once you're certain nothing reads the old column.</McqWhy>
+</MultipleChoice>
+
+## External resources
+
+If you want the same idea told by teams who run it at scale, these write-ups on online schema change and the expand-contract pattern are worth reading.
+
+<CardGrid>
+  <ExternalResource
+    title="Using the expand and contract pattern"
+    href="https://www.prisma.io/dataguide/types/relational/expand-and-contract-pattern"
+    icon="simple-icons:prisma"
+    iconColor="#2D3748"
+    description="Prisma's Data Guide walks the full pattern step by step, with diagrams for each stage, the canonical written companion to this lesson."
+  />
+  <ExternalResource
+    title="Zero-downtime Postgres migrations — the hard parts"
+    href="https://gocardless.com/blog/zero-downtime-postgres-migrations-the-hard-parts/"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="GoCardless on the Postgres locking traps, including why adding a foreign key can lock a busy table, the detail the next lesson picks up."
+  />
+  <ExternalResource
+    title="Safely making database schema changes"
+    href="https://planetscale.com/blog/safely-making-database-schema-changes"
+    icon="simple-icons:planetscale"
+    iconColor="#000000"
+    description="How a database company runs non-blocking, online schema changes at scale, with branching and deploy requests."
+  />
+</CardGrid>
