@@ -2666,3 +2666,36 @@ money path | money-path | A multi-step flow where a break costs real money (Chec
 system under test | SUT | The real code a test exercises, as opposed to the harness, mocks, and fixtures around it. | first defined: Chapter 091 L1
 behavior contract | - | A test read as a statement of the behavior that must hold, named so its purpose is clear from the name alone. | first defined: Chapter 091 L1
 Proxy | JavaScript Proxy | A JS object wrapping another and intercepting operations (property reads, etc.) via trap functions. | first defined: Chapter 091 L2
+Sentry | - | Error-monitoring platform that collects, groups, and enriches exceptions from your app. | first defined: Chapter 092 L1
+observability | - | Making a running system's behavior inspectable from outside via errors, logs, and traces. | first defined: Chapter 092 L1
+fingerprint (Sentry) | - | Signature Sentry derives from an event to decide which issue it groups into. | first defined: Chapter 092 L1
+tunnelRoute | tunnel route | Same-origin proxy route the Sentry SDK posts events through so ad-blockers don't drop them. | first defined: Chapter 092 L1
+onRequestError | - | Next.js instrumentation hook firing on errors that bubble to the framework boundary; wired to Sentry's capture. | first defined: Chapter 092 L1
+Sentry release | release tag | Sentry label binding events to a specific deploy and commit. | first defined: Chapter 092 L1
+symbolicated | symbolication | Stack trace whose minified frames are mapped back to original source via source maps. | first defined: Chapter 092 L1
+cardinality (field) | high-cardinality, low-cardinality | Number of distinct values a field can take; high-cardinality fields blow out grouping and quota. | first defined: Chapter 092 L1
+breadcrumb | - | One entry in a capped, ordered trail of recent events Sentry attaches to an error. | first defined: Chapter 092 L1
+beforeSend | - | Sentry hook running on every event before send; last chance to scrub sensitive data. | first defined: Chapter 092 L1
+span (trace) | - | A timed segment of work (a call, a query) recorded as part of a trace. | first defined: Chapter 092 L1
+pino | - | Fast structured JSON logger for Node; child-logger API makes correlation IDs ergonomic. | first defined: Chapter 092 L2
+transport (pino) | log transport, pino-pretty | pino's pluggable log-shipping mechanism; runs in a worker thread, so it breaks on serverless cold paths. | first defined: Chapter 092 L2
+stdout | standard output | A process's standard output stream; Vercel captures whatever a function writes to it, line by line. | first defined: Chapter 092 L2
+child logger | logger.child | A derived logger that pre-binds extra keys onto every line, on top of its parent's keys. | first defined: Chapter 092 L2
+entry seam | - | The chokepoint every request of a kind passes through, where cross-cutting setup like auth and context belongs. | first defined: Chapter 092 L2
+serializer (pino) | - | A function turning an awkward value (like an Error) into clean structured JSON for a log line. | first defined: Chapter 092 L2
+special-category data | Article 9 data, GDPR Art. 9 | Health, religion, ethnicity, political opinion, sexual orientation, biometric, genetic data; a stricter prohibition than ordinary PII, never log material. | first defined: Chapter 092 L3
+legitimate-interest basis | legitimate interest | One of GDPR's six lawful bases: a genuine need outweighing the user's privacy interest, justified and documented rather than consented to. | first defined: Chapter 092 L3
+Drain (Vercel) | Vercel Drain, Drains | One-way pipe copying Vercel runtime logs to an external destination; forwards a copy, does not replace the built-in viewer. | first defined: Chapter 092 L4
+Axiom | - | Course-default log destination; native Vercel Marketplace integration, free ingest tier, schema-on-read. | first defined: Chapter 092 L4
+schema-on-read | - | Destination infers fields from JSON at query time, no fixed schema; new keys become queryable automatically. | first defined: Chapter 092 L4
+APL | Axiom Processing Language | Axiom's query language; field-filter idea transfers to any log destination's syntax. | first defined: Chapter 092 L4
+Node inspector | V8 inspector, --inspect | Node's built-in debug agent; --inspect opens a WebSocket on 127.0.0.1:9229 speaking CDP that any client attaches to. | first defined: Chapter 092 L5
+Chrome DevTools Protocol | CDP | The wire format Node's inspector speaks; any compatible client attaches over it to set breakpoints and read state. | first defined: Chapter 092 L5
+heisenbug | - | A bug that changes or disappears the moment you observe it, e.g. adding a log line shifts the timing. | first defined: Chapter 092 L5
+breakpoint (debugger) | - | A marked source line where the debugger pauses execution so you can read live state. | first defined: Chapter 092 L5
+bound breakpoint | bound | Editor resolved the source line to running transpiled code via the source map, so the breakpoint will fire. | first defined: Chapter 092 L5
+unbound breakpoint | unbound | Editor could not map the source line to running code (source-map miss); the breakpoint won't fire. | first defined: Chapter 092 L5
+conditional breakpoint | - | A breakpoint that pauses only when an expression you supply evaluates true. | first defined: Chapter 092 L5
+logpoint | - | A breakpoint that prints a message with expressions and keeps running, never pausing. | first defined: Chapter 092 L5
+Fast Refresh | - | Next.js dev feature that hot-swaps edited React components in the browser without a full reload, preserving state. | first defined: Chapter 092 L5
+remote code execution | RCE | An attacker running code of their choosing inside your server process; among the most severe vulnerabilities. | first defined: Chapter 092 L5

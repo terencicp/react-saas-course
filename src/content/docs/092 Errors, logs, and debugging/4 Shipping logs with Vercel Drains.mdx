@@ -1,0 +1,355 @@
+---
+title: Shipping logs with Vercel Drains
+tagline: Forward your structured logs off Vercel with a Drain into a queryable destination like Axiom, then pivot from a Sentry error to the full per-request story by `requestId`.
+chapter-id: 92
+course-progress: 0.8677
+sidebar:
+  order: 4
+  label: Shipping logs with Drains
+rewrites: 2
+---
+
+import { Steps, CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import ArrowDiagram from '../../../components/figures/ArrowDiagram.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import VercelVsDestinationTable from '../../../components/lessons/092/4/VercelVsDestinationTable.astro';
+import DrainDataPath from '../../../components/lessons/092/4/DrainDataPath.astro';
+import AxiomMarketplaceInstall from '../../../components/lessons/092/4/AxiomMarketplaceInstall.astro';
+import FieldParseContrast from '../../../components/lessons/092/4/FieldParseContrast.astro';
+import SentryToLogsPivot from '../../../components/lessons/092/4/SentryToLogsPivot.astro';
+import ObservabilityStackPills from '../../../components/lessons/092/4/ObservabilityStackPills.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The `info` and `error` lines you wired up over the last two lessons are structured JSON, but right now they go nowhere useful.
+They land in Vercel's function-logs viewer, which keeps roughly the last hour, searches by plain text, and can't join one request to another.
+That's fine while you watch a deploy, and useless at 2am.
+
+Take this chapter's running incident: a webhook handler has been silently returning a 500 for one organization for three hours while you slept.
+To diagnose it you need the last successful steps before the throw, across the whole window the org was failing.
+The viewer can't answer that: it doesn't remember three hours ago, and it can't filter by `orgId`.
+
+To fix that, you'll stand up a **Drain**, a one-way pipe that copies your log lines off Vercel into a destination built to store and query them.
+After confirming your fields survive the trip, you'll walk the on-call workflow that joins errors and logs into one incident by a shared `requestId`.
+By the end you can go from a user-facing error toast to the per-request story in about three clicks.
+
+Almost no new code ships here: the logger from earlier in this chapter and the Sentry wiring from its first lesson are the prerequisites, and they stay as they are.
+
+## The limits of Vercel's built-in log viewer
+
+Open your Vercel project and go to Observability to find the runtime logs viewer.
+It does one job well: scanning the last hour while a deploy rolls out, or searching for a string you already know is there.
+For a side project with no on-call rotation, the viewer plus Sentry is enough.
+
+It breaks down the moment you treat it as your log *destination*.
+Three gaps matter most during an incident:
+
+- **Short retention.** Logs age out in about an hour, so the lines from an incident that started three hours ago are already gone.
+- **Text search, not field queries.** Your logs are structured JSON, but the viewer treats each line as a string. You can grep for a substring; you cannot ask for `orgId == "org_123" AND level == "error"` and get back exactly those lines.
+- **No joins or saved views.** No cross-request queries, no saved queries to pin, no dashboards, so every investigation starts from an empty search box.
+
+The threshold worth holding onto, because you will make this call for real teams, is recurring pages.
+Once production incidents page you weekly, scanning the last hour stops scaling and a dedicated log destination earns its keep.
+Below that line, skip the setup.
+
+A **Drain** does not replace the viewer.
+Vercel keeps capturing your stdout for its own UI; the drain forwards a copy to a destination that adds what the viewer lacks: long retention you control, field-typed queries, and dashboards.
+
+<Figure>
+  <VercelVsDestinationTable />
+</Figure>
+
+## How a Drain moves a log line off Vercel
+
+Follow one log line from the moment your code writes it to the moment it becomes a queryable row in a destination. Where its fields end up explains the verification step ahead.
+
+Vercel renamed **Log Drains** to **Drains** in 2026, since the same export mechanism now also carries traces and other observability data; older posts use the old name.
+This lesson uses the *Logs* drain.
+
+Your `pino` logger writes a JSON line straight to `stdout`, synchronously, with no background transport thread, for the worker-thread reason you saw when you set the logger up.
+Vercel captures that stdout per function invocation, batches the lines, and POSTs each batch over HTTP to your drain's destination.
+The destination parses the payload and indexes the fields so you can query them.
+
+The last hop has a subtlety the rest of the lesson depends on.
+Vercel does not forward your raw `pino` JSON; it wraps each line in an envelope of its own metadata.
+The payload is a JSON array of log objects, each roughly like this:
+
+<div data-mark-color="blue">
+
+```json title="One log object as Vercel delivers it to the drain" {10}
+{
+  "id": "1712...",
+  "timestamp": 1718000000000,
+  "source": "lambda",
+  "projectId": "prj_...",
+  "deploymentId": "dpl_...",
+  "environment": "production",
+  "level": "error",
+  "requestId": "iad1::abc-123",
+  "message": "{\"level\":\"error\",\"time\":\"2026-06-13T02:14:09.412Z\",\"requestId\":\"req_8fK2\",\"orgId\":\"org_4Qd\",\"service\":\"app\",\"msg\":\"stripe webhook failed\"}"
+}
+```
+
+</div>
+
+There are two `level`s and two `requestId`s here, and they are not the same fields.
+The top-level pair are Vercel's own platform-derived values, stamped on every line.
+Your application's fields live *inside* the `message` string: your `orgId`, and the `requestId` your logger emitted, which matches Vercel's only because your app echoes the incoming `x-request-id` header.
+To the destination, `message` is one long string until something parses the JSON inside it.
+That parse is what turns your `orgId` and your `level` into real, queryable columns, and the verification step later confirms it happened.
+
+Two constraints qualify all of this.
+Drains are a Pro/Enterprise feature, so this scenario assumes a Vercel Pro plan; on the Hobby tier you can follow the reasoning but cannot create the drain.
+A drain is also scoped per environment, production, preview, or development.
+Default to production-only: a preview or development drain just floods your destination with noise and burns through its free tier, so turn those on only for a specific reason.
+
+<DrainDataPath />
+
+## Installing the Axiom integration
+
+The course default is **Axiom**, for three reasons.
+It is a native Vercel Marketplace integration, so it creates and wires the drain for you, with no HTTP endpoint or auth header to manage.
+Its free ingest tier covers a course-scale app.
+And it is <Term definition="The destination infers fields from the JSON at query time instead of requiring a fixed schema up front — new keys become queryable automatically.">**schema-on-read**</Term>: it auto-parses the inner `pino` `message`, so your keys become queryable fields with no pipeline work on your side.
+
+Button labels change faster than the procedure, so follow the shape of these steps, not the exact wording.
+
+<Steps>
+1. Open the Vercel Marketplace and find the Axiom integration.
+
+2. Add it, and authorize the connection to your Vercel account.
+
+3. Select the project you want to drain.
+
+4. Pick or confirm the dataset to ingest into, typically one dataset per environment.
+</Steps>
+
+The integration provisions the drain and routes ingest authentication through itself.
+So you never hand-manage an `AXIOM_TOKEN` or `AXIOM_DATASET`, and there is nothing to add to your `env.ts`.
+
+<Figure caption="The Axiom integration on the Vercel Marketplace.">
+  <Screenshot viewport="desktop">
+    <AxiomMarketplaceInstall />
+  </Screenshot>
+</Figure>
+
+Axiom is the default, not the only option. Each alternative has a trigger that would flip you to it:
+**Better Stack** (formerly Logtail) when you want its uptime-and-alerting bundle and accept a smaller free tier;
+**Datadog** when your team already runs it for infrastructure and accepts the heavier UI and price;
+**Grafana Cloud Loki** or **Logflare** when you want something open-source-friendly or self-hostable and will do more setup.
+Their integration docs are in the resources at the end of the lesson.
+
+## Configuring a drain by hand
+
+:::note
+Most readers use the Axiom integration above and can skip to the next section.
+This is the escape hatch for a destination with no marketplace integration: a collector you run yourself, a raw Loki endpoint, an internal HTTP sink.
+For those, you configure the drain by hand.
+:::
+
+The shape mirrors the integration path, except you fill in the blanks yourself:
+
+<Steps>
+1. In your Vercel project, open Settings, then Drains, then New Drain.
+
+2. Set the source to **Logs** and the delivery format to **JSON**.
+
+3. Enter the destination URL Vercel should POST each batch to.
+
+4. Add an optional secret or auth header so your endpoint can verify the request is really from Vercel.
+</Steps>
+
+Vercel then POSTs each batch to your URL, and the rest is yours to maintain: the endpoint, the auth header (a Vercel project secret with the sensitive flag, never a public env var), and the parsing pipeline that splits the envelope from the inner `message`.
+That is real operational surface, and exactly the work the integration does for free.
+
+## Confirming your fields survived the wire
+
+A drain wizard reports success the moment data starts flowing, but flowing data is not the same as queryable fields, and that gap is what fails you in an incident.
+Verify the shape yourself.
+
+The failure to look for: the destination indexes Vercel's envelope fields fine but treats your inner `pino` `message` as one opaque string.
+Then `level`, `requestId`, and `orgId` never become real fields, and the field-typed query you are about to write returns nothing.
+Axiom and Better Stack auto-parse nested JSON, so you are covered by default; Datadog needs a parsing pipeline first.
+
+You already emit `info` lines on ordinary actions like signing in or hitting any instrumented server action.
+Trigger one, open your dataset, and look at a single record: do `level`, `requestId`, and `orgId` appear as **top-level columns you can filter on**, or are they trapped as text inside `message`?
+
+<FieldParseContrast />
+
+If you land in the broken state, the fix is on the destination side: enable or define a JSON parser on the inner `message` field.
+Each destination spells this differently, and on Axiom, the default, there is nothing to do.
+
+## Your first useful query
+
+Your fields are indexed.
+Now turn that into the smallest query that does real on-call work: every error for one organization in the last 24 hours.
+
+Axiom's query language is called <Term definition="Axiom Processing Language — Axiom's query language; the underlying field-filter idea transfers to any log destination's query syntax.">**APL**</Term>.
+The idea is the same on every destination, filtering records by field values; only the syntax changes.
+
+```sql title="Errors for one org in the last 24 hours (Axiom APL)"
+['your-dataset']
+| where level == "error"
+| where orgId == "org_4Qd"
+| where _time > ago(24h)
+```
+
+The first line names the dataset; each `where` then narrows by one field: the error level, the one organization, the last day.
+That is the entire shape of log triage: pick the level, pick the dimension, pick the window.
+
+Once it works, save it as a view and pin it, so the on-call engineer does not retype it at 3am.
+Pinned queries like this become the dashboard you build at the end of this unit.
+
+This query is only possible because `orgId` and `level` are low-cardinality fields, indexed because your logger emitted them as fixed keys on every line.
+A fixed key set with bounded-cardinality dimensions, the discipline from the last two lessons, is exactly what makes the destination queryable; free-text logs would leave you searching raw text by hand.
+
+<VideoCallout videoId="I2mWnh66Bkg" videoTitle="12 Logging Best Practices in 12 minutes">
+  Better Stack's 12-minute tour of why structured fields, level discipline, and centralisation make logs queryable, the destination-agnostic version of what this lesson sets up.
+</VideoCallout>
+
+## From a Sentry error to its logs
+
+The first lesson of this chapter wrote the `requestId` into each Sentry event's *context*, not as a tag, since a `requestId` is too high-cardinality to group on.
+The logger lesson threaded that same `requestId` through every log line.
+One value in two systems is a join key.
+
+So the on-call pivot is short.
+Open the Sentry event, grouped by fingerprint, with its stack trace, release, and org tag.
+Read the `requestId` off the request context, switch to the drain, and filter by that value.
+The per-request narrative appears: the `info` lines that ran before the throw, in order, ending at the `error` line with its cause chain.
+
+You need both tools because they answer different questions:
+
+- **Sentry tells you *what threw*:** the stack trace, the grouping, the release. The signature of the failure.
+- **The drain tells you *what happened*:** the ordered steps, inputs, and outcomes for that one request. The story leading up to it.
+
+Sentry alone gives a stack trace with no context; the logs alone give a haystack with no signature to search for.
+Together they reconstruct the incident with no redeploy.
+
+<Figure expandable={false}>
+  <SentryToLogsPivot />
+  <Fragment slot="caption">
+    A Sentry event on the left, the drain's query view on the right, and one `requestId` carrying you between them. Read it on the event, paste it into the drain's filter, and the per-request narrative is one query away.
+  </Fragment>
+</Figure>
+
+With the Sentry-Axiom integration, Sentry deep-links straight to the matching logs.
+For Datadog or Better Stack you copy-paste the `requestId` instead, but the workflow is identical.
+
+## Walking a webhook 500 at 2am
+
+It is 02:00 UTC.
+Your Stripe webhook handler starts returning 500s, but only for *one* organization, and it keeps failing for about three hours.
+When you look, Sentry shows 47 grouped events, same fingerprint, same `orgId`.
+
+Start in Sentry, because it tells you *what* failed and roughly *who* it hit.
+Open the event group, confirm it really is one fingerprint and not several failures crammed together, and read the stack trace: a signature-verification check threw.
+That is the *what*, not *why now*, after months of this webhook working.
+So copy one sample `requestId` from the request context and carry it across.
+
+Open the drain and filter by that `requestId`.
+Now you are reading one request's story.
+The `webhook received` `info` line is there, but the `signature verified` step that should follow it is *missing*; the next line is the `error` and its cause chain.
+The request died at signature verification, before any business logic ran.
+
+Next, check the blast radius, because the fix depends on it.
+Widen the filter to that `orgId` across the 02:00 to 05:00 window.
+Every failing request belongs to this one org, and no other org appears.
+That rules out a global outage and a bad deploy of your own, since either would pull other orgs into the results.
+It is specific to *this* org.
+
+Now read the `info` lines just before the divergence across several failing requests.
+The pattern is plain: every request for this org started failing signature verification at the same minute, so something changed upstream then.
+The org rotated its webhook signing secret on their side and never told you, so Stripe is now signing with a key you do not have.
+
+Update the stored signing secret for that org and the errors stop.
+The *record* of the rotation belongs in the durable audit log, not the drain, a line we draw next.
+
+The order is the transferable skill, more than any single tool.
+The exercise below shuffles the five steps.
+Put them back into the sequence you would follow at 2am.
+
+<Sequence instructions="Order the diagnostic steps for the 2am webhook page.">
+  <Step>Open the Sentry event group and confirm it is a single fingerprint</Step>
+  <Step>Copy a sample `requestId` from the event's request context</Step>
+  <Step>Filter the drain by that `requestId` and read the per-request narrative</Step>
+  <Step>Widen the filter to the `orgId` over the incident window to check the blast radius</Step>
+  <Step>Read the `info` lines across several requests to find the moment they all started diverging</Step>
+</Sequence>
+
+## The drain's two boundaries
+
+The first boundary: platform telemetry stays on Vercel.
+Build logs, deploy events, function-duration p95, and cold-start metrics all live in Vercel's own Observability UI.
+The drain carries *application* JSON; draining the platform metrics too just pays to duplicate what Vercel already shows you.
+
+Your minimum viable observability stack is three tools and one workflow:
+
+<Figure caption="The observability floor for a 2026 web app: Sentry for what threw, the drain destination for what happened, the Vercel UI for platform health.">
+  <ObservabilityStackPills />
+</Figure>
+
+Anything past this floor, such as full APM, distributed tracing, or custom dashboards, has to earn its weight against the baseline first.
+Product analytics and performance traces come later in this unit; they add to this floor, not replace it.
+
+The second boundary: **the drain is not your audit log.**
+
+:::caution
+The drain is *best-effort operational telemetry*.
+Vercel's stdout buffer can drop lines when a function times out, retention is finite (around 30 days), and it is not a compliance store, so never use it to record something that *must not be lost*.
+Those records belong in the audit log: a durable transactional database write, retained per your legal basis.
+In the 2am incident, the *diagnosis* lived in the drain, but the *fact that the signing secret was rotated* belongs in the audit log.
+:::
+
+You built that audit log earlier, so this is just the line between the two stores: the drain answers "what happened operationally, so I can debug," and the audit log answers "what is the durable, legally meaningful record of what occurred." Different audiences, different durability guarantees.
+
+Cost and visibility turn out to be the same lever.
+Free tiers cover course-scale traffic: Axiom's free Personal tier is around 500 GB of ingest per month, and Vercel bills drain egress on top at roughly $0.50/GB.
+But the 500 GB is monthly, and on overage Axiom *pauses new ingest* rather than deleting old data.
+A single noisy deploy can therefore burn the month's budget and leave you blind to *new* events mid-incident, the worst possible time.
+The fix is the level discipline you already practice: drain production only, and keep `info` off hot read paths.
+(Vendor figures move, so treat these as approximate.)
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Vercel Drains docs"
+    href="https://vercel.com/docs/drains"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The reference for log and trace drains, the delivered payload shape, per-environment scoping, and Pro/Enterprise pricing."
+  />
+  <ExternalResource
+    title="Introducing Vercel Drains"
+    href="https://vercel.com/blog/introducing-vercel-drains"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The announcement that renamed Log Drains to Drains and added trace/log correlation via a shared traceId — the why behind this lesson's data model."
+  />
+  <ExternalResource
+    title="Axiom + Vercel integration"
+    href="https://axiom.co/docs/apps/vercel"
+    icon="lucide:database-zap"
+    iconColor="#FF5C00"
+    description="Installing the marketplace integration and querying your dataset with APL, including parsing the inner JSON message."
+  />
+  <ExternalResource
+    title="Datadog log management"
+    href="https://docs.datadoghq.com/logs/"
+    icon="simple-icons:datadog"
+    iconColor="#632CA6"
+    description="The alternative destination for teams already running Datadog — and the one where you must define a parsing pipeline yourself."
+  />
+</CardGrid>

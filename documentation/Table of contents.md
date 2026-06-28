@@ -798,10 +798,10 @@
 
 ## Unit 19 — Observability and Performance
 
-### Chapter 092 — Error monitoring and structured logs
+### Chapter 092 — Errors, logs, and debugging
 - 1 Sentry: capture, releases, breadcrumbs (Install Sentry for Next.js with the wizard, wire `onRequestError` and manual `captureException` in handled-error seams, tag events with releases and user context, and add domain breadcrumbs.)
 - 2 Structured logs with correlation IDs (Set up `pino` with a fixed JSON key set, thread a per-request `requestId` through AsyncLocalStorage, and emit child loggers from every server-side seam.)
-- 3 The 3am rule and PII exclusion (Decide what each seam logs for incident reconstruction and enforce a structural redaction config that keeps passwords, tokens, headers, and GDPR-class PII out of the log stream.)
+- 3 Logging policy and PII redaction (Decide what each seam logs for incident reconstruction and enforce a structural redaction config that keeps passwords, tokens, headers, and GDPR-class PII out of the log stream.)
 - 4 Shipping logs with Vercel Drains (Wire a Vercel Drain to Axiom, verify indexed fields, and walk the Sentry-to-logs pivot that resolves a real production incident by `requestId`.)
 - 5 Server-side debugging with the inspector (Launch `next dev --inspect`, attach VS Code, and use breakpoints, conditional breakpoints, and logpoints to resolve a failing server action that logs and Sentry alone couldn't crack.)
 - 6 Quiz
