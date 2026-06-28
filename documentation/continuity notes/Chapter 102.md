@@ -27,7 +27,7 @@
 **Misc:**
 - The lesson explicitly teaches that TSDoc blocks on React components are noise (exception: design-system primitives with non-obvious prop semantics); L2 and L3 must not contradict this.
 - The CodeReview capstone exercise plants four defects (private-helper block, `{string}` in `@param`, schema field-list duplication, bare `@deprecated`); later lessons referencing code-review exercises should not recycle the same plants.
-- Cross-ref slugs used (hyphenated Astro format): `/101-docs-that-live-next-to-the-truth/1-the-four-jobs-of-docs/`, `/043-server-actions/1-the-use-server-seam/`, `/101-docs-that-live-next-to-the-truth/2-the-thin-readme/`, `/101-docs-that-live-next-to-the-truth/4-adrs---one-decision-per-file/` — confirm live before building L2/L3.
+- Cross-ref slugs used (hyphenated Astro format): `/101-documenting-a-saas-codebase/1-the-four-jobs-of-docs/`, `/043-server-actions/1-the-use-server-seam/`, `/101-documenting-a-saas-codebase/2-the-thin-readme/`, `/101-documenting-a-saas-codebase/4-adrs---one-decision-per-file/` — confirm live before building L2/L3.
 - The lesson uses `{@link SymbolName}` (TSDoc inline tag) syntax in all code examples for cross-symbol linking; `@see` is positioned as rarely needed because an inline `{@link}` in the summary usually suffices. L2/L3 should not introduce `@see` as the default link form.
 - A `VideoCallout` on VS Code's `{@link}` (videoId `1VNsVhusfnI`) is the only video in this lesson; the link-don't-duplicate section is where it appears.
 

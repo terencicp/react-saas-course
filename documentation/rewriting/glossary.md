@@ -2860,3 +2860,17 @@ Fluid Compute | - | Vercel serverless mode keeping a warm instance alive for man
 incompatibility window | - | Span during a deploy when running code and live schema disagree, so requests can fail; expand-migrate-contract avoids it. | first defined: Chapter 100 L3
 DROP COLUMN | drop column, metadata-only drop | Postgres column drop that only marks the column dead in the catalog; near-instant, no table rewrite, space reclaimed later by VACUUM. | first defined: Chapter 100 L5
 VACUUM | - | Postgres background maintenance pass reclaiming on-disk space from dead rows and dropped columns. | first defined: Chapter 100 L5
+Diataxis | Diátaxis | Documentation framework sorting all technical docs into four reader-need types (tutorial, how-to, reference, explanation). | first defined: Chapter 101 L1
+tutorial (Diataxis) | - | Learning-oriented doc leading a stranger down one path to a first success; no choices. | first defined: Chapter 101 L1
+how-to (Diataxis) | how-to guide | Task-oriented doc helping someone competent finish one specific job; scannable, goal-directed. | first defined: Chapter 101 L1
+reference (Diataxis) | - | Dry, complete, structured doc describing the surface exactly as it is; the reader wants one fact. | first defined: Chapter 101 L1
+explanation (Diataxis) | - | Understanding-oriented doc giving the rationale and trade-offs behind a choice, not the steps. | first defined: Chapter 101 L1
+TSDoc | - | TypeScript-flavoured JSDoc comment block (/** … */) editors surface as hover text. | first defined: Chapter 101 L1
+source-as-doc | docs live next to the truth | The file that owns a truth is its documentation; the README links to it, never copies it, so the doc can't drift. | first defined: Chapter 101 L2
+first contact | - | The README's one job: the small handful of things a new contributor or recruiter needs in their first hour, nothing more. | first defined: Chapter 101 L2
+coding agent | - | AI tool that reads and edits a codebase directly: Codex, Claude Code, Cursor, Copilot agent mode, and similar. | first defined: Chapter 101 L3
+signal per line | signal density | AGENTS.md's quality metric: every line earns its place; noise buries the lines that matter. | first defined: Chapter 101 L3
+symlink | - | Filesystem entry pointing at another file; reading one reads the other, so the target's changes show through. | first defined: Chapter 101 L3
+squash merge | squash-merge | Merging a PR by collapsing all its commits into one; individual commit messages and bodies are discarded. | first defined: Chapter 101 L4
+MADR | Markdown Any Decision Records | More structured ADR template adding Considered Options and Decision Outcome sections. | first defined: Chapter 101 L4
+supersede (ADR) | supersession | Replace an earlier ADR with a newer one while keeping the original; old ADR's status becomes 'Superseded by ADR NNNN', file stays. | first defined: Chapter 101 L4

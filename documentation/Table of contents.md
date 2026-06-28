@@ -880,8 +880,8 @@
 
 ## Unit 21 — Documentation and Code Review
 
-### Chapter 101 — Docs that live next to the truth
-- 1 Diataxis: the four jobs a doc can do (Learn the Diataxis vocabulary (tutorial, how-to, reference, explanation), the 2x2 axes behind it, the "mixing trap" that wrecks most READMEs, where each type lives in a 2026 SaaS repo, and the "could this be a link?" reflex.)
+### Chapter 101 — Documenting a SaaS codebase
+- 1 Diataxis: the four jobs of docs (Learn the Diataxis vocabulary (tutorial, how-to, reference, explanation), the 2x2 axes behind it, the "mixing trap" that wrecks most READMEs, where each type lives in a 2026 SaaS repo, and the "could this be a link?" reflex.)
 - 2 The thin README and source-as-doc (Learn the README's one job (first contact), its five-section template, the "what does NOT belong" list, and the rule that the schema file, `env.ts`, and Server Action signatures ARE the docs for what they describe so the README links instead of duplicating.)
 - 3 AGENTS.md, the conventions file (Learn the 2026 `AGENTS.md` standard — its two audiences (coding agents and humans), the canonical sections (overview, layout, commands, conventions, don'ts, pointers), the hierarchical lookup rule, and the boundaries against README and ADRs.)
 - 4 ADRs: one decision per file (Learn the Nygard ADR template (Title, Status, Context, Decision, Consequences), the three-test inclusion check, the "write while deciding" discipline, the supersession lifecycle, and six worked ADR sketches on the course's own opinionated picks (Drizzle, Better Auth, Biome, R2, Node runtime, native forms).)
