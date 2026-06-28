@@ -774,10 +774,10 @@
 - 9 Quiz
 
 ### Chapter 089 — Component tests, off by default
-- 1 When RTL earns its weight (The three triggers (shared library, complex state, critical UX) plus the accessibility-regression trigger that make React Testing Library worth its cost, and the anti-triggers that say delete the test instead of writing it.)
-- 2 The jsdom project and the render helper (Wiring the third Vitest project against jsdom, pinning the `@testing-library/*` set for React 19, and building the `render` wrapper that pre-applies providers and returns a ready `userEvent` instance.)
-- 3 The query ladder is the accessibility audit (The role-plus-name priority ladder, the `getBy` / `queryBy` / `findBy` split, and the rule that behavior is what a user observes — never internal state, props, or class names.)
-- 4 The catalog: five components that earn the test (A walk through the course app's component tests — cookie consent, subscribe form, date-range picker, data table, checkout summary — naming the trigger met, the behaviors to assert, and what to leave to the seam or to E2E.)
+- 1 When component tests earn their weight (The four triggers — shared component primitive, complex stateful component, critical UX path, accessibility-sensitive surface — that make a React Testing Library test worth its cost, and the anti-triggers that say delete the test instead of writing it.)
+- 2 The jsdom project and the render helper (Wiring the third Vitest project against jsdom, pinning the `@testing-library/*` set for React 19, reusing the integration lane's mocks, and building the `render` wrapper that pre-applies providers and returns a ready `user`.)
+- 3 Testing Library's query priority ladder (The role-plus-name priority ladder read as an accessibility audit, the `getBy` / `queryBy` / `findBy` split for asserting existence in time, and the rule that behavior is what a user observes — never internal state, props, or class names.)
+- 4 Five components that earn a test (A walk through five real app components — checkout summary, cookie consent, subscribe form, date-range picker, data table — naming the trigger met, the behaviors to assert, what to leave to the seam or E2E, and how to mock a Server Action at its import.)
 - 5 Quiz
 
 ### Chapter 090 — E2E on money paths only

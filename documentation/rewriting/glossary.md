@@ -2658,3 +2658,7 @@ findBy | findBy*, findByRole | RTL async query retrying until an element appears
 screen | - | RTL object whose queries read the live global document, so they survive refactors to what render returns. | first defined: Chapter 089 L2
 waitFor | - | RTL retry helper for non-DOM observations (e.g. a mock was eventually called); use when there is no element to find. | first defined: Chapter 089 L2
 jest-dom | @testing-library/jest-dom | DOM-aware expect matchers (toBeInTheDocument, toHaveAccessibleName); /vitest entrypoint registers them against Vitest's expect. | first defined: Chapter 089 L2
+query priority ladder | query ladder, priority ladder | RTL's ordered list of queries (role first, test id last); prefer the highest rung the element supports, which doubles as an accessibility audit. | first defined: Chapter 089 L3
+getBy | getBy*, getByRole | RTL query asserting an element is here now; throws if missing, returns exactly one. | first defined: Chapter 089 L3
+queryBy | queryBy*, queryByRole | RTL query returning null instead of throwing; the correct query for a negative (absence) assertion. | first defined: Chapter 089 L3
+Testing Playground | testing-playground.com | Web tool that ranks the best RTL query for pasted markup using the same priority ladder. | first defined: Chapter 089 L3
