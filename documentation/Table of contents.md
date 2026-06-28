@@ -887,9 +887,9 @@
 - 4 ADRs: one decision per file (Learn the Nygard ADR template (Title, Status, Context, Decision, Consequences), the three-test inclusion check, the "write while deciding" discipline, the supersession lifecycle, and six worked ADR sketches on the course's own opinionated picks (Drizzle, Better Auth, Biome, R2, Node runtime, native forms).)
 - 5 Quiz
 
-### Chapter 102 — Docs that live in the code
+### Chapter 102 — Documentation in the code
 - 1 TSDoc the public surface (Learn which declarations earn a TSDoc block, the minimal 2026 tag set, the first-sentence-is-the-hover writing posture, and the link-don't-duplicate reflex.)
-- 2 Comment the why, not the what (Learn the why-not-what rule for inline comments, the four kinds that earn their place, the negative space to avoid, and the reflex to carry comments through refactors or promote them to structural enforcement.)
+- 2 When inline comments earn their place (Learn the why-not-what rule for inline comments, the four kinds that earn their place, the negative space to avoid, and the reflex to carry comments through refactors or promote them to structural enforcement.)
 - 3 Docs ship in the PR, or they're already wrong (Learn the five-artifact reflex at PR-open time, the reviewer's doc checklist, the PR-template scaffolding, and the boundary where automation catches mechanical drift but review catches semantic drift.)
 - 4 Quiz
 

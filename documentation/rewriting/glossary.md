@@ -2874,3 +2874,19 @@ symlink | - | Filesystem entry pointing at another file; reading one reads the o
 squash merge | squash-merge | Merging a PR by collapsing all its commits into one; individual commit messages and bodies are discarded. | first defined: Chapter 101 L4
 MADR | Markdown Any Decision Records | More structured ADR template adding Considered Options and Decision Outcome sections. | first defined: Chapter 101 L4
 supersede (ADR) | supersession | Replace an earlier ADR with a newer one while keeping the original; old ADR's status becomes 'Superseded by ADR NNNN', file stays. | first defined: Chapter 101 L4
+JSDoc | - | JavaScript doc-comment convention; carries types in the comment because plain JS has none, unlike TSDoc. | first defined: Chapter 102 L1
+TypeDoc | - | Generator turning TSDoc comments into a published HTML reference site, for when you ship a library. | first defined: Chapter 102 L1
+API Extractor | - | Microsoft tool turning TSDoc comments into a published HTML reference site and an API report. | first defined: Chapter 102 L1
+why-not-what rule | - | A comment earns its place only when the why is invisible in the code because it lives outside the file. | first defined: Chapter 102 L2
+constraint comment | - | Inline comment documenting an external reality the code must bend to. | first defined: Chapter 102 L2
+workaround comment | - | Inline comment naming the failure mode a workaround prevents. | first defined: Chapter 102 L2
+intentional-deviation comment | - | Inline comment naming the path not taken and why. | first defined: Chapter 102 L2
+load-bearing-weirdness comment | - | Inline comment documenting an ordering or detail that is part of the contract. | first defined: Chapter 102 L2
+constraint + response shape | - | Comment voice naming the external fact and the action it forces, in one line. | first defined: Chapter 102 L2
+fossil comment | - | Stale comment explaining a workaround for a bug already fixed; misleads later readers. | first defined: Chapter 102 L2
+comment density | - | A function needing three or more why-comments is a smell that it does too much. | first defined: Chapter 102 L2
+doc drift | drift | A doc and the code it describes fall out of sync; the doc still claims something no longer true. | first defined: Chapter 102 L3
+mechanical drift | - | Drift a machine can catch by comparing two things for a structural match, no interpretation. | first defined: Chapter 102 L3
+semantic drift | - | Drift only a human can catch by reading the doc's intent against the code's behaviour. | first defined: Chapter 102 L3
+schema header comment | schema header | One-paragraph header on a pgTable declaration stating the table's purpose, scope, and invariants. | first defined: Chapter 101 L2
+PR template | pull-request template | Markdown file GitHub uses to pre-fill the PR description box; here a two-checkbox doc reminder. | first defined: Chapter 102 L3
