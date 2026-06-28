@@ -2409,3 +2409,29 @@ abusable endpoint | - | Endpoint needing a limiter because it hits a trigger: co
 rate-limit coverage | coverage rule, three triggers | Rule that every abusable endpoint routes through a named limiter; an endpoint is abusable if it matches any one of three triggers. | first defined: Chapter 081 L2
 coverage matrix | rate-limit coverage matrix | Table with one row per abusable endpoint recording file, limiter, key strategy, and covered Y/N; gaps tracked as open rows, not dropped. | first defined: Chapter 081 L2
 retention catalog | retention map | The full inventory of every table and external service holding a user's PII that an erasure request must clear. | first defined: Chapter 081 L4
+storage, domain, edge | three-layer split | The architecture for time: timestamptz in storage, Temporal in the domain, a localized string at the edge, ISO 8601 between them. | first defined: Chapter 083 L1
+session TimeZone | TimeZone setting | Per-connection Postgres setting that interprets timestamptz input and renders output text; never changes the stored bytes. | first defined: Chapter 083 L1
+mode (Drizzle column) | column mode | Per-column Drizzle option picking the JS type a column reads back as ('date' a Date, 'string' raw Postgres text). | first defined: Chapter 083 L1
+calendar day | calendar-day value | A day everyone shares (May 15 everywhere), no time or zone; not an instant. Stored as date + PlainDate. | first defined: Chapter 083 L2
+dateColumn | - | The customType codec pairing a Postgres date column with Temporal.PlainDate; parse string in, toString out. | first defined: Chapter 083 L2
+overflow (Temporal) | overflow option, constrain, reject | Temporal arithmetic option: 'constrain' (default) clamps impossible results, 'reject' throws a RangeError. | first defined: Chapter 083 L2
+month-end clamping | month clamp | Default Temporal behavior: Jan 31 + 1 month lands on Feb 28 (last valid day), not March. | first defined: Chapter 083 L2
+toZonedDateTime | - | PlainDate method attaching a named timeZone and plainTime to bridge a calendar day to a ZonedDateTime, then an Instant. | first defined: Chapter 083 L2
+tzdata | IANA time zone database, tz database | Platform-bundled data mapping an IANA name to the right offset at any instant; updated several times a year. | first defined: Chapter 083 L3
+Intl.supportedValuesOf | supportedValuesOf | API returning the platform's known IANA timezone names; Chromium and Node omit Etc/* so 'UTC' is usually missing. | first defined: Chapter 083 L3
+Invalid time zone RangeError | RangeError invalid time zone | Thrown when any Intl or Temporal call gets an IANA name the runtime can't resolve; why timezones are validated at the write edge. | first defined: Chapter 083 L3
+timezone validation by acceptance | acceptance check | Validate a zone by trying new Intl.DateTimeFormat({ timeZone }) in try/catch, not membership in supportedValuesOf. | first defined: Chapter 083 L3
+user-asserted (timezone) | user-asserted not authoritative | A client-reported value the user owns and can correct, accepted as a default but not treated as ground truth. | first defined: Chapter 083 L3
+cadence | - | How often a job runs, independent of wall-clock time; when only frequency matters, run in UTC. | first defined: Chapter 083 L4
+disambiguation | disambiguation option | Temporal option for which instant a wall-clock time resolves to in a DST gap or repeat ('compatible' default, 'reject' throws). | first defined: Chapter 083 L4
+spring forward | spring-forward gap | DST transition where the clock jumps an hour ahead, so an hour does not exist; a time in it has no instant. | first defined: Chapter 083 L4
+fall back | fall-back repeat | DST transition where the clock drops an hour back, so an hour happens twice; a time in it has two instants. | first defined: Chapter 083 L4
+one-shot (schedule) | one-shot job | A job that fires once at a pre-computed instant (wait.until), not on a recurring cron; settle this before the zone question. | first defined: Chapter 083 L4
+add/subtract (Temporal) | add, subtract | Immutable Temporal methods returning a new instance shifted by a named-component duration ({ days: 30 }). | first defined: Chapter 083 L5
+since/until (Temporal) | since, until | Temporal methods measuring the Duration between two points; a.since(b) positive when a is later, until is the opposite sign. | first defined: Chapter 083 L5
+largestUnit | - | since/until option naming the biggest unit a Duration may use; months/years throw on an Instant (no calendar). | first defined: Chapter 083 L5
+with (Temporal) | with(fields) | Returns a new instance with the named fields replaced, the rest untouched; use for period starts, not round. | first defined: Chapter 083 L5
+round (Temporal) | round | Snaps a whole value to a grid via smallestUnit, roundingIncrement, roundingMode; for bucketing and input snapping. | first defined: Chapter 083 L5
+roundingMode | - | round option choosing how to break ties and which way to round: floor, ceil, trunc, halfExpand. | first defined: Chapter 083 L5
+compare (Temporal) | Temporal.compare | Static per-type method returning -1/0/1 for sort; equals/before/after are the boolean instance forms. | first defined: Chapter 083 L5
+ISO 8601 duration string | P grammar | Text form of a Duration: P30D is 30 days, P1M one month, PT12H twelve hours; the wire/DB form of a span. | first defined: Chapter 083 L5
