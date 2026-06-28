@@ -2541,3 +2541,47 @@ Stryker | StrykerJS | The mutation-testing tool; named as a mental model, not in
 differential coverage | per-PR coverage | How much of a change's added code is covered by that change's own tests; the per-PR view vs the whole-codebase average. | first defined: Chapter 086 L3
 coverage threshold | backstop | A CI floor catching a previously-tested seam losing coverage; a backstop, not a target to climb toward. | first defined: Chapter 086 L3
 coverage.include | - | Vitest 4 globs pulling never-imported files into the report at 0% instead of vanishing; replaces removed coverage.all. | first defined: Chapter 086 L3
+test colocation | colocate (test) | Source and its test file living side by side in the same folder, not mirrored into a separate tests/ tree. | first defined: Chapter 087 L1
+globals: false | - | Vitest setting requiring describe/it/expect to be imported per file rather than injected as ambient globals. | first defined: Chapter 087 L1
+expect.extend | - | Vitest API for registering a project-wide custom matcher. | first defined: Chapter 087 L1
+custom matcher | - | A registered expect.* assertion (via expect.extend) returning { pass, message } so a domain failure reads as a sentence. | first defined: Chapter 087 L1
+it.each | table-driven test | Vitest table form: one row per case, $token fields interpolated into the test name, collapsing near-identical it blocks. | first defined: Chapter 087 L1
+no-restricted-paths | - | Lint rule that structurally blocks a /lib file from importing app/, enforcing the dependency direction. | first defined: Chapter 087 L1
+test data factory | factory, buildUser | Function returning a fresh, valid in-memory domain object per call, with an overrides-last spread; for one test row. | first defined: Chapter 087 L2
+run-order coupling | - | A test's outcome depends on whether, and in what order, other tests ran first. | first defined: Chapter 087 L2
+false negative | - | A test that passes while the code it covers is actually broken. | first defined: Chapter 087 L2
+InferSelectModel | - | Drizzle helper inferring a row's TS type from a table's schema, so the type tracks the schema. | first defined: Chapter 087 L2
+monotonic | - | Only ever increases, never repeats a value. | first defined: Chapter 087 L2
+sequence helper | sequence | A counter that hands out the next number each call; unique and deterministic, reset per test. | first defined: Chapter 087 L2
+object mother | - | Named-fixture pattern (anExpiredInvoice()) returning a ready-made entity; an override-spread factory replaces it. | first defined: Chapter 087 L2
+static fixture | - | Captured external payload (e.g. a Stripe webhook) used verbatim, when its exact shape is under test. | first defined: Chapter 087 L2
+flaky | flaky test | A test whose pass/fail result changes without the code under test changing. | first defined: Chapter 087 L3
+frozen instant | - | A fixed Temporal.Instant a test pins "now" to so the clock never moves. | first defined: Chapter 087 L3
+clock seam | clock.now | The lib/clock.ts module routing every "now" read through one swappable point. | first defined: Chapter 087 L3
+fake timers | vi.useFakeTimers | Vitest replacing Date/setTimeout/setInterval with fakes you advance manually; does not patch Temporal.Now. | first defined: Chapter 087 L3
+vi.setSystemTime | setSystemTime | Sets the fake wall clock to a fixed moment under fake timers. | first defined: Chapter 087 L3
+module mock | vi.mock | Replacing a whole imported module with a stub for the test file; vi.mock is hoisted above imports. | first defined: Chapter 087 L3
+seed (PRNG) | fixed seed | The fixed starting value making a pseudo-random stream reproducible; same seed, same sequence. | first defined: Chapter 087 L3
+jitter | backoff jitter | A small random offset added to a retry delay so clients don't retry in lockstep. | first defined: Chapter 087 L3
+type-level test | type test, *.test-d.ts | Test whose assertions are checked by tsc, not by running code; proves a signature, union, or type shape. | first defined: Chapter 087 L4
+expectTypeOf | - | Vitest type-test wrapper exposing a value's or type's type for matcher assertions; erased at runtime. | first defined: Chapter 087 L4
+tsc --noEmit | noEmit | Run tsc for diagnostics only: type-check and report errors, produce no JS output. | first defined: Chapter 087 L4
+vitest --typecheck | typecheck pass | Vitest flag running tsc --noEmit over *.test-d.ts files and reporting type errors as failed tests. | first defined: Chapter 087 L4
+assignability | one-way assignability | A value of type A usable where B is expected; one-directional, A-to-B does not imply B-to-A. | first defined: Chapter 087 L4
+bidirectional equality | type equality | A equals B requires A assignable to B and B assignable to A; neither wider; what toEqualTypeOf checks. | first defined: Chapter 087 L4
+toEqualTypeOf | - | expectTypeOf matcher for exact bidirectional type equality; the default reach. | first defined: Chapter 087 L4
+toExtend | - | expectTypeOf matcher for one-way assignability (is-a / subtype); replaces deprecated toMatchTypeOf. | first defined: Chapter 087 L4
+toMatchObjectType | - | expectTypeOf matcher checking an object type against a subset of its keys; type-level toMatchObject. | first defined: Chapter 087 L4
+assertType | - | Vitest helper asserting a single expression has type T, like a typed binding without the throwaway const. | first defined: Chapter 087 L4
+@ts-expect-error | ts-expect-error | Directive expecting the next line to fail type-checking; errors as "unused" if the line type-checks. | first defined: Chapter 087 L4
+silent pass | - | A test reporting green while the code is broken; a false negative, usually from an unawaited async assertion. | first defined: Chapter 087 L5
+.resolves / .rejects | resolves, rejects | expect modifiers unwrapping a promise and applying a normal matcher to its settled value (resolved or thrown). | first defined: Chapter 087 L5
+expect.assertions(n) | expect.assertions | Declares a test must run exactly n assertions; fails if it ends having run fewer, catching skipped branches. | first defined: Chapter 087 L5
+expect.hasAssertions() | hasAssertions | Looser sibling of expect.assertions; only checks at least one assertion ran. | first defined: Chapter 087 L5
+expect.fail | - | Forces a test to fail at that line; used in a try after the call so a non-throwing bug fails instead of skipping the catch. | first defined: Chapter 087 L5
+*Async timer family | advanceTimersByTimeAsync, runAllTimersAsync, runOnlyPendingTimersAsync | Awaited fake-timer methods that fire the timer and drain the microtasks it schedules; sync variants stop at the timer. | first defined: Chapter 087 L5
+toEqual | - | Vitest matcher, exhaustive deep equality; the object must have exactly the named fields and no others. | first defined: Chapter 087 L6
+toContainEqual | - | Vitest matcher asserting an array contains an element deep-equal to the expected one, ignoring length and order. | first defined: Chapter 087 L6
+asymmetric matcher | expect.any, expect.objectContaining | Matcher placed inside an expected object to assert a field's presence/type without pinning its exact value. | first defined: Chapter 087 L6
+not.toThrow | - | Asserts a wrapped call completes without throwing; an absence check, pair with a positive assertion. | first defined: Chapter 087 L6
+it.fails | - | Inverts a test's verdict so it passes only when its assertions fail; for recording a known-broken behavior with a tracking issue. | first defined: Chapter 087 L6
