@@ -1,0 +1,507 @@
+---
+title: RSC waterfalls and Promise.all
+tagline: Fix the data-fetching waterfalls that slow Server Components with Promise.all, React cache, and Suspense streaming.
+chapter-id: 94
+course-progress: 0.8913
+rewrites: 2
+sidebar:
+  order: 6
+  label: RSC waterfalls
+---
+
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import RequestTrace from '../../../components/figures/request-trace/RequestTrace.astro';
+import TraceNode from '../../../components/figures/request-trace/TraceNode.astro';
+import Phase from '../../../components/figures/request-trace/Phase.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import Term from '../../../components/ui/Term.astro';
+import WaterfallTimingTransformation from '../../../components/lessons/094/6/WaterfallTimingTransformation.astro';
+import StaircaseTrace from '../../../components/lessons/094/6/StaircaseTrace.astro';
+import StreamingFirstPaint from '../../../components/lessons/094/6/StreamingFirstPaint.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A dashboard loads sluggishly, slow enough to notice but not broken.
+You open the trace: the server render took about 320ms.
+You check the database first, where slowness usually hides, but every query runs under 80ms.
+Every operation is fast, and the page is still slow.
+Where did the time go?
+
+The component awaited four reads one after another when three of them had no reason to wait.
+You already know the fix: [parallel by default, sequential by dependency](/007-async-semantics/3-async-await--parallel-by-default-sequential-by-dependency/) means running independent work in parallel and going sequential only when a real dependency forces it.
+This lesson puts that rule to work inside a Server Component.
+You have seen the same bug one layer down: the [N+1 query](/039-indexes-plans-and-transactions/2-spotting-n1/) is its match at the database layer.
+
+## Reading a render on a time axis
+
+The fastest way to spot the bug is on a time axis.
+
+Picture an <Term definition="A React Server Component — a component that runs on the server and can await data directly in its body, sending only the rendered result to the browser.">RSC</Term> that awaits four reads, each about 80ms.
+It awaits `user`, then `org` (which needs `user.orgId`), then `invoices` and `team` (which both need `org.id`).
+One after another, that is 320ms.
+
+But only some of those waits are real.
+`org` depends on `user`, and `invoices` and `team` both depend on `org`.
+Neither sibling depends on the other, so they can run together.
+The floor for this page is `user → org → max(invoices, team)`, about 240ms.
+That is a quarter of the time recovered without touching a query.
+
+<DiagramSequence>
+  <DiagramStep caption="The waterfall: four awaits, each starting where the last ended, a descending staircase totaling ~320ms.">
+    <WaterfallTimingTransformation step={1} />
+  </DiagramStep>
+
+  <DiagramStep>
+    <WaterfallTimingTransformation step={2} />
+    <Fragment slot="caption">
+      `invoices` and `team` both wait on `org`, but not on each other, so nothing forces them to run in sequence.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <WaterfallTimingTransformation step={3} />
+    <Fragment slot="caption">
+      Run the siblings together: they leave as soon as `org` resolves, turning three serial waits into two. The page now takes as long as the slower sibling, about 240ms; the green span is the ~80ms reclaimed.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+The reading skill is spatial: **bars that stack into a staircase run in series; bars that overlap run in parallel.**
+
+## Finding the waterfall in a trace
+
+This bug hides when you look at one query at a time.
+
+Go back to the engineer from the opening.
+They suspected the database and profiled each query in isolation: `getUser`, `getOrg`, `listInvoices`, and `listTeamMembers` were all fast.
+Every part is healthy, so they declare the database fine and leave the page slow.
+The cost is not in any one read but in the *order*, which is invisible until you see the reads on one timeline, relative to each other.
+
+That timeline is a <Term definition="The tree of timed spans recorded for one request, showing what ran, when, and for how long.">trace</Term>, and you already have one.
+Back in [wiring up Sentry](/092-errors-logs-and-debugging/1-sentry-capture-releases-and-breadcrumbs/) you raised `tracesSampleRate`, so the dashboard request already records the spans you need.
+Each <Term definition="One timed operation inside a trace, with a start time and a duration.">span</Term> is one operation with a start time and a duration, stacked on a shared time axis, and you read it like the timing diagram: stacked without overlapping means series, overlapping means parallel.
+
+The diagnosis is mechanical.
+Open the slow page's trace, find a run of spans stacked into a descending staircase, and for each adjacent pair ask: *does the second span need the result of the first?*
+If yes, the wait is real; leave it.
+If no, you have found a waterfall to fix.
+
+<Figure caption="The dashboard's server trace. Each child span starts where the previous one ended, and that descending diagonal is the waterfall.">
+  <StaircaseTrace />
+</Figure>
+
+Now read one yourself.
+The trace below has five spans, some a genuine dependency chain and some needlessly serial.
+
+<MultipleChoice>
+  Here is the trace for `GET /settings`. Each bar starts where the one above it ended — a five-step staircase. The note in parentheses is what each read needs before it can start.
+
+  ```text
+  getUser            ████              0–60ms
+  getOrg                 ████          60–130ms   (needs user.orgId)
+  listProjects               ████      130–210ms  (needs org.id)
+  listMembers                    ████  210–290ms  (needs org.id)
+  getBillingSummary                  ██ 290–360ms (needs org.id)
+  ```
+
+  This page currently takes ~360ms. **Which of these reads belong in one parallel group** — bars that have no reason to stack and could all leave together? Select every read that belongs in that group.
+
+  <McqChoice>`getUser`</McqChoice>
+  <McqChoice>`getOrg`</McqChoice>
+  <McqChoice correct>`listProjects`</McqChoice>
+  <McqChoice correct>`listMembers`</McqChoice>
+  <McqChoice correct>`getBillingSummary`</McqChoice>
+
+  <McqWhy>
+  `listProjects`, `listMembers`, and `getBillingSummary` each need only `org.id`, not each other's results, so they can all fire the instant `getOrg` resolves: `const [projects, members, billing] = await Promise.all([...])`. That collapses three serial waits into one, taking the page from ~360ms to about `getUser → getOrg → max(the three)` ≈ 210ms.
+
+  `getUser` and `getOrg` stay out of the group: `getOrg` reads `user.orgId`, so it waits on `getUser`, and the parallel group waits on `getOrg`. Those are real dependencies — leave them sequential.
+  </McqWhy>
+</MultipleChoice>
+
+Now for the fixes.
+
+## Parallelizing independent awaits with Promise.all
+
+The simplest and most common waterfall is the one from the opening: a single component body with awaits stacked in a row.
+
+Before adding a second `await` in a component body, ask whether the read needs the value you just awaited.
+If not, the two should run together with `Promise.all`.
+If so, keep them sequential: the second read cannot start without the first.
+
+Apply this to the dashboard. `org` needs `user`, so that await stays. But `invoices` and `team` need only `org`, not each other, so they fire together once `org` resolves.
+
+<CodeVariants>
+  <CodeVariant label="Waterfall">
+    <div data-mark-color="red">
+
+    ```tsx {4,5}
+    export default async function DashboardPage() {
+      const { orgId } = await requireOrgUser();
+      const org = await getOrganization(orgId);
+      const invoices = await listInvoices(org.id, org.billingPeriod);
+      const team = await listTeamMembers(org.id);
+
+      return <Dashboard org={org} invoices={invoices} team={team} />;
+    }
+    ```
+
+    </div>
+    **Four round trips in series.** `org` waits on auth and `invoices` needs the billing period, but `team` is stuck behind `invoices` for no reason. About 320ms.
+  </CodeVariant>
+
+  <CodeVariant label="Parallel">
+    <div data-mark-color="green">
+
+    ```tsx ins={4-7}
+    export default async function DashboardPage() {
+      const { orgId } = await requireOrgUser();
+      const org = await getOrganization(orgId);
+      const [invoices, team] = await Promise.all([
+        listInvoices(org.id, org.billingPeriod),
+        listTeamMembers(org.id),
+      ]);
+
+      return <Dashboard org={org} invoices={invoices} team={team} />;
+    }
+    ```
+
+    </div>
+    **`org` still resolves first**, since both reads need it. But `invoices` and `team` don't need *each other*, so they fire as a pair. Same correctness, about 240ms.
+  </CodeVariant>
+</CodeVariants>
+
+Three serial waits became two: `user → org → max(invoices, team)`.
+That 80ms is paid on *every* request, so under load it is 80ms times your traffic, each one holding a thread the whole time.
+The rewrite costs one line.
+
+People get `Promise.all` wrong in two silent ways.
+
+The first is failure.
+`Promise.all` rejects the moment any promise rejects, handing you that first rejection while the others run on, their results discarded.
+For a page that needs everything or nothing, that is right: if one read fails the render is dead anyway.
+But when you would rather render what succeeded and degrade the rest, reach for `Promise.allSettled` (from [Promise combinators](/007-async-semantics/2-promises--combinators-and-withresolvers/)), which waits for every promise and reports each outcome separately.
+
+The second mistake never throws, which makes it the dangerous one.
+Wrap two reads in `Promise.all` when the second needed the first's value, and the second runs with `undefined` and quietly produces wrong data: no error, no crash, just a page built on bad values.
+The dependency check is the only thing standing between you and that bug.
+
+Now do the rewrite yourself. The reads below are timed async functions: one has a real dependency and must stay sequential, the other two are independent. Turn the independent pair into a single `Promise.all` and watch the total time drop.
+
+<ScriptCoding
+  instructions="getOrg must run first — it returns the org the other two reads need. But listInvoices and listMembers only depend on the org, not on each other, so they should leave together. Rewrite loadDashboard so the two independent reads run in parallel with Promise.all while getOrg stays sequential. The starter takes ~240ms; the rewrite should bring it to ~160ms — and dropping getOrg into the same Promise.all breaks the data the reads need."
+  starter={`const delay = <T,>(ms: number, value: T): Promise<T> =>
+  new Promise((resolve) => setTimeout(() => resolve(value), ms));
+
+const getOrg = (): Promise<{ id: string }> => delay(80, { id: 'org_1' });
+
+const listInvoices = (orgId: string) =>
+  delay(80, [{ id: 'inv_1', orgId }]);
+
+const listMembers = (orgId: string) =>
+  delay(80, [{ id: 'usr_1', orgId }]);
+
+export const loadDashboard = async () => {
+  const org = await getOrg();
+  const invoices = await listInvoices(org.id);
+  const members = await listMembers(org.id);
+  return { org, invoices, members };
+};
+`}
+  tests={`
+test('keeps the return shape, with org.id threaded into both reads', async () => {
+  const result = await loadDashboard();
+  expect(result).toEqual({
+    org: { id: 'org_1' },
+    invoices: [{ id: 'inv_1', orgId: 'org_1' }],
+    members: [{ id: 'usr_1', orgId: 'org_1' }],
+  });
+});
+
+test('parallelizes the two independent reads (~160ms, not ~240ms)', async () => {
+  const start = Date.now();
+  await loadDashboard();
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(200);
+});
+
+test('still uses Promise.all', () => {
+  expect(loadDashboard.toString()).toContain('Promise.all');
+});
+`}
+/>
+
+<details>
+<summary>Reveal solution</summary>
+
+```ts
+export const loadDashboard = async () => {
+  const org = await getOrg();
+  const [invoices, members] = await Promise.all([
+    listInvoices(org.id),
+    listMembers(org.id),
+  ]);
+  return { org, invoices, members };
+};
+```
+
+`getOrg` stays its own `await` because both reads need `org.id`, a real dependency. Once it resolves, `listInvoices` and `listMembers` leave together inside one `Promise.all`, since neither needs the other's result. Three serial waits become two: `org → max(invoices, members)`, about 160ms. Folding `getOrg` into the same `Promise.all` would force `org.id` to be read before it exists, and the dependency check is what stops you.
+
+</details>
+
+## When the waterfall hides in the component tree
+
+The waterfall inside a single function body is the easy one: every await is right there in front of you.
+The harder one, behind most real cases, never shows up in any single function.
+It comes from the shape of your component tree.
+
+A parent Server Component awaits its read and renders.
+A child Server Component awaits its *own* read, which uses nothing the parent fetched.
+Yet the child's read cannot start until the parent finishes rendering, because rendering is sequential: the server renders the parent, reaches the child in the output, and only *then* runs the child's body.
+The two reads serialize on render order, not on data.
+It is easy to miss, because the code looks clean: each component fetches its own data, co-located, no prop-drilling, and it waterfalls anyway.
+
+In the trace below, the parent `DashboardPage` awaits the org and its child `InvoiceList` awaits the invoices, so the child's read sits idle until the parent's resolves.
+
+<RequestTrace title="Render order is fetch order" url="/dashboard" phases="request,server-render">
+  <TraceNode id="page" label="DashboardPage" kind="server" await="db: org">
+    <TraceNode id="invoices" label="InvoiceList" kind="server" await="db: invoices" />
+  </TraceNode>
+
+  <Phase id="server-render">
+    The parent renders before the child, so `InvoiceList`'s `db: invoices` read cannot
+    *start* until `DashboardPage`'s `db: org` read resolves. The two awaits serialize on
+    render order alone, though neither needs the other's data.
+  </Phase>
+</RequestTrace>
+
+This waterfall is structural: it is what naive nesting does, not a typo. You have three ways out.
+
+**Option one: hoist the fetch up.**
+Move both reads into the parent, fire them (with `Promise.all` if they are independent), and pass the results down as props.
+Both reads now run at the top together, so the timing is fixed.
+The cost: the parent must know about data its children consume, and in a deep tree that means prop-drilling a value through components that do not care about it.
+
+**Option two: React `cache()`.**
+This fixes the timing without giving up co-location.
+Wrap the read function in `cache()`, which deduplicates it within a single render: call it five times in one pass and it runs once, handing every caller the same in-flight promise.
+The parent can now *start* the read by calling it without awaiting, so the request is already in flight when the child runs `await listInvoices(orgId)` and receives that same promise instead of starting a fresh one.
+The child stays self-contained, the timing goes parallel, and nobody drills a prop.
+
+When you read with `fetch()`, Next.js deduplicates identical GET requests within a render pass for free.
+Drizzle does not: `db.query.invoices.findMany(...)` called twice in one render runs twice, because nothing memoizes it.
+This app reads through Drizzle, so you wrap the query in `cache()` yourself to get the dedup and the kick-off pattern.
+
+<AnnotatedCode lang="tsx" maxLines={14} code={`
+export const listInvoices = cache(async (orgId: string) => {
+  return db.query.invoices.findMany({ where: eq(invoices.organizationId, orgId) });
+});
+
+export default async function DashboardPage({ orgId }: { orgId: string }) {
+  listInvoices(orgId);
+
+  return (
+    <section>
+      <OrgHeader orgId={orgId} />
+      <InvoiceList orgId={orgId} />
+    </section>
+  );
+}
+
+async function InvoiceList({ orgId }: { orgId: string }) {
+  const invoices = await listInvoices(orgId);
+  return <InvoiceTable rows={invoices} />;
+}
+`}>
+  <AnnotatedStep meta="{1}" color="violet">
+    `cache()` makes the Drizzle read request-scoped: called many times in one render, it runs once and shares the result. Drizzle reads aren't auto-deduped, so this wrap unlocks the pattern.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6}" color="violet">
+    The parent *starts* the read without awaiting it, warming the cache so the promise is in flight while the rest of the tree renders. It is not a forgotten `await`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{17}" color="violet">
+    The child awaits its own read, co-located and self-contained, but receives the in-flight promise the parent started, so it doesn't pay a second round trip.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+**Option three: sibling Suspense boundaries.**
+Split the children so each fetches under its own `<Suspense>`.
+Siblings under separate boundaries fetch in parallel and stream in independently, covered in depth next.
+
+:::note
+The deeper you would have to drill a hoisted prop, the more `cache()` wins. Hoisting one level is fine; threading a value through four components that ignore it is its own warning sign, and that is when a module-level `cache()` beats the hoist.
+:::
+
+## Suspense streaming versus parallel await
+
+So far the goal has been to overlap independent reads.
+But on some slow pages, overlapping is not the lever.
+
+Picture a dashboard with two reads: an analytics aggregation that takes ~800ms and a user profile that takes ~50ms.
+Even with `Promise.all` parallelizing them perfectly, the page cannot paint until the *slower* one resolves, so the user stares at a blank screen for 800ms.
+The reads are already parallel, so serialization is not the problem; the slow read blocks first paint for everything else.
+
+The fix is to stop making the fast content wait.
+Wrap the slow region in `<Suspense fallback={...}>`: the fast content paints immediately, a skeleton holds the slow region's place, and the slow content <Term definition="Sending parts of the page's HTML to the browser as they become ready, instead of holding everything back until the whole page is rendered.">streams</Term> in when ready.
+
+One precise point, because it is the common misconception: Suspense is not a speed-up.
+The slow fetch is exactly as slow; the 800ms does not change.
+What changes is *when the user sees something*, with first paint moving from 800ms to 50ms.
+The mechanics of streaming belong to the App Router unit; here you need the shape and the decision.
+
+<VideoCallout videoId="xTT_Sd_xqh0" videoTitle="Next.js Streaming Tutorial — SSR, React Suspense & Loading Skeleton">
+  logicBase Labs wraps a slow region in `<Suspense>` with a skeleton fallback so the fast content paints first, building this section's streaming shape in Next.js 15 (~26 min).
+</VideoCallout>
+
+You now have two "don't block" shapes and must pick between them:
+
+- **Parallel-await** when all the data must be present before the page is worth showing. A transactional page, such as an invoice you are about to approve and pay, should not paint half-formed: show it complete or show a loader. Use `Promise.all`.
+- **Suspense streaming** when partial paint is useful. A dashboard of independent widgets has no reason to hold the fast ones hostage to the slow one. Stream the slow region.
+
+Both start from the dependency graph; streaming only changes what you do with an independent slow read once you have found it.
+
+<DiagramSequence>
+  <DiagramStep caption="Block on all (Promise.all): both reads run in parallel, but the page can't paint until the slower one finishes, so first paint sits at the end of analytics — a blank screen for ~800ms.">
+    <StreamingFirstPaint step={1} />
+  </DiagramStep>
+
+  <DiagramStep>
+    <StreamingFirstPaint step={2} />
+    <Fragment slot="caption">
+      Stream the slow one: wrap `analytics` in `<Suspense>`, the fast `profile` paints immediately, and a skeleton holds the slow region. First paint jumps to ~50ms. The analytics bar hasn't moved — the fetch is still 800ms; only the first-paint line did.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+:::caution
+Under streaming, the trace's **"Total" duration becomes misleading.** The span can read 800ms while the user saw meaningful content at 50ms. When a page streams, read the *first-paint* metric, not the total.
+:::
+
+Now make the call yourself. Walk the decision below through a few scenarios and watch which shape it lands on.
+
+<StateMachineWalker title="Which fix does this page need?">
+  <Question
+    id="block-paint"
+    prompt="Must all the data be present before the page is worth painting?"
+    description="Start at the dependency graph: you've found the independent reads. Now decide whether the user should see anything before every one resolves."
+  >
+    <Branch
+      label="Yes — it's transactional"
+      to="leaf-await-all"
+      rationale="An invoice to approve, a checkout — acting on a half-rendered page is dangerous."
+    />
+    <Branch
+      label="No — partial paint is useful"
+      to="slow-mix"
+      rationale="A dashboard of independent widgets has nothing to hide before it all loads."
+    />
+  </Question>
+
+  <Question
+    id="slow-mix"
+    prompt="Among the independent reads, is one much slower than the rest?"
+    description="Streaming only buys first paint when a slow read is holding fast content hostage."
+  >
+    <Branch
+      label="Yes — one slow aggregation, the rest are fast"
+      to="leaf-stream"
+      rationale="e.g. an 800ms analytics rollup next to a 50ms profile read."
+    />
+    <Branch
+      label="No — they're all roughly equal speed"
+      to="leaf-await-parallel"
+    />
+  </Question>
+
+  <Leaf id="leaf-await-all" verdict="Parallel await (Promise.all)">
+    Everything must paint together, so overlap the reads to cut the wait but block until all resolve.
+    `const [a, b] = await Promise.all([…])`.
+    Don't stream a page the user is about to act on half-rendered.
+  </Leaf>
+
+  <Leaf id="leaf-stream" verdict="Suspense streaming">
+    Wrap the slow read in `<Suspense>` so the fast content paints immediately and the slow region fills in behind a skeleton.
+    The read stays exactly as slow — you've moved *first paint* earlier, not shortened the work.
+  </Leaf>
+
+  <Leaf id="leaf-await-parallel" verdict="Parallel await (Promise.all)">
+    No single read dominates, so there's little first paint to win by streaming.
+    Overlap them with `Promise.all` and keep the page simple.
+  </Leaf>
+</StateMachineWalker>
+
+## Serialization versus duplication, parallelism versus caching
+
+These two problems look alike but have different fixes, and conflating them is the common mistake.
+
+**Serialization** is independent reads running one after another.
+It wastes time waiting, and you fix it with parallelism: `Promise.all` or streaming.
+
+**Duplication** is the *same* read happening many times in one render: `getUser` called in the layout, again in the header, again in a sidebar widget.
+It wastes time repeating, and you fix it with caching.
+
+A single page can suffer both.
+Once you know which you are facing, two caching tools apply, and choosing between them is its own common mistake:
+
+- **React `cache()`** is request-scoped memoization: the same read called N times in one render runs once, then is forgotten when the request ends.
+- **The `'use cache'` directive** is cross-request persistence: the result survives between requests, so the next visitor reuses it.
+
+The decision rule is the scope of the duplication.
+If the same read fires several times *in this render*, use `cache()`.
+If every visitor re-runs the same expensive read, use `'use cache'`.
+Pick the wrong one and it either does nothing or caches something it should not.
+
+This component-tree waterfall is the [N+1 query](/039-indexes-plans-and-transactions/2-spotting-n1/) one layer up: each row awaits its own read, and the database sees N serial queries instead of one.
+The fix is the same shape: hoist the fetch, batch it into one query, then pass the rows down.
+
+:::caution
+A `Promise.all` that fans out over *many* reads can exhaust a small database connection pool, trading the serialization wait for a new one.
+The next lesson covers bounded concurrency and pool sizing; for now, just know the trade-off exists.
+:::
+
+Once a week, open one slow trace, look for the diagonal staircase, and run the dependency check on it.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Next.js — Fetching Data"
+    href="https://nextjs.org/docs/app/getting-started/fetching-data"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The official guide, with side-by-side sequential vs. parallel examples and the Promise.all rewrite."
+  />
+  <ExternalResource
+    title="React — cache() reference"
+    href="https://react.dev/reference/react/cache"
+    icon="simple-icons:react"
+    iconColor="#61DAFB"
+    description="Per-request memoization, the preload pattern, and the pitfalls — the API behind the kick-off move."
+  />
+  <ExternalResource
+    title="Avoiding Server Component Waterfalls with cache()"
+    href="https://aurorascharff.no/posts/avoiding-server-component-waterfall-fetching-with-react-19-cache/"
+    icon="lucide:pen-line"
+    iconColor="#F472B6"
+    description="Aurora Scharff contrasts hoisting with Promise.all against the cache() preload pattern that keeps co-location."
+  />
+</CardGrid>

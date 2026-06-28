@@ -815,11 +815,11 @@
 - 6 Session replay with masking by default (Turn on PostHog session replay with the mask-vs-block masking catalog, sampling discipline, consent-gated start, and a replay-to-bug-fix workflow for the UX bugs that throw no error.)
 - 7 Quiz
 
-### Chapter 094 — Performance vigilance
+### Chapter 094 — Performance audits and fixes
 - 1 The Core Web Vitals (Definitions of LCP, INP, and CLS, their p75 thresholds, the primary cause and one structural reach for each, and the field-data-versus-lab-data discipline that anchors the chapter.)
-- 2 priority on the LCP element (How `next/image`'s `priority` prop preloads the LCP element, which exact image gets it, and the ESLint-enforced ban on raw `<img>` that keeps CLS and lazy-loading defaults in place.)
-- 3 The barrel-export trap (Why barrel re-exports defeat tree-shaking, the lucide-react case study, and `optimizePackageImports` plus `sideEffects: false` as the modern fix that keeps imports readable while shipping per-export shape.)
-- 4 Reading the bundle treemap (Installing `@next/bundle-analyzer`, the four scan passes for reading its treemap (biggest tile, per-route chunks, duplicates, shared chunk), and the triage decision tree from finding to fix.)
+- 2 Preloading the LCP element (How `next/image`'s `preload` prop (Next.js 16's rename of `priority`) front-loads the LCP element, which exact image gets it, and the ESLint-enforced ban on raw `<img>` that keeps CLS and lazy-loading defaults in place.)
+- 3 Barrel files and tree-shaking (Why barrel re-exports defeat tree-shaking, the lucide-react case study, and `optimizePackageImports` plus `sideEffects: false` as the modern fix that keeps imports readable while shipping per-export shape.)
+- 4 Reading the bundle treemap (Running the built-in Turbopack analyzer (`next experimental-analyze`), the four scan passes for reading its treemap (biggest tile, per-route weight, duplicates, shared chunk), and the triage decision tree from finding to fix.)
 - 5 Lighthouse as the pre-launch gate (The two pre-launch audit surfaces (marketing page and one authenticated screen), `@lhci/cli` as the CI regression gate with performance budgets, and the threshold cheat sheet that calibrates lab scores against field data.)
 - 6 RSC waterfalls and Promise.all (Diagnosing sequential parent-then-child awaits in a Sentry trace, the dependency-check reflex before adding a second `await`, and the `Promise.all` rewrite (with Suspense streaming as a sibling reach) that turns serial waits into parallel ones.)
 - 7 Indexes and N+1 in production (Revisiting the two SQL failure classes at production scale: missing composite `(org_id, ...)` indexes diagnosed via `EXPLAIN ANALYZE`, N+1 fixed with Drizzle relations or joins, plus the pre-launch DB checklist and weekly slow-query review.)

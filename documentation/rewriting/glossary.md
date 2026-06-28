@@ -2706,3 +2706,34 @@ PostHog | - | Product-analytics platform folding events, feature flags, session 
 field data | real-user data | Performance measured from real users on their own devices and networks; what Google ranks on. | first defined: Chapter 093 L1
 lab data | synthetic data | Performance from a synthetic test: one run, one machine, controlled conditions. | first defined: Chapter 093 L1
 pre-PMF | product-market fit, PMF | Early-stage product still searching for a repeatable paying audience, before proven steady demand. | first defined: Chapter 093 L1
+INP | Interaction to Next Paint | Core Web Vital timing tap-to-paint latency across the visit (~p98); replaced FID. | first defined: Chapter 094 L1
+p75 | 75th percentile | The value 75% of samples fall at or below; how Core Web Vitals are scored. | first defined: Chapter 094 L1
+CrUX | Chrome User Experience Report | Google's public 28-day field dataset of real Chrome-user metrics; what Search scores against. | first defined: Chapter 094 L1
+critical path | - | The chain of fetches that must finish before the browser can paint the main content. | first defined: Chapter 094 L1
+FID | First Input Delay | Retired interactivity metric INP replaced in March 2024; measured only the first interaction's delay. | first defined: Chapter 094 L1
+fetchpriority | fetchPriority | HTML attribute hinting how urgently to download a resource; tunes fetch priority, not discovery timing. | first defined: Chapter 094 L2
+above the fold | - | The page slice visible without scrolling, on the first frame after load. | first defined: Chapter 094 L2
+art direction | - | Serving a deliberately different image or crop per device, not just a rescaled version of the same image. | first defined: Chapter 094 L2
+no-img-element | @next/next/no-img-element | Lint rule banning raw <img>; core-web-vitals config upgrades it from warning to error. | first defined: Chapter 094 L2
+flat config | eslint.config.mjs | ESLint's exported-array config format that replaced .eslintrc; the only supported form. | first defined: Chapter 094 L2
+optimizePackageImports | - | Next.js experimental config that rewrites a barrel named import into per-export deep imports at build, shipping only what's used. | first defined: Chapter 094 L3
+sideEffects (package.json) | sideEffects flag | package.json field promising a package's modules run no import-time code, letting the bundler prune unused exports; array form names exceptions like CSS. | first defined: Chapter 094 L3
+deep import | per-export import, deep path import | Importing directly from a submodule path, skipping the barrel so only that export ships; verbose and semver-fragile. | first defined: Chapter 094 L3
+CommonJS interop | CJS interop | Mixing CommonJS require modules into an ESM graph; CJS exports are computed at runtime so the bundler can't tree-shake them. | first defined: Chapter 094 L3
+semver | semantic versioning | MAJOR.MINOR.PATCH version scheme where only a MAJOR bump may break public API. | first defined: Chapter 094 L3
+treemap | bundle treemap | Space-filling chart of nested rectangles where area encodes bytes; bigger tile means more bytes shipped. | first defined: Chapter 094 L4
+gzip | gzipped | Compressed byte count actually sent over the wire; what the user's connection pays for, smaller than raw source. | first defined: Chapter 094 L4
+transfer size | - | Compressed bytes that travel over the network, the size to read in an analyzer, not raw on-disk size. | first defined: Chapter 094 L4
+import chain | - | The exact sequence of imports that pulled a module into the bundle; the analyzer traces it to the causing line. | first defined: Chapter 094 L4
+shared chunk | - | The chunk loaded on every route (shared runtime plus root-layout/global-provider imports); the most expensive weight since every page pays it. | first defined: Chapter 094 L4
+lab metric | - | A performance number measured in a synthetic Lighthouse run on a fixed profile; the five that make up the Performance score. | first defined: Chapter 094 L5
+Speed Index | - | Lab metric (10% of Performance score) measuring how fast the page visually populates during load; lower is better. | first defined: Chapter 094 L5
+TBT | Total Blocking Time | Sum of main-thread blocking over 50ms during load; Lighthouse's partial lab proxy for INP. | first defined: Chapter 094 L5
+PageSpeed Insights | PSI | Hosted Lighthouse on Google's infrastructure plus a CrUX field overlay; the pre-launch audit surface. | first defined: Chapter 094 L5
+performance budget | - | An asserted cap on a metric or resource class (JS bytes, image bytes, LCP) that fails the build when busted. | first defined: Chapter 094 L5
+@lhci/cli | LHCI, Lighthouse CI | CLI that runs Lighthouse against a built app and asserts thresholds in CI, failing the build on a bust. | first defined: Chapter 094 L5
+autorun | lhci autorun | LHCI command chaining healthcheck, collect, assert, and upload; exits non-zero if any assertion fails. | first defined: Chapter 094 L5
+lighthouserc.json | - | The single LHCI config file with collect, assert, and upload blocks that encodes the CI gate. | first defined: Chapter 094 L5
+RSC | React Server Component | Component running on the server that awaits data in its body, sending only rendered output to the browser. | first defined: Chapter 094 L6
+trace | request trace | Tree of timed spans recorded for one request: what ran, when, for how long. | first defined: Chapter 094 L6
+pg_stat_statements | - | Postgres extension tracking per-statement call counts and timing, to rank queries by cost. | first defined: Chapter 094 L7
