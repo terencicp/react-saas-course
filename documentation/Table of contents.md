@@ -749,7 +749,7 @@
 ### Chapter 086 — The shape of a test suite
 - 1 Picking Vitest and wiring the runner (Installs Vitest as the 2026 runner, walks `vitest.config.ts` with `globals: false` and `vite-tsconfig-paths`, and splits node from jsdom suites via test-projects.)
 - 2 The honeycomb shape for a Next.js SaaS (Names the honeycomb over the pyramid and trophy, sets integration at the seams as the center of gravity, and gates component and E2E tests behind triggers.)
-- 3 Coverage as a diagnostic, not a target (Reads branch over line, sets per-directory thresholds on `/lib` and the seams, and adds the absence-of-tests audit via `coverage.all: true`.)
+- 3 Coverage as a diagnostic, not a target (Reads branch over line, sets per-directory thresholds on `/lib` and the seams, and adds the absence-of-tests audit via `coverage.include`.)
 - 4 Arrange, act, assert one behavior (Installs the AAA shape with descriptive `it('<outcome> when <conditions>')` names and the rule that asserts the contract the caller observes, not private helpers.)
 - 5 Quiz
 

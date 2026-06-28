@@ -2501,3 +2501,43 @@ self-referential (hreflang) | - | Rule that each page's hreflang set must list i
 bidirectional (hreflang) | mutual hreflang | Rule that hreflang links must be reciprocal: if A points at B, B must point back at A, else Google drops the declaration. | first defined: Chapter 085 L4
 localePrefix as-needed | as-needed prefix | next-intl routing option leaving the default locale unprefixed while every other locale gets a URL prefix. | first defined: Chapter 085 L4
 getPathname | - | next-intl locale-aware path builder; given a locale and href, returns the correctly prefixed pathname. | first defined: Chapter 085 L4
+Vitest | - | Vite-native test runner with a Jest-compatible API; runs ESM and TS with no extra transform. | first defined: Chapter 086 L1
+Vite | - | Fast ESM-native, TypeScript-aware build tool and dev server this project runs on. | first defined: Chapter 086 L1
+ESM | ECMAScript Modules, ES modules | The import/export module standard, vs CommonJS require. | first defined: Chapter 086 L1
+HMR | hot module replacement | Swapping a changed module without a full reload. | first defined: Chapter 086 L1
+jsdom | - | In-memory implementation of the browser DOM so Node can run browser-expecting code. | first defined: Chapter 086 L1
+ambient globals | - | Names available in every file without an import (e.g. describe/it/expect under globals:true). | first defined: Chapter 086 L1
+dotenv | - | Library that reads a .env file into process.env. | first defined: Chapter 086 L1
+test runner | - | Tool that collects, executes, and reports test files (here, Vitest). | first defined: Chapter 086 L1
+watch mode | - | Runner mode that stays alive and re-runs dependent tests on each save. | first defined: Chapter 086 L1
+test projects | projects | Named config slices, each with its own environment and include glob, run in one root config. | first defined: Chapter 086 L1
+test pyramid | pyramid | Test-shape advice: many unit tests at a wide base, fewer integration, a thin E2E cap; fits deep-logic systems. | first defined: Chapter 086 L2
+testing honeycomb | honeycomb | Integration-centered test shape (Spotify); widest band in the middle, thin layers above and below; fits boundary-heavy systems. | first defined: Chapter 086 L2
+testing trophy | trophy | Kent C. Dodds test shape, integration-centered with a static (types+lint) base; client-app framing. | first defined: Chapter 086 L2
+unit test | - | Test of pure /lib logic: same input, same output, no DB/network/framework; cheap, no fixtures. | first defined: Chapter 086 L2
+integration test | - | Test exercising a seam against a real test DB and auth fixture; the honeycomb's center of gravity. | first defined: Chapter 086 L2
+component test | - | Test of a UI component's behavior (React Testing Library); conditional, earned by a trigger. | first defined: Chapter 086 L2
+end-to-end test | E2E test | Test of a whole multi-step money path through the stack (Playwright); thin band, zero or four by year one. | first defined: Chapter 086 L2
+snapshot test | - | Test asserting serialized output matches a saved copy; worth it only for a contract a caller depends on. | first defined: Chapter 086 L2
+shape follows the bug | - | Heuristic: pick the test layer by where the bug lands, not by a target shape. | first defined: Chapter 086 L2
+arrange-act-assert | AAA | Three-part test shape: arrange inputs/fixtures, act once on the unit, assert the outcome, separated by blank lines. | first defined: Chapter 086 L4
+black-box test | black-box experiment | Test that asserts only what survives swapping the implementation for another satisfying the same contract; the behavior-vs-implementation check. | first defined: Chapter 086 L4
+matcher (assertion) | Vitest matcher | The expect call (toBe, toMatchObject, toThrow…) chosen so a failure's diff names what broke. | first defined: Chapter 086 L4
+BDD | behavior-driven development | Given/when/then phrasing of a behavior; the same arrange-act-assert shape under different vocabulary. | first defined: Chapter 086 L4
+spy | test spy, vi.spyOn | Test double wrapping a real function to record/force its calls; arrange dependencies with it, never assert on it. | first defined: Chapter 086 L4
+spy smell | - | Asserting your mock was called with values you wired in (toHaveBeenCalledWith); verifies setup, not the function. | first defined: Chapter 086 L4
+MSW | Mock Service Worker | Intercepts outgoing HTTP at the network layer so tests stub the request/response, not the calling function. | first defined: Chapter 086 L4
+coverage | test coverage, code coverage | Percentage of source that ran while tests executed; a record of what was reached, not a quality score. | first defined: Chapter 086 L3
+line coverage | - | Whether each source line executed during the suite; least connected to where bugs live. | first defined: Chapter 086 L3
+branch coverage | - | Whether each side of every decision (if/case/&&/?:/catch) was taken; read before line coverage. | first defined: Chapter 086 L3
+statement coverage | - | Whether each statement ran; close to lines, but several statements can share one line. | first defined: Chapter 086 L3
+function coverage | - | Whether each function was called at least once. | first defined: Chapter 086 L3
+branch (coverage) | decision point | A point with more than one outcome (each if side, case, && short-circuit) that branch coverage tracks. | first defined: Chapter 086 L3
+V8 | - | The JS engine in Node and Chrome; reports which code ran for free, how v8-provider coverage is gathered. | first defined: Chapter 086 L3
+instrumentation (coverage) | - | Rewriting source to insert hit counters before running it (Istanbul); what the V8 provider avoids. | first defined: Chapter 086 L3
+coverage theatre | - | Tests that raise coverage but assert nothing; pass and fail only if deleted. | first defined: Chapter 086 L3
+mutation testing | - | Mutating source (flip operators, delete branches) and checking whether any test fails; measures what is checked, not just what ran. | first defined: Chapter 086 L3
+Stryker | StrykerJS | The mutation-testing tool; named as a mental model, not installed in the course. | first defined: Chapter 086 L3
+differential coverage | per-PR coverage | How much of a change's added code is covered by that change's own tests; the per-PR view vs the whole-codebase average. | first defined: Chapter 086 L3
+coverage threshold | backstop | A CI floor catching a previously-tested seam losing coverage; a backstop, not a target to climb toward. | first defined: Chapter 086 L3
+coverage.include | - | Vitest 4 globs pulling never-imported files into the report at 0% instead of vanishing; replaces removed coverage.all. | first defined: Chapter 086 L3
