@@ -1,0 +1,370 @@
+---
+title: A Neon branch per preview
+tagline: Wire Neon copy-on-write branching and the Vercel-Neon integration so every PR preview gets its own production-shaped, isolated database.
+chapter-id: 98
+course-progress: 0.9309
+sidebar:
+  order: 5
+  label: Neon branch per preview
+rewrites: 1
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import DangerConvergence from '../../../components/lessons/098/5/DangerConvergence.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import CowBranchingStages from '../../../components/lessons/098/5/CowBranchingStages.astro';
+import ThreeBranchFanout from '../../../components/lessons/098/5/ThreeBranchFanout.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Every PR gets its own preview URL, but each one reads the same `DATABASE_URL` as production: the same connection string, the same Postgres, the same rows your real customers live in.
+
+That is not a theoretical risk.
+A teammate clicks through a preview, signs up a fake account, and it lands in production.
+A reviewer opens a PR that adds a column, and the preview either alters the *production* schema or crashes because the live schema no longer matches the code.
+A PR ships a cleanup script that wipes test data, runs it against the preview's `DATABASE_URL`, and real data is gone with no undo.
+
+This lesson fixes that.
+By the end, every PR gets its own private copy of the production database, created when the PR opens and torn down when it closes.
+The goal in one sentence: **every PR should run against a database shaped like production that isn't production.**
+
+## Previews share your production database
+
+Today, four environments read and write one database: production, serving your customers, and every open PR's preview, each a working copy of the app that reads and writes the exact rows production does.
+
+<DangerConvergence />
+
+Two fixes look obvious, and seeing why each fails points to the real answer.
+
+The first is a single shared **staging** database, one extra Postgres that every preview points at instead of production.
+That protects customers, but every preview still shares one database with every other preview, so PR #41's migration breaks PR #42's app, and two reviewers testing at once overwrite each other's data.
+The collision has moved, not gone.
+
+The second is provisioning a fresh Postgres per PR from a CI script.
+That gives real isolation, but copying production's data into a new database costs minutes and money on every push.
+A repo with a dozen open PRs pays to keep a dozen full copies of its data alive.
+
+So the requirement sharpens to three properties: per-PR databases that are **instant** to create, **near-free** to keep around, and **fully isolated**.
+Hit all three and a database per PR becomes the obvious default; miss one and you are back to a compromise.
+Meeting that trio is why this course put your database on Neon.
+
+## How Neon branching works
+
+The one new idea here is Neon's <Term definition="Only data that actually changes gets duplicated; everything unchanged stays shared with the original.">copy-on-write</Term> branching.
+The rest of the lesson is wiring that follows from it.
+
+Neon's key move is separating *storage* from *compute*.
+Your data lives in one storage layer, and the database engine that reads and writes it sits on top as a separate thing.
+Once the two are decoupled, something a normal Postgres can't do becomes possible: you can make a second database that points at the *same stored data* without copying any of it.
+
+That pointer is a <Term definition="A logical pointer at a point-in-time snapshot of another branch's data; it copies no data when created.">branch</Term>, and its behavior unfolds in four stages.
+
+Stage one: **a branch is a pointer at a snapshot.**
+When you branch off your production database, Neon copies no rows.
+It records a <Term definition="A point-in-time logical image of a branch's data; the moment a branch is forked from.">snapshot</Term>, a marker that says "this branch starts from the parent's data as it looked right now," and stops there.
+Creating the branch is instant whether the database holds ten rows or ten million, because nothing is duplicated.
+
+Stage two: **reads serve from the parent.**
+The instant after you create the branch, querying it returns all of production's data.
+The branch holds none of its own yet, so every read falls through to the shared parent storage.
+An untouched branch is essentially free to keep around.
+
+Stage three: **the first write diverges.**
+Write a row on the branch and you hit the copy-on-write moment.
+Neon copies just the small chunk of storage that changed, the page that row lives on, and the branch now owns that one chunk; everything else still falls through to the parent.
+From here the branch is fully isolated: the write exists only on the branch, and the parent can change underneath without the branch noticing.
+You get complete isolation having copied only the bytes that actually differ.
+
+Stage four: **`main` is just the production branch.**
+Neon calls your primary database the `main` branch, and production runs on it.
+Every preview branches off `main`, so a preview starts not empty and not with fake fixtures, but as an exact snapshot of production's data, then diverges only as the PR's code touches it.
+
+Scrub through the four stages below and watch how little actually gets duplicated.
+
+<DiagramSequence>
+  <DiagramStep caption="A branch is a pointer at a snapshot. Creating it copies no data, so it's instant whether the database holds ten rows or ten million.">
+    <CowBranchingStages step="pointer" />
+  </DiagramStep>
+
+  <DiagramStep caption="Reads serve from the parent. Every query on the fresh branch falls through to main's shared storage, so the branch already 'has' all of production's data while holding none of its own.">
+    <CowBranchingStages step="reads" />
+  </DiagramStep>
+
+  <DiagramStep caption="The first write diverges. Neon copies only the one page that changed, so the branch owns that page while everything else still falls through to main. Copy-on-write duplicates bytes only when they actually differ.">
+    <CowBranchingStages step="diverge" />
+  </DiagramStep>
+
+  <DiagramStep caption="main is just the production branch. Production runs on main, and every preview branches off it, starting as an exact snapshot of production and then living its own isolated life.">
+    <CowBranchingStages step="production" />
+  </DiagramStep>
+</DiagramSequence>
+
+This delivers the exact trio the previous section asked for: a Neon branch is instant to create, near-free to keep idle until it's written to, and fully isolated the moment it diverges.
+No other Postgres host hands you this as a built-in feature in 2026; a self-hosted Postgres or a managed box like Amazon RDS leaves you with a CI-script full-copy database per PR or a shared staging database, the slower, less-isolated options already ruled out.
+That's why a database per PR is suddenly practical, and why this course's Postgres lives on Neon.
+
+<VideoCallout videoId="a1ZEY3W7sOI" videoTitle="Copy a 1,000GB+ Postgres database in 1 second (literally)">
+  The Neon team branches a 1 TB database live in seconds, then drops a 7-billion-row table on the branch to prove the parent is untouched. It's copy-on-write made concrete in 7 minutes.
+</VideoCallout>
+
+## Wiring the Native Vercel-Neon Integration
+
+The connective tissue is the **Native Vercel-Neon Integration**, an official integration that teaches Vercel and Neon to talk to each other.
+Once installed, every preview deployment triggers Neon to create a branch, and Vercel injects that branch's connection string into the deployment.
+You do this once, through the Vercel dashboard, and never touch it again.
+
+<Steps>
+1. In your Vercel dashboard, open **Integrations**, then **Browse Marketplace**.
+
+2. Find and select **Neon**, then click **Install**.
+
+3. Choose the **Vercel project** you're pairing, which is your app.
+
+4. **Authorize Neon** when prompted. This lets Vercel and Neon exchange the connection details on your behalf.
+
+5. Pick the **Neon project** to pair with: the one holding your production `main` branch from when you set up the database.
+</Steps>
+
+The integration adds a `DATABASE_URL` to your **Preview** environment and marks it as a <Term definition="An environment variable injected and kept current by an integration; it's overwritten automatically per deployment, so the dashboard won't let you hand-edit it.">managed variable</Term>.
+A small lock icon appears next to it, and Vercel won't let you edit its value.
+That's deliberate: each preview gets a *different* branch, so the value is meant to change on every deployment.
+
+It leaves your other two databases alone.
+Your production `DATABASE_URL` stays pointed at `main`, and your local development database is untouched.
+The integration owns one variable in one environment, the Preview `DATABASE_URL`, and nothing else.
+
+Here is what now happens on each PR:
+
+- A preview deploys, and Neon creates a branch off `main` named after the git branch, something like `preview/add-export-button`.
+- Vercel injects that branch's connection string into *that deployment's* `DATABASE_URL`, scoped per-deployment: PR #41's latest commit wires its branch only into PR #41's latest preview.
+- When the PR merges or closes, the branch is deleted automatically.
+
+During install you may have been asked to choose between **Neon-Managed** and **Vercel-Managed**.
+For preview branching they behave identically; the difference is who provisions and bills Neon.
+Vercel-Managed runs Neon through Vercel, convenient when you're starting completely fresh.
+This course uses **Neon-Managed** for continuity: you set Neon up directly when you built the data layer, so keeping it as the single source of truth means you don't fork your billing or dashboards.
+Pick the one that matches where your database already lives.
+
+<Aside type="note">
+How environment variables get scoped across development, preview, and production is the next lesson.
+Here you only need the one variable the integration owns: the Preview `DATABASE_URL`, managed for you.
+</Aside>
+
+## Migrating the preview branch before the app boots
+
+A preview branch starts as a copy of production, schema included, not just rows.
+But the point of a PR is often a schema change: a new column, table, or index.
+The PR's code expects that new shape, while the branch was forked from production, which doesn't have it yet.
+So the app boots against a database one step behind its own code, and you get a runtime error the instant anything touches the missing column.
+
+The fix is to run the PR's migrations against the preview branch *before the app boots*.
+The branch starts with production's schema, the build brings it up to the PR's schema, then the app starts against a database that matches.
+
+The hook for "run something before the app boots" is the **Build Command**.
+By default it runs only the framework's build; you extend it to run your migrations first.
+
+<CodeVariants>
+  <CodeVariant label="Before — schema mismatch">
+    <div data-mark-color="red">
+
+    ```sh frame="none" "next build"
+    next build
+    ```
+
+    </div>
+    **The preview boots on a branch that still has production's schema.** If the PR added a column, the app throws the first time it queries that column. The branch is a perfect copy of production, including the schema the PR was supposed to change.
+  </CodeVariant>
+
+  <CodeVariant label="After — migrate, then build">
+    <div data-mark-color="green">
+
+    ```sh frame="none" "pnpm db:migrate &&"
+    pnpm db:migrate && next build
+    ```
+
+    </div>
+    **Migrations run first, against this deployment's `DATABASE_URL`,** which the integration already pointed at the preview branch. The branch's schema is brought up to the PR's schema, then the app builds and boots against a database that matches its code. A `prebuild` script in `package.json` achieves the same thing if you prefer to keep the dashboard field clean.
+  </CodeVariant>
+</CodeVariants>
+
+The migrate script is small.
+It reads `DATABASE_URL` from the environment, which is the key to the whole thing: the script automatically targets whatever branch *this* deployment was handed, with no per-environment configuration.
+It applies the migration files already committed in `drizzle/`, using the unpooled database client.
+
+```ts title="scripts/migrate.ts" "dbUnpooled"
+import { migrate } from 'drizzle-orm/postgres-js/migrator';
+import { dbUnpooled } from '@/db/index';
+
+await migrate(dbUnpooled, { migrationsFolder: './drizzle' });
+```
+
+It uses `dbUnpooled`, not the default pooled `db`, on purpose: a migration is a sequence of statements that must run in order on one connection, and a pool hands out whatever connection is free, the wrong tool for an ordered, stateful job.
+The `dbUnpooled` export has been in your project since the data layer for exactly this.
+And `db:migrate`, the script the Build Command calls, is just the `package.json` entry that runs this file.
+
+One point is a discipline, not a convenience: the build only ever *applies* migrations that already exist.
+You generate the migration, review the SQL it produced, then apply it, and the preview build runs only that last step.
+It never generates a new migration and never pushes schema changes to a database without a reviewed file.
+The migration files in `drizzle/` are the contract; the build just runs them.
+
+<Aside type="note">
+Two questions are deliberately out of scope here: *what* a given migration does, and *whether it's safe to run automatically*. That second question, the expand-then-contract discipline that lets a schema change ship without an outage, is the entire subject of the next chapter. In this lesson a migration is a black box. You're wiring **where** it runs (the preview branch) and **when** (before the app boots), not judging whether any particular one is safe.
+</Aside>
+
+Putting migrations in the Build Command means *every* deploy runs them, including production deploys against `main`'s database.
+For previews that's exactly right.
+For production it's dangerous: a naive destructive migration running automatically on every push to `main` is how you delete a column out from under live traffic with no human in the loop.
+
+So the senior call: migrations in the Build Command are fine for previews, but production migrations belong behind a gated, explicitly approved CI step.
+A preview branch is disposable, so an automatic migration against it costs nothing if it's wrong.
+The `main` branch is your customers' data, so a migration against it should earn a human's approval first.
+The next chapter owns that full story.
+
+## The lifecycle of a preview branch
+
+A preview branch is born, used, and destroyed on the rhythm of the PR:
+
+<Steps>
+1. **PR opened.** Neon creates a branch off `main`, seeded with production's current snapshot. The preview deploys and wires its `DATABASE_URL` to that branch.
+
+2. **Push to the PR.** The same branch is reused. Each new preview build re-runs the migrations, so the branch's schema tracks the latest commit. You're always testing the newest code against a database shaped for it.
+
+3. **PR merged or closed.** The branch is deleted automatically. This is configurable, but the default is right: a closed PR's database has no reason to exist.
+</Steps>
+
+So never store anything in a preview branch you need to keep.
+It is a real, throwaway copy of production you can break freely, precisely because deleting it costs nothing.
+
+The auto-delete has a sharp edge.
+Closing a PR destroys the branch and every row your testing put in it.
+So if a preview misbehaves and you want to inspect its data to understand why, do it **before** you close the PR.
+To keep that data for debugging, copy it out or fork a new branch from it first, which is what the CLI in the next section is for.
+
+<Sequence instructions="Put the life of a per-PR preview branch in order, from opening the PR to cleanup.">
+  <Step>You open a PR against `main`</Step>
+  <Step>Neon creates a branch off `main`, seeded with production's snapshot</Step>
+  <Step>Vercel injects the branch's connection string into the preview deployment</Step>
+  <Step>The build runs the PR's migrations against the branch, then boots the app</Step>
+  <Step>You push more commits; the same branch is reused and migrations re-run</Step>
+  <Step>You merge or close the PR</Step>
+  <Step>Neon deletes the branch automatically</Step>
+</Sequence>
+
+## `neonctl` for branches outside the preview flow
+
+The integration owns *preview* branches and handles them automatically.
+For any branch work outside that flow, reach for Neon's CLI, `neonctl`.
+You'll need it rarely.
+
+Three realistic cases come up: inspecting or forking a closed preview's data before auto-delete removes it; resetting a drifted dev branch back to a fresh copy of its parent without recreating it; and forking a throwaway branch for an experiment unrelated to any PR.
+
+```sh
+pnpm add -g neonctl
+neonctl auth
+
+neonctl branches list
+neonctl branches create --parent main
+neonctl branches reset <branch>
+```
+
+`branches list` shows everything that exists, which is how you catch strays.
+`branches reset <branch>` rolls a branch back to its parent's latest data, a clean copy without recreating the branch.
+
+Neon also ships a branch-aware local dev loop, `neonctl link`, `checkout`, and `env pull`, which points local development at a specific branch, such as the dev branch in the next section.
+
+## Three environments, three branches
+
+Three environments, each backed by its own Neon branch off the same Neon project:
+
+- **Development** is a `dev` branch you control locally, synced down with `vercel env pull`.
+- **Preview** is one auto-managed branch per PR, created and destroyed for you by the integration.
+- **Production** is the `main` branch.
+
+The schema is the same across all three; the data is completely isolated.
+The opening figure crammed every environment onto one database, arrows converging on a single cylinder tinted with danger.
+This is that shape inverted: the arrows fan *out*, each environment to its own branch, and the danger is gone.
+
+<ThreeBranchFanout />
+
+How `vercel env pull` scopes and pulls down that dev branch's `DATABASE_URL` is the next lesson's job.
+
+## Protecting preview data and branch limits
+
+A preview is a real, breakable copy of production.
+That is what makes it useful, and it brings two leak surfaces you have to handle.
+
+The first: **preview URLs are publicly reachable**, and the branch behind one holds a copy of production's data, including its <Term definition="Personally identifiable information; names, emails, addresses, anything that identifies a real person.">PII</Term>.
+An unprotected preview link is therefore a public window onto real customer data.
+Gate it behind a login.
+**Settings → Deployment Protection → Vercel Authentication** forces anyone hitting a preview URL to sign in with a Vercel account that has access to the project, so only your team sees the data.
+It is the recommended method and free on every plan.
+Turn it on before you share the first external preview link.
+
+To share a preview with someone outside the team, such as a stakeholder without a Vercel account, use **Password Protection**: one password for the whole project, in the same **Deployment Protection** settings.
+Standalone Password Protection is not part of the base Pro plan; it ships with the paid **Advanced Deployment Protection** add-on.
+So reach for Vercel Authentication by default, and Password Protection only when an account-less external reviewer needs in.
+
+For most products, gating previews and accepting the cloned-production shape is the right call.
+In a genuinely sensitive domain such as health or finance, you can escalate: Neon can create a **schema-only branch** (in Beta as of mid-2026) that copies the structure without copying a single row.
+
+```sh
+neonctl branches create --schema-only
+```
+
+Previews then exercise the real schema with zero PII to leak.
+The tradeoff is that you lose realistic data to click through, so choose by how sensitive your data is.
+
+The second surface is operational: **branch buildup.**
+Neon projects cap how many branches can exist at once (typically 100 or more), per plan.
+Closed PRs auto-delete their branches, so normal flow takes care of itself; automated dependency PRs from Dependabot or Renovate open many branches but merge or close quickly.
+The problem is abandoned PRs left open for weeks, whose branches sit there counting against the cap.
+Trust the auto-delete, and occasionally prune strays: run `neonctl branches list` to spot dead branches and delete them.
+
+The last checklist item proves the whole lesson worked.
+Do a test insert on a preview, then query production and confirm it is not there.
+
+<Checklist id="preview-safety">
+  <ChecklistItem>The Native Vercel-Neon Integration is installed and paired with your Neon project.</ChecklistItem>
+  <ChecklistItem>The Preview environment's `DATABASE_URL` shows as a managed (locked) variable.</ChecklistItem>
+  <ChecklistItem>Migrations run in the preview build: the Build Command runs `db:migrate` before the framework build.</ChecklistItem>
+  <ChecklistItem>Vercel Authentication is turned on for previews, gating them to logged-in team members (free on every plan). Standalone Password Protection, if you need it for account-less external reviewers, requires the Advanced Deployment Protection add-on.</ChecklistItem>
+  <ChecklistItem chip="untested">A test insert made on a preview does *not* appear when you query production, which proves the isolation is real.</ChecklistItem>
+</Checklist>
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Branching"
+    href="https://neon.com/docs/introduction/branching"
+    icon="simple-icons:neon"
+    iconColor="#00E599"
+    description="Neon's canonical reference on copy-on-write branches, point-in-time restore, and using branches as environments."
+  />
+  <ExternalResource
+    title="Connecting with the Neon-Managed Integration"
+    href="https://neon.com/docs/guides/neon-managed-vercel-integration"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The exact Neon-Managed Vercel integration this lesson wires, with the per-deployment environment variable details."
+  />
+  <ExternalResource
+    title="The Magic of Copy-on-Write"
+    href="https://neon.com/blog/instantly-copy-tb-size-datasets-the-magic-of-copy-on-write"
+    icon="simple-icons:neon"
+    iconColor="#00E599"
+    description="A deeper look under the hood, with an interactive demo that copies a 1 TB dataset in seconds."
+  />
+</CardGrid>

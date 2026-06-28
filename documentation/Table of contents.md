@@ -851,8 +851,8 @@
 - 3 Signal checks and dependency hygiene (The gate-vs-signal split for non-blocking jobs (`pnpm audit`, `actionlint`, scheduled link-check), the 2026 supply-chain layer (signature verification, `minimumReleaseAge`, SHA-pinning), and Dependabot grouping with patch auto-merge.)
 - 4 Quiz
 
-### Chapter 098 — Ship to Vercel and go live
-- 1 The push-is-the-deploy model (Maps git events to immutable deployments, distinguishes the three environment scopes, and explains why production is just an alias swap.)
+### Chapter 098 — Deploy to production on Vercel
+- 1 How a git push becomes a deployment (Maps git events to immutable deployments, distinguishes the three environment scopes, and explains why production is just an alias swap.)
 - 2 From repo to live URL (Walks the Import-from-GitHub flow, the first production and preview URLs, and the `vercel link` / `vercel env pull` setup every dev runs on clone.)
 - 3 Region, runtime, and Fluid Compute (The three platform knobs that govern cold start, latency, and bill — matching the function region to the database, defaulting to Node.js over Edge, and tuning Fluid Compute concurrency safely.)
 - 4 Custom domains and automatic SSL (DNS records for apex and `www`, Vercel's Let's Encrypt provisioning, the canonical redirect, and the Cloudflare-in-front "Full (strict)" SSL rule.)

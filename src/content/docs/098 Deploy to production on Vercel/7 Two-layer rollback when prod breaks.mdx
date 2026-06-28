@@ -1,0 +1,280 @@
+---
+title: Two-layer rollback when prod breaks
+chapter-id: 98
+course-progress: 0.9341
+tagline: Recovering a broken production deploy on Vercel by flipping the deployment alias and reverting the bad commit on main.
+sidebar:
+  order: 7
+  label: Rolling back prod
+rewrites: 2
+---
+
+import { Steps } from '@astrojs/starlight/components';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import AliasReaimPointer from '../../../components/lessons/098/7/AliasReaimPointer.astro';
+import InstantRollbackTile from '../../../components/lessons/098/7/InstantRollbackTile.astro';
+import RollbackResetsVsCannotTouch from '../../../components/lessons/098/7/RollbackResetsVsCannotTouch.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+A merge to `main` went out ten minutes ago.
+Sentry's error rate is climbing, and customers are hitting 500s on a page that worked an hour ago.
+Recovery comes down to three questions: what is the fastest path back to a known-good state, what does that path *not* undo, and how does the code side close the loop so the bug doesn't ship again on the next deploy?
+Earlier in this chapter you saw that production is just an alias pointing at one immutable deployment, and that previous deployments never went away.
+Rolling back means re-aiming that pointer, and it takes two layers that both have to move.
+
+## Production is a pointer you can re-aim
+
+Every production deploy you've shipped left behind a permanent, still-running build on its own `<hash>-<project>.vercel.app` URL, none of them overwritten.
+The last-known-good deployment that served traffic before the bad merge is up right now, exactly as it was.
+
+"Deploy" means re-aiming the production <Term definition="The production-domain pointer Vercel re-aims at one deployment at a time.">alias</Term> at a new deployment; "rollback" means re-aiming that same pointer *backwards*, at a deployment that already exists.
+Same operation, opposite direction.
+Rollback triggers **no rebuild**: nothing compiles, nothing gets packaged, no <Term definition="The packaged build output: bundled server functions plus static assets.">artifact</Term> is produced, because the target is already built and running.
+That's why it's instant.
+
+<AliasReaimPointer />
+
+This also tells you which deployments you can roll back to.
+The test is one question: was this deployment ever aliased to production?
+Every build that served live traffic, even for a minute, is a rollback target.
+Preview deployments never held the production alias, so they're never eligible.
+
+## Layer 1: flip the alias back
+
+This is the fast first move: get the site serving a good build again, and resist the urge to fix the code in the same breath.
+Conflating the alias flip with the code fix is the most common rollback mistake.
+The flip buys you minutes; it is not the end of the incident.
+
+The dashboard path is two clicks.
+On the production deployment's tile click **Instant Rollback**, or open the ⋮ menu on any row in the **Deployments** list and choose **Instant Rollback**.
+Pick the last-known-good deployment and confirm; traffic flips within seconds and the <Term definition="Vercel's CDN layer holding responses near users; it refreshes to the rolled-back build within seconds.">edge cache</Term> settles in under thirty seconds, with no rebuild.
+On Pro and above, "Choose another deployment" lists every eligible deployment in your history; on Hobby you can only roll back to the immediate predecessor.
+
+<InstantRollbackTile />
+
+Keep the CLI within reach too: it's what you script into incident-response tooling and fall back on when the dashboard is slow.
+Three commands carry the whole job.
+
+```bash
+vercel ls                          # list deployments — find the target URL
+vercel rollback                    # re-alias to the immediately previous prod deploy
+vercel promote <deployment-url>    # re-alias to a specific deployment
+```
+
+The difference between the last two is where people get it wrong.
+`vercel rollback` re-aliases to the immediately previous production deployment: fast, but right only when the bad deploy is the latest one.
+`vercel promote <url>` re-aliases to a specific deployment you name, the precise move when the build you want isn't the immediate predecessor.
+The decision rule: **bad deploy is the latest → `vercel rollback`; you need a specific older good one → `vercel promote <url>`.**
+Run `vercel rollback` when the bad commit isn't the latest and you'll quietly land on another broken-or-stale build.
+So run `vercel ls` first, identify the exact known-good URL, then <Term definition="Re-alias the production domain to a chosen deployment.">promote</Term> precisely.
+
+## Layer 2: undo the bad commit on main
+
+The alias flip stopped the bleeding, but `main` still has the bad commit on top.
+The artifact you rolled back to is fine, but the source your next deploy builds from still contains the bug.
+The moment anyone merges to `main`, say a teammate's unrelated feature an hour from now, that merge builds from a `main` that still includes the broken code, silently re-shipping exactly what you just rolled back.
+
+The cure is the inverse commit you met in the Git chapter: `git revert <bad-sha>` creates a new commit that applies the inverse of the bad one, rewriting nothing and losing no history.
+
+```bash
+git revert <bad-sha>
+```
+
+The revert gets no special fast lane.
+It flows through the same gated process as any other change: you open a PR, the four-job CI runs its roughly four-minute build, it merges to `main`, and that merge produces a fresh production deployment with the fix baked in.
+
+Don't bypass the gate on reverts.
+A revert is code, and code can be wrong: it can conflict, drag along an unrelated change, even be a revert of a revert that re-introduces the original bug.
+Skipping CI when it's urgent is the habit that manufactures the next urgent moment.
+You can afford to wait because you did Layer 1 first: production is already safe on the old build, so the four-minute build isn't downtime, just the clock running on a fix while users keep getting served the last-known-good.
+
+:::note
+Layer 1 (the alias flip) stops the bleeding in seconds.
+Layer 2 (`git revert`) makes the fix durable so the next deploy doesn't quietly undo your rollback.
+**Alias first, revert second, always.**
+:::
+
+## What rollback resets, and what it can't touch
+
+Rollback is not a time machine.
+It flips a code pointer, and that is the entire extent of its power.
+People expect it to undo the last ten minutes, then stare at a database that's still wrong and a customer who still got charged, wondering why the rollback "didn't work." It worked as designed; it just does less than the intuition assumes.
+
+Rollback **resets** everything frozen into the old deployment's build: your application code, the server function bundle, the static and pre-rendered HTML, and any environment variables inlined at *that deployment's* build time.
+Recall from the env-vars lesson that `NEXT_PUBLIC_*` and other build-time reads get soldered into the artifact, so snapping back to the old build snaps all of it back at once.
+
+Rollback **cannot touch** anything outside that build.
+The rows the bad deploy wrote or changed are still in your database.
+Every <Term definition="An action with consequences outside the app's own state, like an email, a charge, or a webhook, that can't be undone by changing which code runs.">side effect</Term> that already went out stays out: emails sent, Stripe charges captured, webhooks dispatched, files written to R2.
+And it does **not** revert your project's *current* environment-variable configuration in the dashboard; only what was baked into the old artifact comes back.
+
+<RollbackResetsVsCannotTouch />
+
+So rolling back the code does not roll back the data.
+If the bad deploy corrupted rows or double-charged customers, the alias flip stops the *bleeding* but does nothing for the *wound*: that repair is a forward fix you write deliberately.
+
+<Buckets twoCol instructions="An alias rollback just flipped production to the previous deployment. Sort each thing by whether the rollback reset it or left it exactly as the broken deploy left it.">
+  <Bucket name="resets" label="Rollback reset it" description="Frozen into the old deployment's build" />
+  <Bucket name="survives" label="Rollback can't touch it" description="Lives outside the build" />
+
+  <Item bucket="resets">The buggy version of the checkout page component</Item>
+  <Item bucket="resets">A `NEXT_PUBLIC_FEATURE_X` value inlined at build time</Item>
+  <Item bucket="resets">The server function bundle</Item>
+  <Item bucket="survives">Rows the bad deploy inserted into the `invoices` table</Item>
+  <Item bucket="survives">A welcome email the bad deploy already sent</Item>
+  <Item bucket="survives">A Stripe charge the bad deploy captured</Item>
+  <Item bucket="survives">A webhook the bad deploy already dispatched</Item>
+  <Item bucket="survives">The current value of `STRIPE_SECRET_KEY` in the dashboard</Item>
+</Buckets>
+
+The split tests the same boundary as the figure: frozen into the build versus living outside it.
+
+## Why rollback can't undo a destructive migration
+
+One case is where "just roll back" makes things worse: the bad deploy ran a destructive schema migration.
+
+The migration already changed your database, say it dropped a column the new code stopped using.
+You flip the alias back to the old code, but that code was written for the old schema, and the column is gone.
+Now yesterday's code runs against today's mutated database, and the mismatch can break the app more thoroughly than the bug you were rolling back from.
+The alias flip restores the code; it has no power over the schema.
+
+You can't un-migrate your way out either.
+Drizzle migrations are **forward-only**: the fix for a bad schema change is another schema change, a new forward-fix migration you write to repair the state.
+
+:::caution
+Rollback un-aliases code, never schema. Migrations are forward-only: if a destructive migration shipped, the fix is a *new* migration, not a rewind. The cadence that keeps a code rollback safe against a migrated database, expand-migrate-contract, is the focus of the next chapter; treat it as a black box here.
+:::
+
+A code rollback staying compatible with a migrated schema is something you earn with disciplined migrations, not something the platform guarantees.
+
+## Re-enable auto-assignment only after verifying the fix
+
+This trap bites *after* you think the incident is over, and it fails silently.
+
+The moment you do a manual rollback, Vercel **turns off auto-assignment** of the production alias to new pushes.
+That's deliberate: it stops a teammate's next push to `main` from re-shipping the broken code on top of your rollback.
+But it has a consequence beginners walk straight into.
+
+While auto-assignment is off, **pushes to `main` still build, they just don't take the production alias.**
+So your `git revert` merges, a new deployment builds, CI goes green, the dashboard shows a healthy "Ready" deployment, and production does not change.
+Nothing looks broken, but your fix isn't live, and people lose ten confused minutes wondering why the bug is "still there."
+
+The fix is an ordering.
+
+<Steps>
+
+1. Let the `git revert` land on `main` through the normal gated PR.
+
+2. When the new production deployment builds, **verify it on its own deployment URL**: open the `<hash>-<project>.vercel.app` link and confirm the fix works there, before it touches live traffic.
+
+3. **Only then** re-enable auto-assignment by promoting the verified fix, either the **Undo Rollback** button on the production tile or `vercel promote <url>` from the CLI. Promoting *is* what turns auto-assignment back on.
+
+</Steps>
+
+Re-enable before you verify and you've re-armed auto-ship for whatever lands on `main` next, which, if your revert wasn't the real fix, is the next surprise in production.
+
+## The incident-response runbook
+
+You've learned the individual moves; under pressure the skill is running them *in the right order*.
+A written runbook is what you open instead of reasoning from scratch mid-incident.
+
+<Steps>
+
+1. **Detect.** An alert fires: a Sentry error spike, or an uptime check going red. Something tells you before a customer has to.
+
+2. **Triage.** Confirm it's real, not a blip, and identify the bad deployment in the Deployments list.
+
+3. **Roll back the alias** *(Layer 1)*. Promote the last-known-good deployment and verify traffic actually flipped by hitting the production URL. This is the fastest move and it comes first, because it stops the bleeding.
+
+4. **Communicate.** Status page, Slack, customer comms as appropriate. People knowing what's happening is part of the response, not an afterthought.
+
+5. **Revert the code** *(Layer 2)*. `git revert` the bad commit, open the gated PR, let CI pass, merge to `main`.
+
+6. **Re-enable auto-assignment**, but only after the reverted-`main` deployment has built and you've verified it on its own URL.
+
+7. **Postmortem.** What got past CI, and what's the *structural* fix so this class of bug can't recur.
+
+</Steps>
+
+Steps 4 and 7, communication and postmortems, are real parts of incident response that a later unit owns; they're named here so the runbook is complete.
+And the runbook isn't lore in someone's head: it lives as a markdown file in `docs/runbooks/`, which the launch checklist in the next lesson verifies exists.
+
+The sequence is the load-bearing part, so test yourself on it.
+
+<Sequence instructions="Production is down. Drag the incident-response steps into the order you'd run them, from the first alert to the cleanup.">
+  <Step>**Detect** — an alert fires (Sentry error spike or uptime check)</Step>
+  <Step>**Triage** — confirm it's real and find the bad deployment</Step>
+  <Step>**Roll back the alias** — promote the last-known-good, verify traffic flipped</Step>
+  <Step>**Communicate** — status page / Slack / customer comms</Step>
+  <Step>**Revert the code** — `git revert`, gated PR, merge to `main`</Step>
+  <Step>**Re-enable auto-assignment** — only after the reverted build is verified</Step>
+  <Step>**Postmortem** — what got past CI, and the structural fix</Step>
+</Sequence>
+
+The two moves the shuffle wants you to fumble are putting **revert the code** before **roll back the alias**, and **re-enabling auto-assignment** before the reverted build is verified.
+Alias first, revert second, and verify before you re-enable.
+
+## The escape hatch: flip the flag instead
+
+The fastest rollback is the one that touches no deployment at all.
+
+If the broken behavior sits behind a <Term definition="A runtime switch that turns behavior on or off without deploying.">feature flag</Term> (the PostHog flags from the analytics chapter), flipping it off beats every rollback in this lesson.
+A flag is a config value read at runtime, so turning it off takes effect in seconds, everywhere, with nothing to build and nothing to promote.
+
+That gives you a clear ordering, cheapest and safest first: **flag flip > alias rollback > forward-fix migration**.
+The real payoff is preventive: ship risky features behind a flag in the first place, and the rollback story becomes "flip the flag" instead of "scramble the alias under pressure."
+
+:::tip
+Rollback is a recovery primitive, not a release strategy. If you're rolling back weekly, the problem is upstream: your tests, CI gate, and release process are letting broken code reach `main`. (Above ~100k monthly users, Vercel's gradual percentage rollouts can ramp a deploy and auto-roll-back on an error spike. Below that, full cutover with fast rollback is the right default.)
+:::
+
+## One last gap: caches in front of Vercel
+
+If you've put a CDN in front of Vercel (the Cloudflare pattern from earlier), instant rollback does **not** purge that cache.
+Vercel flips its alias, but Cloudflare keeps serving the broken build until its TTL expires.
+So add a cache-purge step to the runbook right after the alias flip, or keep short TTLs on anything dynamic.
+It's a small gap, but the kind that makes a "successful" rollback look like it didn't take.
+
+Next comes the pre-launch checklist that confirms every safety net is wired before the URL goes public.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Performing an Instant Rollback on a Deployment"
+    href="https://vercel.com/docs/instant-rollback"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="Vercel's own walkthrough of Layer 1 — eligible deployments, the auto-assignment shutoff, and Undo Rollback."
+  />
+  <ExternalResource
+    title="vercel rollback (CLI reference)"
+    href="https://vercel.com/docs/cli/rollback"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The exact CLI surface for the incident-response tooling — flags, status, and the promote-to-undo path."
+  />
+  <ExternalResource
+    title="Schema changes and the power of expand-contract"
+    href="https://xata.io/blog/pgroll-expand-contract"
+    icon="lucide:database-zap"
+    iconColor="#9F87FF"
+    description="The migration trap, solved — how expand-migrate-contract keeps a code rollback safe against a mutated schema."
+  />
+  <ExternalResource
+    title="Feature Toggles (aka Feature Flags)"
+    href="https://martinfowler.com/articles/feature-toggles.html"
+    icon="lucide:toggle-right"
+    iconColor="#6C633F"
+    description="The canonical reference behind the escape hatch — flags that decouple release from deploy."
+  />
+</CardGrid>
