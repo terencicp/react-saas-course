@@ -2752,3 +2752,57 @@ request-context store | runWithContext, getRequestContext | AsyncLocalStorage st
 x-request-id | request id header | Header carrying the correlation id across the proxy/route-handler boundary, since a proxy-opened scope does not propagate into handlers. | first defined: Chapter 095 L4
 .toSQL() | toSQL | Drizzle method returning the SQL string and bound params a query would emit without running it; used to count and inspect statements. | first defined: Chapter 095 L6
 lateral join | left join lateral, lateral-join | Join whose right side is a subquery run once per left row, referencing that row; how Drizzle relations fetch related rows in one statement. | first defined: Chapter 095 L6
+commit (Git) | git commit | A snapshot of the whole project plus author, message, and parent pointer; Git's unit of change. | first defined: Chapter 096 L1
+branch (Git) | git branch | A movable pointer to one commit; creating one just writes a commit hash, copies nothing. | first defined: Chapter 096 L1
+staging area | index, git add | The set of changes queued for the next commit; you move changes in with git add. | first defined: Chapter 096 L1
+remote (Git) | origin | A named URL pointing at a hosted copy of the repo; push/fetch move commits to and from it. | first defined: Chapter 096 L1
+working tree | working directory | The files on disk right now, including edits not yet staged or committed. | first defined: Chapter 096 L1
+HEAD | - | Pointer to the commit/branch currently checked out; where your next commit attaches. | first defined: Chapter 096 L1
+hunk | - | A contiguous block of changed lines Git treats as one unit when staging in patch mode. | first defined: Chapter 096 L1
+git add -p | patch mode | Staging a file one hunk at a time so unrelated edits go into separate commits. | first defined: Chapter 096 L1
+merge (Git) | git merge, merge commit | Ties two diverged histories with a new commit having two parents; both lines preserved. | first defined: Chapter 096 L1
+rebase | git rebase | Replays your commits onto a new base, giving a straight line; replayed commits get new hashes. | first defined: Chapter 096 L1
+fast-forward | - | Integrating by sliding the target branch pointer forward when it hasn't diverged; no merge commit. | first defined: Chapter 096 L1
+squash-merge | squash and merge | Collapses a whole pull request into one commit on main with a message you write. | first defined: Chapter 096 L1
+pull request | PR | A GitHub proposal to merge one branch into another, reviewed before it lands. | first defined: Chapter 096 L1
+trunk-based | trunk-based development | Workflow with one long-lived mainline and short-lived feature branches that merge back fast. | first defined: Chapter 096 L1
+GitHub Flow | - | Lightweight trunk-based workflow on GitHub: branch, open a PR, squash-merge, deploy. | first defined: Chapter 096 L1
+trunk | mainline | The single shared always-deployable branch (main) everyone integrates into. | first defined: Chapter 096 L1
+Git Flow | gitflow | Older multi-branch scheme (develop, release/*, hotfix/*) built for quarterly QA-gated releases. | first defined: Chapter 096 L1
+imperative mood (commit) | imperative subject | Commit subject phrased as a command completing "This commit will…" (Add, not Added). | first defined: Chapter 096 L1
+Conventional Commits | - | Stricter convention putting a machine-readable type (feat:, fix:) at the front of each subject. | first defined: Chapter 096 L1
+.gitignore | gitignore | File listing path patterns Git never tracks: build output, deps, secrets, OS junk. | first defined: Chapter 096 L1
+.gitattributes | gitattributes | File setting per-path Git behaviors, chiefly normalizing line endings across OSes. | first defined: Chapter 096 L1
+rerere | reuse recorded resolution | Git records a conflict resolution and replays it automatically when the identical conflict reappears. | first defined: Chapter 096 L1
+--force-with-lease | force-with-lease | Force-push that aborts if the remote moved since your last fetch, instead of clobbering it. | first defined: Chapter 096 L1
+reflog | git reflog, recovery journal | Per-repo journal of every HEAD move; recovers unreferenced commits by hash. | first defined: Chapter 096 L2
+git garbage collection | git gc | Git prunes commits no branch or reflog can reach; until it runs they are recoverable. | first defined: Chapter 096 L2
+git stash | stash | Shelves uncommitted changes onto a stack and cleans the tree; pop to restore. | first defined: Chapter 096 L2
+git bisect | bisect | Binary-searches the commit range between a good and bad commit to find the breaker. | first defined: Chapter 096 L2
+cherry-pick | git cherry-pick | Replays one commit onto the current branch as a new commit with a new hash. | first defined: Chapter 096 L2
+revert | git revert | Adds a new commit that is the inverse of a given commit; undoes without rewriting. | first defined: Chapter 096 L2
+backporting | backport | Cherry-picking a fix from a newer branch onto an older release branch. | first defined: Chapter 096 L2
+git commit --amend | amend | Replaces the most recent commit, fixing its message or folding in staged changes. | first defined: Chapter 096 L2
+interactive rebase | rebase -i, git rebase -i | Edit a to-do list of commits to reorder, reword, squash, fixup, edit, or drop them. | first defined: Chapter 096 L2
+autosquash | rebase.autoSquash, --autosquash | Rebase reorders fixup!/squash! commits under their target and pre-marks them. | first defined: Chapter 096 L2
+fixup commit | git commit --fixup | A commit named fixup! <subject> that autosquash folds into its target commit. | first defined: Chapter 096 L2
+conflict markers | <<<<<<< ======= >>>>>>> | Lines Git writes into a file to flag two unreconciled versions of the same lines. | first defined: Chapter 096 L2
+three-way merge | - | A merge that compares both sides against their common ancestor, not just each other. | first defined: Chapter 096 L2
+git switch | switch | Modern verb that only changes or creates branches; -c creates and switches. | first defined: Chapter 096 L2
+git restore | restore | Modern verb that only discards file changes or unstages files (--staged). | first defined: Chapter 096 L2
+pickaxe | git log -S | log -S flag listing commits that added or removed a given string. | first defined: Chapter 096 L2
+GitHub CLI | gh, gh CLI | GitHub's official command-line tool for PR, issue, and repo operations from the terminal. | first defined: Chapter 096 L3
+CODEOWNERS | .github/CODEOWNERS | File mapping path globs to GitHub users or teams so owned paths auto-request those reviewers; last match wins. | first defined: Chapter 096 L3
+stack (of PRs) | stacked PRs, stacked diffs | A dependency chain of small PRs, each based on the branch of the one before it instead of main. | first defined: Chapter 096 L3
+draft PR | draft pull request | A PR opened in draft status: shows a Draft badge, can't be merged, signals you want eyes not approval. | first defined: Chapter 096 L3
+ruleset | repository ruleset | GitHub setting enforcing merge conditions on a branch: required reviews, required checks, dismiss-stale-approvals. | first defined: Chapter 096 L3
+merge queue | - | GitHub setting serializing merges, rebasing and re-checking each PR against latest main before it lands. | first defined: Chapter 096 L3
+auto-merge | allow auto-merge | GitHub setting queuing a PR to merge itself once its checks pass and reviews land. | first defined: Chapter 096 L3
+nit (review comment) | nit | A review comment explicitly marked non-blocking; you noticed but won't hold the PR over it. | first defined: Chapter 096 L3
+suggestion (review comment) | suggestion fence | A GitHub suggestion code fence holding exact replacement lines, applied with one click by the author. | first defined: Chapter 096 L3
+branch protection rules | branch protection | GitHub's older per-branch protection mechanism, superseded by rulesets. | first defined: Chapter 096 L4
+required status check | required status checks | A CI job a ruleset requires green by exact name string before a PR can merge. | first defined: Chapter 096 L4
+strict mode (ruleset) | require branches to be up to date | Ruleset option forcing a PR to rebase onto latest main before its checks count, re-running CI when main moves. | first defined: Chapter 096 L4
+linear history | require linear history | A commit history with no merge commits: a straight line of single-parent commits. | first defined: Chapter 096 L4
+bypass actor | bypass actors | A user, team, or app a ruleset allows to skip its rules; every bypass is logged. | first defined: Chapter 096 L4
+bootstrap exception | - | Pushing the first scaffold commit straight to an empty main before the ruleset exists, since there is nothing yet to protect. | first defined: Chapter 096 L4

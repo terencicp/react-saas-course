@@ -838,7 +838,7 @@
 
 ## Unit 20 — Git, CI, Deployment, and Migrations
 
-### Chapter 096 — Git as shipping discipline
+### Chapter 096 — Git workflow for teams
 - 1 Trunk-based Git for teams (The four Git objects, the everyday loop, and the rebase-locally / squash-merge-on-PR defaults that keep `main`'s history one commit per shipped change.)
 - 2 Reflog, bisect, and the rescue toolkit (The four power tools — `reflog` for recovery, `bisect` for regression hunting, `cherry-pick` and `revert` for surgical moves, `rebase -i` for shaping history before push — and the trigger that earns each.)
 - 3 The pull request as designed artifact (The small-reviewable-reversible rule, the six-section description template, draft PRs, CODEOWNERS routing, and the fixup-commit-plus-squash-merge review loop.)
