@@ -2699,3 +2699,10 @@ conditional breakpoint | - | A breakpoint that pauses only when an expression yo
 logpoint | - | A breakpoint that prints a message with expressions and keeps running, never pausing. | first defined: Chapter 092 L5
 Fast Refresh | - | Next.js dev feature that hot-swaps edited React components in the browser without a full reload, preserving state. | first defined: Chapter 092 L5
 remote code execution | RCE | An attacker running code of their choosing inside your server process; among the most severe vulnerabilities. | first defined: Chapter 092 L5
+Vercel Web Analytics | Web Analytics | Cookieless traffic analytics (page views, referrers, geo, device) aggregated at ingest; the no-consent floor. | first defined: Chapter 093 L1
+Speed Insights | @vercel/speed-insights | Vercel package sampling real-user Core Web Vitals from production traffic. | first defined: Chapter 093 L1
+cookieless floor | the floor, analytics floor | The no-consent baseline analytics layer (Vercel Web Analytics + Speed Insights) shipped on every project. | first defined: Chapter 093 L1
+PostHog | - | Product-analytics platform folding events, feature flags, session replay, and experiments into one tool; the consent-gated top tier. | first defined: Chapter 093 L1
+field data | real-user data | Performance measured from real users on their own devices and networks; what Google ranks on. | first defined: Chapter 093 L1
+lab data | synthetic data | Performance from a synthetic test: one run, one machine, controlled conditions. | first defined: Chapter 093 L1
+pre-PMF | product-market fit, PMF | Early-stage product still searching for a repeatable paying audience, before proven steady demand. | first defined: Chapter 093 L1

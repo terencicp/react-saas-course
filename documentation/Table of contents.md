@@ -807,11 +807,11 @@
 - 6 Quiz
 
 ### Chapter 093 — Product analytics
-- 1 The cookieless floor: Vercel Analytics and Speed Insights (Install Vercel Web Analytics and Speed Insights as the cookieless default that ships before any event taxonomy decision, covering traffic, top pages, and Core Web Vitals without a consent banner.)
-- 2 When PostHog earns its weight (Name the four needs (events, flags, replay, experiments) that cross the threshold past Vercel Analytics, and pick PostHog Cloud EU as the one-platform answer over the four-vendor alternative.)
-- 3 Wiring PostHog through the consent gate (Wire `@posthog/next` end-to-end in the App Router with a consent-gated dynamic import, the `/ingest` proxy route, `opt_out_capturing_by_default` as the safety floor, and a verified pre- and post-consent test.)
-- 4 Events, properties, and the identify handshake (Install the Object-Action event taxonomy, a typed `track()` helper backed by an event dictionary, the person/event/super-property split, and the `identify`/`reset` handshake that stitches anonymous to known users and orgs.)
-- 5 Flags, rollouts, and experiments on one primitive (Ship feature flags as kill switches, percentage rollouts, and metric-driven A/B experiments, with server-side `bootstrapFlags` to kill the flash-of-default-variant and a stale-flag deletion discipline.)
+- 1 The cookieless analytics floor (Install Vercel Web Analytics and Speed Insights as the cookieless default that ships before any event taxonomy decision, covering traffic, top pages, and Core Web Vitals without a consent banner.)
+- 2 When to adopt PostHog product analytics (Name the four needs (events, flags, replay, experiments) that cross the threshold past Vercel Analytics, and pick PostHog Cloud EU as the one-platform answer over the four-vendor alternative.)
+- 3 Wiring PostHog through the consent gate (Wire `posthog-js` and `posthog-node` end-to-end in the App Router with a consent-gated dynamic import, the `/ingest` proxy route, `opt_out_capturing_by_default` as the safety floor, and a verified pre- and post-consent test.)
+- 4 Typed events and the identify handshake (Install the Object-Action event taxonomy, a typed `track()` helper backed by an event dictionary, the person/event/super-property split, and the `identify`/`reset` handshake that stitches anonymous to known users and orgs.)
+- 5 Feature flags for rollouts and experiments (Ship feature flags as kill switches, percentage rollouts, and metric-driven A/B experiments, with server-side `bootstrapFlags` to kill the flash-of-default-variant and a stale-flag deletion discipline.)
 - 6 Session replay with masking by default (Turn on PostHog session replay with the mask-vs-block masking catalog, sampling discipline, consent-gated start, and a replay-to-bug-fix workflow for the UX bugs that throw no error.)
 - 7 Quiz
 
