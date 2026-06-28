@@ -2635,3 +2635,26 @@ repeats | { repeats: N } | Per-test Vitest option running the test N times in on
 --retry (test) | vitest --retry | Re-runs a failing test until one attempt passes and reports green; forbidden for test-logic flake because it hides the cause. | first defined: Chapter 088 L8
 infrastructure flake | infra flake | Nondeterminism outside your test (CI network blip, slow container start, external sandbox timeout); the one place a scoped retry is legitimate. | first defined: Chapter 088 L8
 quarantine (test) | quarantine | Visibly skipping a flaky test out of the CI gate (it.skipIf(CI)) with an owner, issue, and date; buys time, never the fix. | first defined: Chapter 088 L8
+mocking too deep | mock too deep | A component test reaching past its layer to assert a Server Action's database effect; re-tests the seam. | first defined: Chapter 089 L1
+within (RTL) | within(el) | Testing Library helper scoping a query to inside one element (e.g. a row), so it matches there not page-wide. | first defined: Chapter 089 L4
+virtualization (list) | virtualizer | Rendering only the rows in view and recycling DOM nodes on scroll, so a long list stays cheap. | first defined: Chapter 089 L4
+storageState | - | JSON snapshot of a browser context's cookies and storage, replayed into a fresh context to restore auth without driving the login UI. | first defined: Chapter 090 L2
+project (Playwright) | - | A named Playwright run configuration: a set of tests plus the settings and dependencies they run under. | first defined: Chapter 090 L2
+readiness probe | - | A URL Playwright's webServer polls before starting tests, so the first test doesn't race the server's boot. | first defined: Chapter 090 L2
+locator (Playwright) | page.getByRole | A role-first handle to an element (getByRole > getByLabel > getByText > getByTestId); auto-waits when acted on. | first defined: Chapter 090 L2
+auto-waiting | - | Playwright retries an action or assertion until the element is ready (attached, visible, stable, enabled) or it times out; no manual sleeps. | first defined: Chapter 090 L2
+web-first matcher | - | A Playwright expect matcher (toBeVisible, toHaveURL) that polls until it holds or times out; passes silently if not awaited. | first defined: Chapter 090 L2
+trace viewer | show-trace | Playwright's post-mortem GUI opened from a trace.zip: per-action DOM snapshot, network, console, screenshot, source-mapped stack. | first defined: Chapter 090 L2
+codegen | playwright codegen | Playwright tool that records clicks and typing in a live browser as spec code, generating locators; rough out then fix brittle selectors. | first defined: Chapter 090 L2
+sharding | --shard | Splitting a test suite across parallel CI jobs; pays off only past ~10-15 min of runtime. | first defined: Chapter 090 L2
+bug density | - | How thickly real bugs cluster in a layer; the metric a component test must justify against maintenance cost. | first defined: Chapter 089 L1
+frameLocator | - | Playwright handle for locating elements inside an iframe (e.g. Stripe's hosted card fields) a normal locator can't reach. | first defined: Chapter 090 L3
+multi-tenant guard | org-scoping guard | Per-org scoping that returns 404 when a user reaches another org's resource; same blast radius an invitation must respect. | first defined: Chapter 090 L3
+value loop | - | The one end-to-end loop where every layer aligns to deliver a product's core promise (invoice: create, send, pay, flip to paid); the product-specific fourth money path. | first defined: Chapter 090 L3
+render helper | custom render, src/test/render.tsx | Test-side wrapper over RTL's render that pre-applies the app's providers and returns a ready user; tests call it, never RTL render directly. | first defined: Chapter 089 L2
+user-event | @testing-library/user-event | RTL companion simulating real user interactions; each call dispatches the full event sequence and is awaited. | first defined: Chapter 089 L2
+fireEvent | - | RTL low-level dispatcher firing a single synthetic event; use only when no user-event equivalent exists. | first defined: Chapter 089 L2
+findBy | findBy*, findByRole | RTL async query retrying until an element appears or the timeout elapses; for anything that shows up after an interaction. | first defined: Chapter 089 L2
+screen | - | RTL object whose queries read the live global document, so they survive refactors to what render returns. | first defined: Chapter 089 L2
+waitFor | - | RTL retry helper for non-DOM observations (e.g. a mock was eventually called); use when there is no element to find. | first defined: Chapter 089 L2
+jest-dom | @testing-library/jest-dom | DOM-aware expect matchers (toBeInTheDocument, toHaveAccessibleName); /vitest entrypoint registers them against Vitest's expect. | first defined: Chapter 089 L2
