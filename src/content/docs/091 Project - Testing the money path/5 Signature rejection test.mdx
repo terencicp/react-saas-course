@@ -1,0 +1,198 @@
+---
+title: The signature-tampered rejection test
+tagline: Write a Vitest integration test that feeds a forged-signature Stripe event through the real webhook route and proves nothing downstream runs.
+chapter-id: 91
+course-progress: 0.8586
+rewrites: 2
+sidebar:
+  order: 5
+  label: Signature rejection test
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+[The happy path](/091-project---testing-the-money-path/3-the-happy-path-webhook-test/) proved a valid checkout writes the right rows; [the replay](/091-project---testing-the-money-path/4-idempotency-replay-test/) proved a duplicate writes nothing.
+This one proves a *forgery* writes nothing: a well-formed event with a corrupted signature, driven through the real route handler, must leave every downstream surface empty — no claim row, no entitlement change, no audit row, no outbound call.
+
+When it passes, `pnpm test:integration` reports `3 passed`, and `--reporter=verbose` shows the new test:
+
+```text
+✓ tampered signature is rejected before any work > rejects with 400 problem+json and writes nothing when the signature is tampered
+```
+
+There is no UI to screenshot; the proof is a test that asserts an absence.
+
+## Your mission
+
+The handler must reject a corrupted signature before it trusts the body.
+You build the event with the same `checkoutCompleted(...)` factory as the happy-path test, then `postWebhook(event, { tamperSignature: true })` flips one character of the real signed header at send time.
+The body stays valid; only the envelope is forged.
+
+Register **no** `fixtureSubscription`, and that omission becomes a second proof.
+The happy-path test registered one because `onCheckoutCompleted` calls `subscriptions.retrieve`; here a verified payload never reaches the handler, so that call must never fire.
+If the signature check ever regressed and let the body through, the unregistered stub would throw a loud "not registered" error and the test would fail twice over.
+
+The assertions are all negative: `processed_events`, the seeded `free` entitlement, `audit_logs`, and `resendCalls` are each untouched, because that collective emptiness is what "rejected before any work" means.
+The watch-out from [Verify before you parse](/065-project---stripe-webhook-to-entitlement/2-verify-before-you-parse/) bites here: a route that logged the body *before* verifying it would still leave `resendCalls` empty, but its logs would now carry attacker-controlled content.
+And `onUnhandledRequest: 'error'` from [Mocking outbound HTTP with MSW](/088-integration-tests-across-boundaries/5-mocking-http-with-msw/) is the backstop: add an outbound call to this path tomorrow and the suite fails on an un-stubbed network error rather than passing silently.
+
+The scaffold is the one you have built twice: `withRollback`, `signedInAs({ role: 'admin' }, tx)`, and Arrange / Act / Assert with blank-line separation ([Arrange, act, assert one behavior](/086-the-shape-of-a-test-suite/4-arrange-act-assert-one-behavior/)).
+Keep it to one behavior, read through `tx` rather than the global `db`, and use `it`, not `it.concurrent` ([Diagnose flaky tests](/088-integration-tests-across-boundaries/8-diagnose-flaky-tests/)).
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">A tampered-signature request returns `400`.</ChecklistItem>
+  <ChecklistItem chip="tested">The response is `application/problem+json` with a body matching `{ title: 'invalid_signature', status: 400 }`.</ChecklistItem>
+  <ChecklistItem chip="tested">No event is claimed — `processed_events` rows for the event = 0.</ChecklistItem>
+  <ChecklistItem chip="tested">No entitlement is touched — the org's `plan_entitlements` row still reads `plan: 'free'` (the seed).</ChecklistItem>
+  <ChecklistItem chip="tested">No audit log is written — `audit_logs` rows for the org = 0.</ChecklistItem>
+  <ChecklistItem chip="tested">No outbound call fires — `resendCalls` is empty.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Write `tests/integration/webhook-signature-rejected.int.test.ts` against the brief and the harness now, then open the reference solution to compare.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The test is short. The scaffold carried the weight in earlier lessons, so this one is mostly the arrange you *don't* do and the assertions on emptiness.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import { eq } from 'drizzle-orm';
+import { describe, expect, it } from 'vitest';
+
+import { auditLogs } from '@/db/audit';
+import { planEntitlements, processedEvents } from '@/db/schema';
+import { withRollback } from '@/test/db/with-rollback';
+import { signedInAs } from '@/test/fixtures/auth';
+import { checkoutCompleted } from '@/test/fixtures/stripe-events';
+import { postWebhook } from '@/test/helpers/post-webhook';
+import { resendCalls } from '@/test/msw/handlers/resend';
+
+const customerId = 'cus_test_tampered';
+const subscriptionId = 'sub_test_tampered';
+
+// The event body is well-formed; only the signature is corrupted at send time. No
+// fixtureSubscription is registered: a verified payload never reaches the handler, so
+// subscriptions.retrieve must never be called — if the front door let the body through,
+// the missing registration would surface as a loud lookup failure, reinforcing the proof.
+describe('tampered signature is rejected before any work', () => {
+  it(
+    'rejects with 400 problem+json and writes nothing when the signature is tampered',
+    withRollback(async ({ tx }) => {
+      const { org } = await signedInAs({ role: 'admin' }, tx);
+
+      const event = checkoutCompleted({
+        orgId: org.id,
+        customerId,
+        subscriptionId,
+      });
+
+      const response = await postWebhook(event, { tamperSignature: true });
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get('content-type')).toBe(
+        'application/problem+json',
+      );
+      await expect(response.json()).resolves.toMatchObject({
+        title: 'invalid_signature',
+        status: 400,
+      });
+
+      // The emptiness of every downstream surface IS "rejected before any work": the
+      // route verifies before it claims, dispatches, or sends mail, so nothing was
+      // claimed, the seeded entitlement is untouched, and no outbound call fired.
+      const ledger = await tx.query.processedEvents.findMany({
+        where: eq(processedEvents.eventId, event.id),
+      });
+      expect(ledger).toHaveLength(0);
+
+      const entitlement = await tx.query.planEntitlements.findFirst({
+        where: eq(planEntitlements.organizationId, org.id),
+      });
+      expect(entitlement?.plan).toBe('free');
+
+      const audits = await tx.query.auditLogs.findMany({
+        where: eq(auditLogs.organizationId, org.id),
+      });
+      expect(audits).toHaveLength(0);
+
+      expect(resendCalls).toHaveLength(0);
+    }),
+  );
+});
+`}>
+  <AnnotatedStep meta={`{23} {25-29} "signedInAs" "checkoutCompleted"`} color="green">
+    `signedInAs` seeds the admin org and its `free` `plan_entitlements` row inside `tx`, and the event is built exactly as the happy-path test built it. The load-bearing detail is what's *missing*: no `registerSubscription`, so a regressed handler that retrieved a subscription throws "not registered" instead of passing.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{31} "tamperSignature: true"`} color="orange">
+    `postWebhook` serializes the event, signs it with the real `generateTestHeaderString`, then flips one character of the signature before calling the route handler — the only difference from the happy-path Act.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{33-65}" color="blue">
+    First the positive contract: status `400`, content-type `application/problem+json`, body matching `{ title: 'invalid_signature', status: 400 }`. Then the negative sweep: `processed_events` empty, the entitlement still `'free'`, `audit_logs` empty, `resendCalls` empty. The 400 alone is not the proof — the four empties are.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two choices are worth naming.
+
+**Why the four empties, not just the 400.** A handler that returned 400 but had *already* processed the body before checking the signature would pass a status-only test. The route's ordering — read body, check the signature header, `constructEvent`, and only then open the `db.transaction` — comes from [Claim the event inside one transaction](/065-project---stripe-webhook-to-entitlement/3-claim-the-event-inside-one-transaction/); the four empties pin that ordering from the outside.
+
+**Why `toMatchObject`, not `toEqual`.** The route answers with the RFC 9457 `problem+json` shape from `problemJson`: `{ type: 'about:blank', title, status }` and nothing else, never an echo of the request body. `toMatchObject` pins the two fields that matter without coupling the test to the incidental `type`. That absent body echo is the log-injection guard: a forged request must not get its own payload reflected back.
+
+A note on layout: the three integration tests live in **separate files**, one per behavior, so each reads as its own line under `--reporter=verbose`.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Stripe — Resolve webhook signature verification errors"
+    href="https://docs.stripe.com/webhooks/signature"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="The three inputs constructEvent checks and what a forged signature looks like — the contract this test pins."
+  />
+  <ExternalResource
+    title="Stripe — Verify webhook signatures manually"
+    href="https://docs.stripe.com/webhooks?verify=manual"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="The Stripe-Signature header format and HMAC check that tamperSignature corrupts by flipping one character."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the integration suite:
+
+```bash
+pnpm test:integration
+```
+
+With all three tests written, the summary line reads:
+
+```text
+Test Files  3 passed (3)
+     Tests  3 passed (3)
+```
+
+Run it again immediately, with no database reset: still `3 passed`, because per-test rollback left zero rows behind.
+A green run earns all six requirements from the brief.
+Two checks remain that the runner can't make for you, the first under `pnpm test:integration -- --reporter=verbose`:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">With `--reporter=verbose`, the new `it` name read aloud — "rejects with 400 problem+json and writes nothing when the signature is tampered" — names the behavior without your having to read the body.</ChecklistItem>
+  <ChecklistItem chip="untested">Temporarily delete the signature-verification `try/catch` in `app/api/webhooks/stripe/route.ts` so a tampered body flows straight through, then re-run: only this test fails, on the 400 assertion, while the happy-path and idempotency tests stay green. Failure localizes to the one behavior you broke. Restore the route afterward.</ChecklistItem>
+</Checklist>
+
+That second check is the negative proof in action.
+The integration suite is now complete; only [driving Checkout end to end](/091-project---testing-the-money-path/6-driving-checkout-end-to-end/) with Playwright remains.

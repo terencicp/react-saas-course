@@ -786,11 +786,11 @@
 - 3 The four-path catalog (Walks the four canonical money paths in the course's app — sign-in, Stripe Checkout round-trip with plan flip, invitation acceptance with seat grant, and the primary value loop — naming the locator shape, data hygiene, and CI integration for each.)
 - 4 Quiz
 
-### Chapter 091 — Project: testing the Stripe webhook and Checkout money path
-- 1 Project Overview
+### Chapter 091 — Project: testing the money path
+- 1 Project overview
 - 2 Reading the test harness
 - 3 The happy-path webhook test
-- 4 The replay/idempotency test
+- 4 The idempotency replay test
 - 5 The signature-tampered rejection test
 - 6 Driving Checkout end to end
 

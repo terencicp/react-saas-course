@@ -1,0 +1,276 @@
+---
+title: The happy-path webhook test
+tagline: Write the first Vitest integration test, driving a signed Stripe checkout event through the real webhook route and asserting every row it writes.
+chapter-id: 91
+course-progress: 0.8571
+rewrites: 2
+sidebar:
+  order: 3
+  label: Happy-path webhook test
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { Aside, CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Now you write the first integration test: a signed `checkout.session.completed` event driven through your real route handler, proving every row the webhook writes when a customer's checkout succeeds.
+
+When it passes, `pnpm test:integration` reports `1 passed`, and under the verbose reporter the single `it` line reads back as the behavior in plain English:
+
+```ansi frame="terminal"
+$ pnpm test:integration -- --reporter=verbose
+
+ ✓ tests/integration/webhook-checkout-completed.int.test.ts (1 test) 142ms
+   ✓ happy-path checkout.session.completed webhook
+     ✓ upserts the entitlement, claims the event, and writes an audit log when a valid checkout completes
+```
+
+The test exercises the production route end to end and leaves zero rows behind, so it passes again the instant you re-run it.
+
+## Your mission
+
+You are testing the webhook ingest seam in isolation: the exact path a real Stripe `checkout.session.completed` delivery takes through your production route handler, down to the rows it writes. Wrap the test in `withRollback(async ({ tx }) => { ... })` so it leaves no state behind, and shape it Arrange / Act / Assert with a blank line between phases ([Arrange, act, assert one behavior](/086-the-shape-of-a-test-suite/4-arrange-act-assert-one-behavior/)).
+
+What makes this a real seam test is what you *don't* mock. Stub exactly two network boundaries: Stripe's `subscriptions.retrieve`, already mocked at the SDK seam, which you feed by calling `registerSubscription(fixtureSubscription(...))`; and Resend's POST, intercepted by MSW for you. Everything between them runs as real code against real Postgres: the route handler, `lib/webhooks/stripe.ts`, `lib/billing/projection.ts`, `claimEvent`, the audit write. Mock any of that and the test would pass even with the projection broken. The harness, the `@/db` mock, the Stripe stub, `withRollback`, the fixtures, and `postWebhook` are all explained in [Reading the test harness](/091-project---testing-the-money-path/2-reading-the-test-harness/); here you consume them.
+
+Two harness rules carry into every test you write this chapter. Read inside the transaction with `tx`, never the global `db`: `tx` is the handle the route shares through the `@/db` mock, and a read off the global `db` can't see rows the in-flight transaction just wrote. And use `it`, not `it.concurrent`, because per-test rollback against one shared schema is what isolates the tests ([Diagnose flaky tests](/088-integration-tests-across-boundaries/8-diagnose-flaky-tests/)).
+
+Keep this to one behavior, *the handler processed the event*, asserted across every surface it touches. No email is wired off this webhook, so assert the Resend boundary stays untouched (`resendCalls` stays empty): a negative check, not a second behavior. Duplicate-delivery and signature-tampering are the next two lessons.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">A valid signed `checkout.session.completed` returns `200` with a body matching `{ received: true, duplicate: false }`.</ChecklistItem>
+  <ChecklistItem chip="tested">The event is claimed exactly once — a `processed_events` row exists for the event id with `provider: 'stripe'` and `eventType: 'checkout.session.completed'`.</ChecklistItem>
+  <ChecklistItem chip="tested">The org's `plan_entitlements` row reflects the subscription: `plan: 'pro'`, `status: 'trialing'`, the matching `subscriptionId`, `cancelAtPeriodEnd: false`, and `lastEventAt` equal to `new Date(event.created * 1000)`.</ChecklistItem>
+  <ChecklistItem chip="tested">An `audit_logs` row is written for the org with `action: 'billing.subscription.activated'` and `actorUserId: null`.</ChecklistItem>
+  <ChecklistItem chip="tested">No outbound email is triggered off this path — `resendCalls` stays empty.</ChecklistItem>
+  <ChecklistItem chip="untested">The `it` name, read aloud, names the behavior without anyone needing to read the body.</ChecklistItem>
+  <ChecklistItem chip="untested">A no-op rename of `subscriptionToEntitlement` and its internal helpers leaves the test green — proof it asserts on the contract, not internals.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Write `tests/integration/webhook-checkout-completed.int.test.ts` yourself before reading on.
+Drive one event through `postWebhook` and assert on the rows; reading the solution first costs you the rep.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+### The full test
+
+One `describe`, one `it`, the body wrapped in `withRollback` and shaped Arrange / Act / Assert.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import { eq } from 'drizzle-orm';
+import { describe, expect, it } from 'vitest';
+
+import { auditLogs } from '@/db/audit';
+import { planEntitlements, processedEvents } from '@/db/schema';
+import { organization } from '@/db/schema/auth';
+import { withRollback } from '@/test/db/with-rollback';
+import { signedInAs } from '@/test/fixtures/auth';
+import { checkoutCompleted } from '@/test/fixtures/stripe-events';
+import { fixtureSubscription } from '@/test/fixtures/stripe-subscription';
+import { postWebhook } from '@/test/helpers/post-webhook';
+import { resendCalls } from '@/test/msw/handlers/resend';
+import { registerSubscription } from '@/test/stripe-retrieve-registry';
+
+const customerId = 'cus_test_checkout_happy';
+const subscriptionId = 'sub_test_checkout_happy';
+const currentPeriodEnd = 1893456000;
+
+// Every assertion targets a caller-observable surface (the Response, the
+// processed_events row, the plan_entitlements fields, the audit_logs row, resendCalls) —
+// never a handler internal, so a no-op rename of dispatch/projection leaves this green.
+describe('happy-path checkout.session.completed webhook', () => {
+  it(
+    'upserts the entitlement, claims the event, and writes an audit log when a valid checkout completes',
+    withRollback(async ({ tx }) => {
+      const { org } = await signedInAs({ role: 'admin' }, tx);
+      await tx
+        .update(organization)
+        .set({ stripeCustomerId: customerId })
+        .where(eq(organization.id, org.id));
+
+      const event = checkoutCompleted({
+        orgId: org.id,
+        customerId,
+        subscriptionId,
+      });
+      registerSubscription(
+        fixtureSubscription({
+          id: subscriptionId,
+          lookupKey: 'course_pro_monthly',
+          status: 'trialing',
+          currentPeriodEnd,
+          orgId: org.id,
+        }),
+      );
+
+      const response = await postWebhook(event);
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        received: true,
+        duplicate: false,
+      });
+
+      const ledger = await tx.query.processedEvents.findMany({
+        where: eq(processedEvents.eventId, event.id),
+      });
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0]).toMatchObject({
+        provider: 'stripe',
+        eventType: 'checkout.session.completed',
+      });
+
+      const entitlement = await tx.query.planEntitlements.findFirst({
+        where: eq(planEntitlements.organizationId, org.id),
+      });
+      expect(entitlement).toMatchObject({
+        plan: 'pro',
+        status: 'trialing',
+        subscriptionId,
+        cancelAtPeriodEnd: false,
+      });
+      expect(entitlement?.lastEventAt).toEqual(new Date(event.created * 1000));
+
+      const audits = await tx.query.auditLogs.findMany({
+        where: eq(auditLogs.organizationId, org.id),
+      });
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({
+        action: 'billing.subscription.activated',
+        actorUserId: null,
+      });
+
+      expect(resendCalls).toHaveLength(0);
+    }),
+  );
+});
+`}>
+  <AnnotatedStep meta={`"withRollback(async ({ tx }) => {" "tx"`} color="blue">
+    `withRollback` hands you `tx`, the transaction the route writes into too, then discards everything at teardown.
+    Every read and seed rides `tx`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{26-30} "signedInAs" "stripeCustomerId"`} color="green">
+    `signedInAs({ role: 'admin' }, tx)` seeds a user, org, membership, and a starting `free` entitlement.
+    The `stripeCustomerId` lets `resolveOrgIdFromCustomer` find the org from the Customer the app created, not from the event payload.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{32-45} "checkoutCompleted" "registerSubscription" "fixtureSubscription"`} color="green">
+    The two inputs the handler reads: `checkoutCompleted(...)` builds the signed event, and `registerSubscription(fixtureSubscription(...))` declares the `Subscription` the stubbed `subscriptions.retrieve` returns.
+    The `course_pro_monthly` lookup key and `trialing` status drive the projection to `plan: 'pro'`, `status: 'trialing'`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{47} "postWebhook(event)"`} color="orange">
+    `postWebhook` signs the event and calls the production `POST` handler directly against real Postgres.
+    No fake route, no test-only branch.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{49-53} "response.status" "received: true" "duplicate: false"`} color="violet">
+    Surface one, the Response: a fresh delivery answers `200` with `{ received: true, duplicate: false }`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{55-62} "tx.query.processedEvents.findMany" "toHaveLength(1)"`} color="violet">
+    Surface two, the claim: exactly one `processed_events` row for this event id, the basis of idempotency.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{64-73} "tx.query.planEntitlements.findFirst" "lastEventAt"`} color="violet">
+    Surface three, the projection: the entitlement row reflects the subscription, and `lastEventAt` equals `new Date(event.created * 1000)`, the ordering high-water mark the handler stamps on every write.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{75-84} "tx.query.auditLogs.findMany" "actorUserId: null" "resendCalls"`} color="violet">
+    Surfaces four and five: one `audit_logs` row with `actorUserId: null`, since a webhook has no acting user, and `resendCalls` empty, the email boundary untouched.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+### Why these choices
+
+**The `lastEventAt` assertion carries the ordering proof.**
+The `customer.subscription.updated` and `.deleted` paths gate their writes on `WHERE lastEventAt < ?` so a late, stale event can't clobber a fresher one.
+Drop the assertion and a regression in that predicate ships green: the entitlement still flips to `pro`, the test still passes, and out-of-order deliveries silently corrupt state in production.
+
+**The fixture deliberately matches the event's claims.**
+The registered subscription carries the same `subscriptionId` and `course_pro_monthly` lookup key the event points at, so the retrieved subscription agrees with the checkout.
+Drift between the two is what production sees during a Stripe outage; out of scope here, but a later test could drift them on purpose to prove the handler's cross-checks fire.
+
+**`resendCalls` is a negative check, not a second behavior.**
+Several `expect`s for one behavior is fine ([Arrange, act, assert one behavior](/086-the-shape-of-a-test-suite/4-arrange-act-assert-one-behavior/)); asserting the email boundary stays empty names a boundary this path does *not* cross.
+
+<Aside type="tip">
+Prefer `toMatchObject` over a chain of `toBe` calls.
+On failure it renders the whole expected-versus-actual object, so you see every mismatched field at once instead of stopping at the first break.
+</Aside>
+
+No assertion names an internal helper, so renaming `subscriptionToEntitlement` or `dispatch` leaves the test green.
+
+For the webhook → DB → audit-log transaction this test exercises, see [Project three events into one entitlement row](/065-project---stripe-webhook-to-entitlement/4-project-three-events-into-one-entitlement-row/); for transaction-rollback depth, [Rollback against real Postgres](/088-integration-tests-across-boundaries/1-rollback-against-real-postgres/).
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Vitest — expect reference"
+    href="https://vitest.dev/api/expect.html"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="The toMatchObject and resolves matchers this test leans on, with their failure-diff behavior."
+  />
+  <ExternalResource
+    title="Stripe — the Checkout Session object"
+    href="https://docs.stripe.com/api/checkout/sessions/object"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="Every field on the checkout.session.completed payload your fixture signs and drives through the handler."
+  />
+  <ExternalResource
+    title="MSW — the http namespace"
+    href="https://mswjs.io/docs/api/http"
+    icon="simple-icons:mockserviceworker"
+    iconColor="#FF6A33"
+    description="How http.post intercepts the Resend boundary you assert stays untouched."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the integration suite:
+
+```bash frame="none"
+pnpm test:integration
+```
+
+A green run reports `1 passed` — one behavior, five surfaces:
+
+```ansi frame="terminal"
+ ✓ tests/integration/webhook-checkout-completed.int.test.ts (1 test) 142ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+```
+
+Now run it again immediately, no database reset in between, and it should still report `1 passed`. That second pass proves the rollback held: no orphan rows in `processed_events`, `plan_entitlements`, or `audit_logs` survived to trip the next run. A suite that passes only once leaks state.
+
+Then run the verbose reporter and check that the `describe` / `it` line reads back as the behavior:
+
+```bash frame="none"
+pnpm test:integration -- --reporter=verbose
+```
+
+The two checks below are requirements the test can't reach; it asserts on rows and responses, not on a name or coupling. Confirm them by hand:
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Read the `it` name aloud: *"upserts the entitlement, claims the event, and writes an audit log when a valid checkout completes."* It names the behavior with no need to read the body — if it doesn't, rename it until it does.</ChecklistItem>
+  <ChecklistItem chip="untested">Rename `subscriptionToEntitlement` (and any of its internal helpers) across `lib/billing/projection.ts` and its call site, run `pnpm test:integration`, and confirm it still passes — the test asserts on the contract, not the internals. Restore the names afterward.</ChecklistItem>
+</Checklist>
+
+Next lesson, you send the same event a second time and prove the handler refuses to apply it twice.
+</content>
+</invoke>

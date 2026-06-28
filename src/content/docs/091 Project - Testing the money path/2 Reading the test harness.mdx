@@ -1,0 +1,632 @@
+---
+title: Reading the test harness
+tagline: Read the provided Vitest and Playwright harness as a set of contracts, centered on the mock that runs the production webhook route unedited.
+chapter-id: 91
+course-progress: 0.8562
+rewrites: 2
+sidebar:
+  order: 2
+  label: Read the test harness
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import RequestPathInversion from '../../../components/lessons/091/2/RequestPathInversion.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import { CardGrid, FileTree } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Two commands drive this chapter.
+`pnpm test:integration` runs Vitest against a real test Postgres, wrapping each test in a transaction that rolls back.
+`pnpm test:e2e` runs Playwright against a production build on its own port and database.
+Together they cover the money path: the signed webhook that flips an org to Pro, and the Stripe Checkout journey that triggers it.
+
+You write only the four test files; read the rest of the harness as a set of contracts before you write a single assertion.
+One decision sits at the center: the production webhook route is tested completely unedited, no test-only branch and no fake, thanks to a mock of the `@/db` module.
+Once you see how that mock works, the rest of the harness falls into place around it.
+
+## The file tree
+
+`src/test/` holds the harness that production never imports; `tests/` holds the test files, split into `integration/` (Vitest) and `e2e/` (Playwright).
+The four bold files are the only ones you'll touch — three are `describe.todo` stubs, one is `test.fixme`.
+Everything dimmed is provided and complete.
+
+<FileTree>
+- src/
+  - test/ the harness, never imported by production code
+    - empty-module.ts blank stub aliased to `server-only` / `client-only`
+    - load-test-env.ts side-effect: load `.env.test` + pin `TZ=UTC`
+    - integration-setup.ts the `@/db` mock + the Stripe SDK stub + MSW lifecycle
+    - stripe-retrieve-registry.ts per-test `Map` the stubbed `subscriptions.retrieve` reads
+    - db/
+      - worker-db.ts lazy memoized test Drizzle client
+      - with-rollback.ts wraps a test in a transaction it discards at teardown
+    - fixtures/
+      - auth.ts `signedInAs(opts, tx)`, `anonymous()`
+      - stripe-events.ts `checkoutCompleted`, `subscriptionUpdated`, `subscriptionDeleted`
+      - stripe-subscription.ts `fixtureSubscription(opts)`
+    - helpers/
+      - post-webhook.ts signs an event and calls the real route handler
+    - msw/
+      - server.ts MSW server (Resend only)
+      - handlers/resend.ts records `POST /emails` into `resendCalls`
+  - app/api/webhooks/stripe/route.ts the system under test, unchanged from the billing project
+  - db/test-tx-context.ts the `AsyncLocalStorage` store the mock and the harness share
+- tests/
+  - integration/
+    - **webhook-checkout-completed.int.test.ts** TODO (next lesson)
+    - **webhook-idempotency.int.test.ts** TODO
+    - **webhook-signature-rejected.int.test.ts** TODO
+  - e2e/
+    - auth.setup.ts signs the admin in via the API, writes `.auth/admin.json`
+    - fixtures.ts `adminPage` (from `storageState`) + `orgSlug`
+    - **checkout-money-path.spec.ts** TODO
+    - helpers/fill-stripe-card.ts fills the Stripe Checkout card iframe
+</FileTree>
+
+## The two-project Vitest config
+
+This chapter adds an `integration` project alongside the existing auto-graded `lesson` project: one config, two projects, each selected by its `--project` flag.
+The `lesson` project is unchanged; the `integration` project does the real work, and three of its lines do more than they appear to.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import { fileURLToPath } from 'node:url';
+import tsconfigPaths from 'vite-tsconfig-paths';
+import { defineConfig } from 'vitest/config';
+
+const emptyModule = fileURLToPath(
+  new URL('./src/test/empty-module.ts', import.meta.url),
+);
+
+export default defineConfig({
+  test: {
+    projects: [
+      {
+        plugins: [tsconfigPaths()],
+        test: {
+          name: 'lesson',
+          environment: 'node',
+          globals: false,
+          include: ['lesson-verification/**/*.ts'],
+        },
+      },
+      {
+        plugins: [tsconfigPaths()],
+        resolve: {
+          alias: { 'server-only': emptyModule, 'client-only': emptyModule },
+        },
+        test: {
+          name: 'integration',
+          environment: 'node',
+          globals: false,
+          include: ['tests/integration/**/*.int.test.ts'],
+          setupFiles: ['./src/test/integration-setup.ts'],
+          fileParallelism: false,
+        },
+      },
+    ],
+  },
+});
+`}>
+  <AnnotatedStep meta={`/plugins: \\[tsconfigPaths\\(\\)\\],/`} color="orange">
+    `vite-tsconfig-paths` sits inside *each* project's `plugins`, not at the root.
+    In Vitest 4 the root `plugins` array does not propagate into `test.projects`, so a root-only placement leaves every `@/…` import unresolved and the suite fails to load.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{23-25} "server-only" "client-only"`} color="blue">
+    The route imports `server-only` transitively, through the Stripe SDK wrapper and the webhook handlers, and that package throws by design when evaluated outside a React Server Component.
+    The Node test environment has none, so aliasing `server-only` and `client-only` to a blank module lets the test import the real handler.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"setupFiles: ['./src/test/integration-setup.ts']"`} color="violet">
+    Every file in this project loads `integration-setup.ts` first, where the mocks and the MSW lifecycle live (the next section).
+    The `lesson` project has no setup file because it never touches the database or the network.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"fileParallelism: false"`} color="green">
+    Files run one at a time.
+    The test database is a single shared schema, so isolation comes from per-test transaction rollback rather than per-file workers — the reverse of the per-worker model in [One database per worker](/088-integration-tests-across-boundaries/2-one-database-per-worker/), since the rollback boundary already isolates each test.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+## The integration setup
+
+This file is the center of the harness. Read it top to bottom; the statement order is part of the contract.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import '@/test/load-test-env';
+
+import { afterAll, afterEach, beforeAll, vi } from 'vitest';
+
+import { resendCalls } from '@/test/msw/handlers/resend';
+import { server } from '@/test/msw/server';
+import { resetSubscriptions } from '@/test/stripe-retrieve-registry';
+
+if (!process.env.DATABASE_URL_TEST?.includes('localhost:55432')) {
+  throw new Error(
+    \`integration tests refuse to run: DATABASE_URL_TEST must point at localhost:55432 (got: \${process.env.DATABASE_URL_TEST ?? 'unset'})\`,
+  );
+}
+
+vi.mock('@/db', async (importActual) => {
+  const actual = await importActual<typeof import('@/db')>();
+  const { testTxContext } = await import('@/db/test-tx-context');
+  const { getTestDb } = await import('@/test/db/worker-db');
+
+  type Tx = import('@/db').Transaction;
+
+  const proxy = new Proxy({} as typeof actual.db, {
+    get(_target, prop) {
+      const current = testTxContext.getStore() ?? getTestDb();
+      if (prop === 'transaction') {
+        return (fn: (tx: Tx) => Promise<unknown>) =>
+          fn((testTxContext.getStore() ?? current) as Tx);
+      }
+      return Reflect.get(current as object, prop);
+    },
+  });
+
+  return { ...actual, db: proxy, dbUnpooled: proxy };
+});
+
+vi.mock('@/lib/billing/stripe', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/billing/stripe')>();
+  const { lookupSubscription } = await import(
+    '@/test/stripe-retrieve-registry'
+  );
+
+  return {
+    ...actual,
+    stripe: {
+      ...actual.stripe,
+      webhooks: actual.stripe.webhooks,
+      subscriptions: {
+        retrieve: async (id: string) => lookupSubscription(id),
+      },
+    },
+  };
+});
+
+beforeAll(() => {
+  server.listen({ onUnhandledRequest: 'error' });
+});
+
+afterEach(() => {
+  server.resetHandlers();
+  resendCalls.length = 0;
+  resetSubscriptions();
+});
+
+afterAll(() => {
+  server.close();
+});
+`}>
+  <AnnotatedStep meta={`"import '@/test/load-test-env';"`} color="orange">
+    A side-effect import that loads `.env.test` and pins `process.env.TZ = 'UTC'`.
+    It must run *before* any `@/…` module body reads `process.env`, since the env boundary validates at import time and a date projection under your local timezone would be non-deterministic.
+    It lives in its own file so Biome's import sorter can't reorder it below the others.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{9-13}`} color="red">
+    A fail-fast guard.
+    The suite writes rows and rolls them back, but a misconfigured `DATABASE_URL_TEST` could point at something real, so the throw refuses to run unless the URL names `localhost:55432`, the throwaway test Postgres.
+    A loud refusal at setup beats discovering you truncated production at teardown.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{15-34}`} color="green">
+    **The anchor decision of the chapter.** The production route calls `db.transaction(fn)`.
+    This mock replaces `@/db` with a <Term definition="A JavaScript object that wraps another and intercepts operations on it, such as property reads, through trap functions you supply.">`Proxy`</Term>: every property access resolves to the current test transaction (or a lazily-opened test client when none is running), and `transaction(fn)` runs `fn(tx)` *directly* on the in-scope `tx` instead of opening a nested one.
+    The route's transaction becomes a **no-op join** onto the one the test already opened, so the rollback the test owns discards everything the route wrote.
+    The route runs unedited, and the harness owns the transaction the route thinks it owns.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{36-54} "subscriptions" "retrieve" "webhooks"`} color="blue">
+    The Stripe mock is surgical: it replaces *only* `stripe.subscriptions.retrieve`, wiring it to a per-test registry.
+    `webhooks.*` stays **real**, so `generateTestHeaderString` (signing your event) and `constructEvent` (the route verifying it) run genuine SDK code, and your signature tests exercise real verification.
+    Stripe can't go on MSW like Resend: `stripe@22`'s HTTP client writes in a socket handler that never fires against MSW's mock socket, so a `retrieve` over the interceptor would hang forever.
+    The [network-boundary discipline](/088-integration-tests-across-boundaries/4-mock-the-wire/) holds; the seam just moves from the network to the SDK.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{56-68}`} color="violet">
+    The MSW lifecycle. `onUnhandledRequest: 'error'` in `beforeAll` turns any *unstubbed* outbound call into a loud failure.
+    `afterEach` resets the handlers, empties `resendCalls`, and clears the subscription registry, so one test's state never leaks into the next; `afterAll` closes the server.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The diagram traces the path a single request takes, and where the harness takes over.
+
+<RequestPathInversion />
+
+## Real Postgres, transaction rollback
+
+`withRollback` opens the transaction the mock joins onto, and you wrap every integration test in it.
+This is recall from [Rollback against real Postgres](/088-integration-tests-across-boundaries/1-rollback-against-real-postgres/): it opens a transaction on the test client, runs your test body inside `testTxContext.run(tx, …)` so the `@/db` Proxy resolves to *this* `tx`, then forces a rollback so nothing survives.
+
+```ts
+import type { Transaction } from '@/db';
+import { testTxContext } from '@/db/test-tx-context';
+import { getTestDb } from '@/test/db/worker-db';
+
+class RollbackSignal extends Error {
+  constructor() {
+    super('__rollback__');
+    this.name = 'RollbackSignal';
+  }
+}
+
+type RollbackBody = (ctx: { tx: Transaction }) => Promise<void>;
+
+export const withRollback =
+  (body: RollbackBody): (() => Promise<void>) =>
+  async () => {
+    try {
+      await getTestDb().transaction(async (tx) => {
+        await testTxContext.run(tx as Transaction, async () => {
+          await body({ tx: tx as Transaction });
+          throw new RollbackSignal();
+        });
+      });
+    } catch (error) {
+      if (error instanceof RollbackSignal) {
+        return;
+      }
+      throw error;
+    }
+  };
+```
+
+The `catch` swallows **only** `RollbackSignal` and rethrows everything else, and that one line keeps the helper honest: a catch-all would eat a failed assertion, passing the test green while the behavior it checks was broken.
+The rollback is a private sentinel thrown on purpose; any other error is a real failure and must propagate.
+
+`getTestDb()` is a lazily-memoized Drizzle client pointed at `DATABASE_URL_TEST`; it opens its connection on the first call inside a test, never at import, so importing the harness has no side effects.
+`testTxContext` is an `AsyncLocalStorage` stored on `globalThis`, so the mocked `@/db` and the harness share one instance even if the module is evaluated twice.
+
+Your tests take this shape:
+
+```ts
+it('does the thing', withRollback(async ({ tx }) => {
+  // arrange / act / assert, reading and writing through tx
+}));
+```
+
+## The auth fixture
+
+The webhook reads and writes one org's `plan_entitlements` row, so every test needs an org seeded first.
+That is `signedInAs`: it inserts a user, org, membership, session, and `plan_entitlements` row (default `plan: 'free'`) inside the rollback `tx`, then returns the rows it made.
+Pass `{ role: 'admin' }` for the admin case.
+
+```ts
+export const signedInAs = async (
+  opts: SignedInOptions,
+  tx: Transaction,
+): Promise<SignedIn> => {
+```
+
+The webhook route is session-less: it never calls `getSession`, because Stripe authenticates by signing the request body, not by carrying a cookie.
+So your tests use `signedInAs` only to seed the org and entitlement.
+The `session` and `cookieJar` it returns are inert here; they keep the fixture's shape identical to [The signedInAs fixture](/088-integration-tests-across-boundaries/3-signedinas-fixture/), where a session-reading handler would use them.
+The module also exports `anonymous()`, a no-op signed-out marker.
+
+## The Stripe fixtures and the retrieve registry
+
+On checkout the handler retrieves the subscription from Stripe and projects it into the entitlement row.
+A test has no Stripe, so each test declares what `subscriptions.retrieve` returns, through three cooperating pieces.
+
+First, the event factories.
+Each returns a fully-typed `Stripe.Event` envelope — `id`, `type`, `created`, `data.object` — that the route reads exactly as production would.
+
+```ts
+export const checkoutCompleted = ({
+  customerId,
+  subscriptionId,
+  eventId = defaultEventId(),
+  createdAt = defaultCreated(),
+}: CheckoutCompletedOptions): Stripe.Event => {
+```
+
+The `eventId` and `createdAt` defaults are deterministic but **unique per call**, from a module sequence and the clock, never `Math.random`.
+Uniqueness matters because `eventId` is the dedup key the route claims in `processed_events` to make replays no-ops; reused ids would make a fresh event look like a duplicate.
+So happy-path tests let `eventId` auto-generate, while the idempotency test later *pins it explicitly* to make both sends carry the same key.
+
+Second, the subscription fixture builds a minimal `Stripe.Subscription` with only the fields the projection reads: the item-level `lookup_key` and `current_period_end`, the status, `cancel_at_period_end`, and the `organization_id` in metadata.
+That metadata is the tenancy carry-channel from [Harden the webhook against forged tenancy](/065-project---stripe-webhook-to-entitlement/6-harden-the-webhook-against-forged-tenancy/), which the handler cross-checks against the org it resolved from the customer.
+
+```ts
+export const fixtureSubscription = ({
+  id,
+  lookupKey = 'course_pro_monthly',
+  status = 'trialing',
+  currentPeriodEnd = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30,
+  cancelAtPeriodEnd = false,
+  quantity = 1,
+  orgId,
+}: FixtureSubscriptionOptions): Stripe.Subscription => {
+```
+
+Third, the registry ties them together.
+`registerSubscription(sub)` puts a fixture in a per-test `Map`; the mocked `subscriptions.retrieve` calls `lookupSubscription(id)` to read it back, and `lookupSubscription` *throws a clear error* when nothing is registered for that id.
+
+```ts
+export const lookupSubscription = (id: string): Stripe.Subscription => {
+  const sub = registry.get(id);
+  if (!sub) {
+    throw new Error(
+      `stripe-retrieve-registry: no fixture registered for subscription "${id}" — call registerSubscription(fixtureSubscription({ id: "${id}", … })) in the test's arrange step`,
+    );
+  }
+  return sub;
+};
+```
+
+`resetSubscriptions()` in `afterEach` clears the map between tests — the per-test discipline MSW's `server.use(...)` gives you on the network seam, applied to the stubbed SDK seam.
+The signature-rejection test later registers *nothing* on purpose: a forged request never reaches the retrieve call, so the missing registration is itself part of the proof.
+
+## MSW at the network boundary
+
+Resend uses `fetch`, which MSW intercepts cleanly, so the one genuine network-boundary mock here is the Resend handler.
+It records every `POST` to the Resend API into a module-scoped `resendCalls` array and returns a fake id.
+
+```ts
+export const resendCalls: ResendCall[] = [];
+
+export const resendHandlers = [
+  http.post('https://api.resend.com/emails', async ({ request }) => {
+    const body = (await request.clone().json()) as {
+      to: string | string[];
+      subject: string;
+      html?: string;
+    };
+    resendCalls.push({ to: body.to, subject: body.subject, html: body.html });
+    return HttpResponse.json({ id: 'fake_resend_id' });
+  }),
+];
+```
+
+The rule from [Mock the wire](/088-integration-tests-across-boundaries/4-mock-the-wire/) stands: intercept at the network boundary, never by reaching into `lib/email.ts`.
+The body is read through `request.clone()` so the handler doesn't consume the stream Resend's SDK already read.
+
+The twist: **no email fires off the webhook in this project.**
+Notification fan-out lives in a dedicated dispatcher built later, not in the billing handler.
+So every test asserts that `resendCalls` is **empty**, a negative boundary assertion; the mock exists to make an unexpected call show up loudly.
+
+## The webhook request helper
+
+`postWebhook` ties the front of the harness together: it takes one of your event fixtures, signs it the way Stripe would, and drives it through the real route handler.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const postWebhook = async (
+  event: Stripe.Event,
+  opts: PostWebhookOptions = {},
+): Promise<Response> => {
+  const body = JSON.stringify(event);
+  const secret = opts.secret ?? env.STRIPE_WEBHOOK_SECRET;
+
+  let signature = stripe.webhooks.generateTestHeaderString({
+    payload: body,
+    secret,
+  });
+
+  if (opts.tamperSignature) {
+    const last = signature.at(-1) ?? '0';
+    const flipped = last === '0' ? '1' : '0';
+    signature = signature.slice(0, -1) + flipped;
+  }
+
+  const request = new Request('http://localhost/api/webhooks/stripe', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'stripe-signature': signature,
+    },
+    body,
+  });
+
+  return POST(request);
+};
+`}>
+  <AnnotatedStep meta={`"const body = JSON.stringify(event);"`} color="orange">
+    The event is serialized **once**, and that exact string is both signed and sent as the body.
+    A second `JSON.stringify` could produce different bytes — key order, whitespace — and the signature would no longer match.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{8-11} "generateTestHeaderString"`} color="blue">
+    Signing uses the **real** SDK method, `stripe.webhooks.generateTestHeaderString`, never a hand-rolled HMAC.
+    Because the mock kept `webhooks.*` real, the route's `constructEvent` verifies this header for real, the same reasoning as [Webhook receivers under test](/088-integration-tests-across-boundaries/6-webhook-receivers-under-test/).
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{13-17}`} color="red">
+    With `tamperSignature: true`, the helper flips one character so verification fails *while the header stays well-formed*: the rejection comes from the signature check, not a parse error.
+    This is the one knob the signature-rejection test turns.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"return POST(request);"`} color="green">
+    The last line calls `POST` imported straight from the production route — the **same function production runs**, no fake handler.
+    Combined with the `@/db` mock, this is what "test the real route unedited" means in practice.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+## The Playwright config
+
+On the end-to-end side, the config drives a *production build* against the dedicated `saas_e2e` database, not a dev server.
+You built this shape in [Config, storageState, and the trace viewer](/090-e2e-on-money-paths-only/2-config-storagestate-and-the-trace-viewer/), so focus on the three things this project pins.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export default defineConfig({
+  testDir: 'tests/e2e',
+  fullyParallel: true,
+  forbidOnly: !!process.env.CI,
+  retries: process.env.CI ? 1 : 0,
+  reporter: [['github'], ['html']],
+  use: {
+    baseURL: 'http://localhost:3001',
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+  },
+  webServer: {
+    command: 'pnpm build && pnpm start -p 3001',
+    url: 'http://localhost:3001',
+    reuseExistingServer: !process.env.CI,
+    timeout: 180_000,
+    env: {
+      DATABASE_URL: process.env.DATABASE_URL_E2E ?? '',
+      DATABASE_URL_UNPOOLED: process.env.DATABASE_URL_E2E ?? '',
+      STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY ?? '',
+      STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET ?? '',
+      APP_URL: process.env.APP_URL ?? 'http://localhost:3001',
+    },
+  },
+  projects: [
+    { name: 'setup', testMatch: /auth\\.setup\\.ts/ },
+    {
+      name: 'chromium',
+      dependencies: ['setup'],
+      use: { ...devices['Desktop Chrome'], storageState: '.auth/admin.json' },
+    },
+  ],
+});
+`}>
+  <AnnotatedStep meta={`"command: 'pnpm build && pnpm start -p 3001',"`} color="green">
+    `webServer` runs a full production build and serves it on port **3001**, never `next dev`.
+    You test the optimized output users get, and the non-default port keeps a dev server on 3000 from serving the test or receiving its data.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{17-23}`} color="blue">
+    The `env` block points the test server at the e2e database (`DATABASE_URL_E2E`) and your Stripe test account.
+    Integration and e2e use *different* databases: the integration one rolls back, the e2e one is reset and seeded wholesale.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{25-32} "setup" "chromium" "dependencies: ['setup']"`} color="violet">
+    `setup` signs in once and writes the session to disk; `chromium` declares `dependencies: ['setup']`, so it runs after and inherits the saved `storageState`, and the money-path spec never logs in itself.
+    Chromium is the only browser built by default; WebKit and Firefox are named but not built, a CI-cost choice you can enable later.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+## The auth setup
+
+The `setup` project authenticates the seeded admin once and saves the session, so every later test starts already logged in.
+
+```ts
+const ADMIN_FILE = '.auth/admin.json';
+
+setup('authenticate as admin', async ({ page }) => {
+  const password = process.env.E2E_ADMIN_PASSWORD;
+  if (!password) {
+    throw new Error(
+      'E2E_ADMIN_PASSWORD is not set (copy .env.test.local.example to .env.test.local)',
+    );
+  }
+
+  const response = await page.request.post('/api/auth/sign-in/email', {
+    data: { email: 'admin@e2e.test', password },
+  });
+  expect(response.ok()).toBe(true);
+
+  await page.goto('/dashboard');
+  await expect(page).toHaveURL(/\/dashboard/);
+
+  await page.context().storageState({ path: ADMIN_FILE });
+});
+```
+
+It signs in by hitting Better Auth's API directly, `page.request.post('/api/auth/sign-in/email', …)`, not by submitting the sign-in form.
+Under Playwright the form's `useActionState` submit is unreliable: the automated submit leaks React's internal action-encoding fields into the action's strict-parsed FormData, and the login flakes.
+The API call runs the same server-side credential check without a brittle UI, and still avoids the [UI-login-per-test anti-pattern](/090-e2e-on-money-paths-only/2-config-storagestate-and-the-trace-viewer/): log in *once*, here, and reuse the cookie everywhere.
+
+The cookie lands in `.auth/admin.json`, a real session credential, so `.auth/` is gitignored; confirm it never shows up in `git status`.
+
+<VideoCallout videoId="nSHPCLUwwVk" videoTitle="Speed up Playwright tests with shared storageState">
+  Stefan Judis (Playwright Ambassador, Checkly) walks the `setup` project, `dependencies`, and `storageState` shape this config uses.
+</VideoCallout>
+
+## The Playwright fixtures and the Stripe-card helper
+
+The fixtures file extends Playwright's `test` so your specs import `{ test, expect }` from *here*, not from `@playwright/test`, keeping the `storageState` wiring and shared constants in one place.
+
+```ts
+export const test = base.extend<Fixtures>({
+  adminPage: async ({ browser }, use) => {
+    const context = await browser.newContext({
+      storageState: '.auth/admin.json',
+    });
+    const page = await context.newPage();
+    await use(page);
+    await context.close();
+  },
+  orgSlug: 'e2e-org',
+});
+
+export { expect } from '@playwright/test';
+```
+
+`adminPage` is a `Page` already authenticated from the saved session; `orgSlug` is the seeded org's slug as a plain constant fixture.
+
+The card helper reaches the card fields inside Stripe's hosted Checkout iframe.
+
+```ts
+export const fillStripeCard = async (
+  page: Page,
+  card = '4242 4242 4242 4242',
+): Promise<void> => {
+  const frame = page.frameLocator('iframe[src*="js.stripe.com"]').first();
+
+  const cardInput = frame.getByPlaceholder(/card number/i);
+  await expect(cardInput).toBeVisible({ timeout: 30_000 });
+  await cardInput.fill(card);
+
+  await frame.getByPlaceholder(/mm \/ yy/i).fill('12 / 34');
+  await frame.getByPlaceholder(/cvc/i).fill('123');
+
+  const zip = frame.getByPlaceholder(/zip|postal/i);
+  if (await zip.count()) {
+    await zip.fill('12345');
+  }
+};
+```
+
+Stripe owns these selectors and changes them without notice, so they live in *one* file: a break is fixed in one place.
+The auto-waiting `expect(cardInput).toBeVisible()` before the first fill cures the top Stripe-iframe flake, typing before the frame paints — never a `waitForTimeout`.
+The money-path test, the chapter's last lesson, uses both files.
+
+The products and prices the Checkout flow needs were seeded into your Stripe test account by `pnpm seed:stripe` in the billing project, and the Playwright test reuses them, so there is no extra seeding this chapter.
+
+You booted both suites green-on-empty in the project overview, so the harness is proven.
+In the next lesson you write the first real test against it: a signed `checkout.session.completed` driven through this path, asserting on every row it writes.
+
+## External resources
+
+Four reference pages, one per harness primitive you just read.
+
+<CardGrid>
+  <ExternalResource
+    title="Vitest — Test Projects"
+    href="https://vitest.dev/guide/projects"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="The two-project config in this lesson, and why root plugins don't inherit into projects."
+  />
+  <ExternalResource
+    title="MSW — Node.js integration"
+    href="https://mswjs.io/docs/integrations/node"
+    icon="simple-icons:mockserviceworker"
+    iconColor="#FF6A33"
+    description="setupServer plus the listen / resetHandlers / close lifecycle the Resend mock uses."
+  />
+  <ExternalResource
+    title="Playwright — webServer"
+    href="https://playwright.dev/docs/test-webserver"
+    icon="lucide:theater"
+    iconColor="#2EAD33"
+    description="The build-and-serve config that runs a production build on its own port before the e2e suite."
+  />
+  <ExternalResource
+    title="Node.js — AsyncLocalStorage"
+    href="https://nodejs.org/api/async_context.html"
+    icon="simple-icons:nodedotjs"
+    iconColor="#5FA04E"
+    description="The async-context store the @/db mock and withRollback share to resolve the in-scope tx."
+  />
+</CardGrid>

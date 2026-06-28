@@ -2662,3 +2662,7 @@ query priority ladder | query ladder, priority ladder | RTL's ordered list of qu
 getBy | getBy*, getByRole | RTL query asserting an element is here now; throws if missing, returns exactly one. | first defined: Chapter 089 L3
 queryBy | queryBy*, queryByRole | RTL query returning null instead of throwing; the correct query for a negative (absence) assertion. | first defined: Chapter 089 L3
 Testing Playground | testing-playground.com | Web tool that ranks the best RTL query for pasted markup using the same priority ladder. | first defined: Chapter 089 L3
+money path | money-path | A multi-step flow where a break costs real money (Checkout, sign-in, billing); the part of a SaaS you cannot be wrong about. | first defined: Chapter 091 L1
+system under test | SUT | The real code a test exercises, as opposed to the harness, mocks, and fixtures around it. | first defined: Chapter 091 L1
+behavior contract | - | A test read as a statement of the behavior that must hold, named so its purpose is clear from the name alone. | first defined: Chapter 091 L1
+Proxy | JavaScript Proxy | A JS object wrapping another and intercepting operations (property reads, etc.) via trap functions. | first defined: Chapter 091 L2

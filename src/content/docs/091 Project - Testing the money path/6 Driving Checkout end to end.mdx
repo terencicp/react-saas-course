@@ -1,0 +1,219 @@
+---
+title: Driving Checkout end to end
+tagline: Write the one Playwright test that drives the full Stripe Checkout round-trip in a real browser, then run the chapter's capstone mutation and refactor drills by hand.
+chapter-id: 91
+course-progress: 0.8598
+rewrites: 2
+sidebar:
+  order: 6
+  label: Checkout E2E
+---
+
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import { CardGrid, Steps } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+You have three integration tests proving the webhook writes the right rows. Now you write the one test that proves a human can actually pay you.
+
+Those tests drove signed events straight into the route handler and read the rows back through `tx`, so nothing in the suite covers the round-trip a paying customer takes. Auth, the upgrade Server Action, the Stripe redirect, the asynchronously arriving webhook, and the success-page poller all have to compose in a real browser against a production build, and no integration test can reach that composition. One Playwright test drives the whole round-trip and asserts only on what the user sees.
+
+This is also the chapter capstone. Once the test is green, you run the whole four-test suite through by-hand drills that prove every assertion is anchored to behavior, not to the shape of the code — the difference between a test that catches a real regression and one that breaks whenever someone refactors.
+
+## Your mission
+
+You are writing money path #2: the Stripe Checkout round-trip. A money path is a flow whose failure costs money directly — the user pays and gets nothing, or gets the plan without paying — and it is the only kind of flow that earns a slow, expensive browser test ([The money-path filter](/090-e2e-on-money-paths-only/1-the-money-path-filter/)). Every other test in this chapter is a cheaper integration test; this path is the exception.
+
+One constraint shapes the whole test: **assert only on what the user sees in the browser.** No `@/db` import, no querying `plan_entitlements`, no `getTestDb`. The integration suite already owns the row-write assertion ([The happy-path webhook test](/091-project---testing-the-money-path/3-the-happy-path-webhook-test/)), so reaching into the database here would re-cover that bug at far higher cost — the [duplicated-coverage trap](/090-e2e-on-money-paths-only/3-the-four-path-catalog/). Let this test own only the composition the integration test can't reach.
+
+You do not touch the harness. The build runs on port 3001 under `webServer`, and the `adminPage` fixture loads the `storageState` the `setup` project wrote, so your test never logs in itself. Import `{ test, expect }` from `./fixtures`, which wires in that pre-authenticated `adminPage`. Use role-first locators and testids, and Playwright's auto-waiting matchers (`toHaveURL`, `toHaveText`, `toBeVisible`) — never a `waitForTimeout`, the biggest source of flaky tests. The config, `storageState`, `webServer`, and auto-waiting come from [Config, storageState, and the trace viewer](/090-e2e-on-money-paths-only/2-config-storagestate-and-the-trace-viewer/); this lesson adds the Stripe iframe and the webhook race.
+
+Two pieces of orchestration are constraints to respect, not things you build. The Checkout card fields live inside a fragile third-party iframe, so you call the provided `fillStripeCard` helper rather than re-implement its selectors. And the webhook must reach your local server, or the success page polls forever and the test times out: keep `pnpm stripe:listen` running in a second terminal, forwarding `checkout.session.completed` to `localhost:3001/api/webhooks/stripe`. The success page polls for the entitlement the webhook writes, never Stripe's API, because the webhook is the single writer. The upgrade control lives on `/inspector`; the return lands on `/billing/success`.
+
+Out of scope: the Customer Portal cancellation flow runs on `billing.stripe.com`, which Playwright can't drive reliably, so it stays integration-test homework; and you run Chromium only.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">On `/inspector`, the admin sees the `entitlement-plan` testid reading `free` — the e2e seed's starting plan.</ChecklistItem>
+  <ChecklistItem chip="tested">Clicking **Upgrade to Pro** redirects the browser to `checkout.stripe.com`.</ChecklistItem>
+  <ChecklistItem chip="tested">Filling the card iframe with `4242 4242 4242 4242` and submitting returns the browser to `/billing/success`.</ChecklistItem>
+  <ChecklistItem chip="tested">During the redirect-versus-webhook race, the success page shows its "finalizing" copy.</ChecklistItem>
+  <ChecklistItem chip="tested">Once the webhook lands and `plan_entitlements` updates, the poller flips the page to the "you are all set / your plan is now pro" copy.</ChecklistItem>
+  <ChecklistItem chip="tested">Reloading `/inspector` shows `entitlement-plan` reading `pro` — the entitlement persisted.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Open `tests/e2e/checkout-money-path.spec.ts`, which ships as a `test.fixme` stub, and write the test against the brief and the harness. Try it before reading the reference solution.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+The test is one linear `test`, ordered the way the user moves through the flow:
+
+```ts title="tests/e2e/checkout-money-path.spec.ts"
+import { expect, test } from './fixtures';
+import { fillStripeCard } from './helpers/fill-stripe-card';
+
+test('admin can upgrade to Pro via Stripe Checkout', async ({ adminPage }) => {
+  await adminPage.goto('/inspector');
+  await expect(adminPage.getByTestId('entitlement-plan')).toHaveText('free');
+
+  await adminPage.getByRole('button', { name: /upgrade to pro/i }).click();
+  await expect(adminPage).toHaveURL(/checkout\.stripe\.com/);
+
+  await fillStripeCard(adminPage);
+  await adminPage
+    .getByRole('button', { name: /(start trial|subscribe|pay)/i })
+    .click();
+
+  await expect(adminPage).toHaveURL(/\/billing\/success/, { timeout: 30_000 });
+  await expect(adminPage.getByText(/finalizing/i)).toBeVisible();
+  await expect(
+    adminPage.getByText(/you are all set|your plan is now pro/i),
+  ).toBeVisible({ timeout: 30_000 });
+
+  await adminPage.goto('/inspector');
+  await expect(adminPage.getByTestId('entitlement-plan')).toHaveText('pro');
+});
+```
+
+Read it in five beats, each tied to a load-bearing decision.
+
+**Confirm the starting state.** The `entitlement-plan` testid is the `<Badge>` rendering `entitlement.plan` directly, so `toHaveText('free')` reads the seeded row through the only surface the user has and brackets the test with a clean before and after.
+
+**Leave for Stripe.** The **Upgrade to Pro** click runs the real upgrade Server Action, which creates the Checkout session and navigates to a hosted Stripe URL with `window.location.assign`. `toHaveURL(/checkout\.stripe\.com/)` confirms the browser actually left your app for Stripe's — a real cross-origin redirect.
+
+**Pay.** `fillStripeCard` drives the card fields inside the Stripe iframe; you call it, you do not re-implement it ([Reading the test harness](/091-project---testing-the-money-path/2-reading-the-test-harness/)), so a Stripe iframe change is a one-file fix. The submit label varies — chapter 65's `trial_period_days: 14` makes this Checkout read **Start trial** — so `/(start trial|subscribe|pay)/i` covers all three and survives a trial-config change.
+
+**Return and wait out the race.** The browser usually returns to `/billing/success` before the `checkout.session.completed` webhook has written the entitlement, so the success page reads the still-`free` row and renders "Finalizing your subscription…". It then polls with `router.refresh()` every two seconds until the webhook arrives, the entitlement flips to `pro`, and it re-renders "You are all set." The two 30-second timeouts absorb Stripe's redirect latency and webhook delivery (usually 2–5 seconds, but liable to spike); auto-waiting matchers poll until the condition holds, so a long timeout costs nothing on a fast run.
+
+**Confirm it persisted.** Re-navigating to `/inspector` and asserting `pro`, rather than trusting the success page, proves the entitlement is durably written, not a transient render on the success route.
+
+Two decisions carry the test. It asserts browser state, never the database: the integration suite owns the `plan_entitlements` row, so asserting it here would buy the same coverage twice. And the webhook only arrives because `pnpm stripe:listen` forwards it — that is the test's one external dependency, so without it the poller spins and the "you are all set" assertion times out. Name it to yourself every time the test hangs.
+
+On flake: CI sets `retries: 1`, and that retry is a signal, not a fix. A test that passes only on the second attempt leaves a trace from the failed first; treat it as a bug report and file a structural fix — a sharper locator, a longer webhook-race timeout — rather than letting the retry paper over it ([Config, storageState, and the trace viewer](/090-e2e-on-money-paths-only/2-config-storagestate-and-the-trace-viewer/)).
+
+:::caution
+Each `pnpm test:e2e` run creates a real test-mode Checkout session and subscription in your Stripe dashboard, visible at `dashboard.stripe.com/test/checkouts`. This is expected — it is test-mode data, it never touches real money, and it needs no cleanup. Test-mode objects simply accumulate.
+:::
+
+<VideoCallout videoId="5wSztvWhx14" videoTitle="Playwright MiniProject: End-to-End Automation with the To-do App">
+  Automation Step by Step's 40-minute project drives a full E2E spec end to end — auto-waiting assertions, the HTML report, and the trace viewer — the same workflow the **Moment of truth** run and the trace-on-failure drill below exercise.
+</VideoCallout>
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Stripe — testing cards"
+    href="https://docs.stripe.com/testing"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="The 4242 4242 4242 4242 test card and the rest of Stripe's test-mode catalog."
+  />
+  <ExternalResource
+    title="Stripe — receive events at your webhook endpoint"
+    href="https://docs.stripe.com/webhooks/test"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="The stripe listen --forward-to command that delivers checkout.session.completed to localhost."
+  />
+  <ExternalResource
+    title="Playwright — Frames"
+    href="https://playwright.dev/docs/frames"
+    icon="simple-icons:playwright"
+    iconColor="#2EAD33"
+    description="frameLocator and how it scopes into an iframe — the API behind fillStripeCard."
+  />
+  <ExternalResource
+    title="Playwright — Assertions"
+    href="https://playwright.dev/docs/test-assertions"
+    icon="simple-icons:playwright"
+    iconColor="#2EAD33"
+    description="Auto-retrying web-first matchers (toHaveText, toHaveURL, toBeVisible) that wait out the webhook race."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Start with the lesson's own gate, a source check that confirms your spec asserts what it claims before you spend a minute on a browser run.
+
+```bash
+pnpm test:lesson 6
+```
+
+It confirms each step the brief marks `tested` is expressed: the right locators, the asserted URLs and visible copy, no `waitForTimeout`, no `@/db` import. Expect all checks green, then run the real thing.
+
+<Steps>
+
+1. **Integration suite, green twice.** Bring up the test database (idempotent), then run the integration suite, then run it again immediately with no reset:
+
+   ```bash
+   pnpm db:test:setup
+   pnpm test:integration
+   pnpm test:integration
+   ```
+
+   Both runs report `3 passed`. The second passing with no cleanup between proves the per-test transaction rollback leaves nothing behind. Confirm it directly: `DATABASE_URL_TEST` lives in `.env.test`, which the pnpm scripts load through dotenv-cli but your shell does not, so pass the connection URL straight to `psql`:
+
+   ```bash
+   psql "postgres://test:test@localhost:55432/saas_int_test" \
+     -c "select count(*) from processed_events;" \
+     -c "select count(*) from plan_entitlements;" \
+     -c "select count(*) from organization;" \
+     -c "select count(*) from audit_logs;"
+   ```
+
+   Every count is `0`: the rollback left no orphan rows.
+
+2. **Playwright suite, green.** Reset and seed the e2e database, start the Stripe forwarder in a **second terminal**, then run the browser test:
+
+   ```bash
+   pnpm db:e2e:reset
+   ```
+
+   ```bash
+   # second terminal — leave it running
+   pnpm stripe:listen
+   ```
+
+   ```bash
+   pnpm test:e2e
+   ```
+
+   Expect `1 passed`. The run takes 30–90 seconds; webhook arrival is the bottleneck. If `pnpm stripe:listen` is not running, the poller never sees the entitlement flip and the test times out — check that first on a hang.
+
+3. **Walk the HTML report.** Open the report and step through the run:
+
+   ```bash
+   pnpm exec playwright show-report
+   ```
+
+   Expand the test and read the ordered step list — each action and its locator, including the redirect out to `checkout.stripe.com` and back. This is your read-out for a green run, since an end-to-end test has no `console.log` ([Config, storageState, and the trace viewer](/090-e2e-on-money-paths-only/2-config-storagestate-and-the-trace-viewer/)). A passing local run gives you the step list but not the full scrubbable trace: with `retries: 0` there is no first retry to fire `trace: 'on-first-retry'`, and `screenshot: 'only-on-failure'` captures nothing. The heavy artifacts — DOM snapshots, screenshots, the network log — are reserved for failing runs, and you generate one in the trace-on-failure drill below.
+
+</Steps>
+
+Now the by-hand drills. The point is not that the tests pass; it is that each test fails for exactly one reason and survives changes that are not that reason. Run each drill, confirm the outcome, then **restore with `git checkout`** before the next one.
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">**Mutation isolates failure.** Comment out `claimEvent` in the route transaction and only the idempotency test fails (the event gets processed twice — two ledger rows, the entitlement written twice, two audit rows); the happy-path and signature tests stay green.</ChecklistItem>
+  <ChecklistItem chip="untested">Skip the signature verification step in the route and only the signature-rejection test fails on the `400`; the other two stay green.</ChecklistItem>
+  <ChecklistItem chip="untested">Force `subscriptionToEntitlement` to return `plan: 'free'` and only the happy-path plan assertion fails; idempotency and signature stay green.</ChecklistItem>
+  <ChecklistItem chip="untested">Remove the `audit_logs` write from `onCheckoutCompleted` and only the happy-path audit assertion fails.</ChecklistItem>
+  <ChecklistItem chip="untested">Remove the `lastEventAt < event.created` ordering predicate and **all three** integration tests stay green — the out-of-order case is a named homework gap this suite does not yet cover, not a hole in the existing tests.</ChecklistItem>
+  <ChecklistItem chip="untested">**Refactor without breaking.** Rename `subscriptionToEntitlement` to `projectSubscription`, rename the dispatch helpers, and restructure the handler's `switch` into a `Record` dispatch — all three integration tests stay green, because they assert on the contract, not the names.</ChecklistItem>
+  <ChecklistItem chip="untested">**Network boundary holds.** `resendCalls` is empty in all three integration tests — no email fires off the webhook in this project — and `onUnhandledRequest: 'error'` would have failed the suite loudly on any stray outbound call.</ChecklistItem>
+  <ChecklistItem chip="untested">`subscriptions.retrieve` resolves through the registered fixture exactly where expected: the signature-rejected test registers none, and the retrieve is never reached because verification rejects the request first.</ChecklistItem>
+  <ChecklistItem chip="untested">**Coverage diagnostic.** Add the v8 coverage provider (`pnpm add -D @vitest/coverage-v8`), run `pnpm test:integration --coverage`, open `coverage/index.html`, and read the **branch** column (not line) for `lib/webhooks/stripe.ts`, `lib/billing/projection.ts`, and the route — then name the uncovered branches as homework: `onSubscriptionUpdated`, `onSubscriptionDeleted`, the `resolveOrgIdFromCustomer` not-found path, and the `subscriptionToEntitlement` `unknown_plan` throw.</ChecklistItem>
+  <ChecklistItem chip="untested">**Trace on failure.** Force the Playwright test to fail by asserting `entitlement-plan` reads `'team'`, re-run, then open the trace for the failed attempt (`pnpm exec playwright show-trace test-results/.../trace.zip`) and walk the DOM, network, and screenshot at the failed assertion. Restore.</ChecklistItem>
+</Checklist>
+
+The branch-versus-line distinction in the coverage drill comes from [Coverage as a diagnostic](/086-the-shape-of-a-test-suite/3-coverage-as-a-diagnostic/): line coverage tells you a statement ran, branch coverage tells you both sides of an `if` ran, and an uncovered branch is where the next bug hides.
+
+The closing rule: if a mutation drill does **not** localize failure — if breaking one behavior turns more than one test red, or none — a test is over- or under-asserting, in violation of [Arrange, act, assert one behavior](/086-the-shape-of-a-test-suite/4-arrange-act-assert-one-behavior/). Point back at the owning test and tighten it to exactly its one behavior.
+
+The homework gaps you just named — `onSubscriptionUpdated`, `onSubscriptionDeleted`, the Portal-cancellation projection, and the ordering predicate — are not oversights. Each is a new integration test that reuses these exact helpers and costs minutes apiece: the payoff of building the harness once. Wiring both suites into CI comes later, in the deployment chapter.
