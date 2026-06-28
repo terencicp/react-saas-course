@@ -2806,3 +2806,32 @@ strict mode (ruleset) | require branches to be up to date | Ruleset option forci
 linear history | require linear history | A commit history with no merge commits: a straight line of single-parent commits. | first defined: Chapter 096 L4
 bypass actor | bypass actors | A user, team, or app a ruleset allows to skip its rules; every bypass is logged. | first defined: Chapter 096 L4
 bootstrap exception | - | Pushing the first scaffold commit straight to an empty main before the ruleset exists, since there is nothing yet to protect. | first defined: Chapter 096 L4
+GitHub Actions | GHA | GitHub's built-in CI/CD platform that runs YAML workflows in response to repo events. | first defined: Chapter 097 L1
+workflow (GitHub Actions) | - | A YAML file in .github/workflows/ that GitHub runs on repo events; one concern per file. | first defined: Chapter 097 L1
+job (GitHub Actions) | - | A workflow unit running on its own runner; its id becomes the PR status-check name. | first defined: Chapter 097 L1
+step (GitHub Actions) | - | One ordered entry in a job: a run: shell command or a uses: action, never both. | first defined: Chapter 097 L1
+runner | - | A fresh virtual machine GitHub provisions to run one job, then destroys. | first defined: Chapter 097 L1
+action (GitHub Actions) | - | A packaged, reusable step referenced with uses:, from the Marketplace or a repo. | first defined: Chapter 097 L1
+GITHUB_TOKEN | - | Short-lived token GitHub mints per workflow run, scoped to the repo, for GitHub API calls. | first defined: Chapter 097 L1
+github.ref | - | Expression context for the ref that triggered the run: branch ref on push, PR ref on pull_request. | first defined: Chapter 097 L1
+concurrency (GitHub Actions) | cancel-in-progress | Workflow block that buckets runs by group key and cancels a superseded in-flight run. | first defined: Chapter 097 L1
+expression interpolation | ${{ }} | GitHub Actions syntax evaluated before a step runs and substituted in; reads github.*, secrets.*, env.*, matrix.*. | first defined: Chapter 097 L1
+matrix strategy | strategy: matrix | Runs a job once per variable combination; a library concern, cut for single-config web apps. | first defined: Chapter 097 L1
+SHA pin | commit SHA pin | Pinning a uses: action to a full 40-char commit SHA, the only reference an attacker can't repoint. | first defined: Chapter 097 L1
+wall-clock time (CI) | wall-clock | Real elapsed time of a run start to finish, vs total compute summed across parallel jobs. | first defined: Chapter 097 L2
+failure granularity | - | A run showing each check's pass/fail separately, so one push surfaces every failure at once. | first defined: Chapter 097 L2
+composite action | - | A packaged set of steps bundled behind one uses: line; earns its weight only across repos that must stay in sync. | first defined: Chapter 097 L2
+pre-rendering | pre-render | Next.js generating a page's HTML at build time rather than per request. | first defined: Chapter 097 L2
+Next.js build cache | .next/cache | Incremental cache next build keeps in .next/cache; cached across CI runs to reuse unchanged build work. | first defined: Chapter 097 L2
+test sharding | --shard | Splitting a large test suite across parallel jobs (vitest run --shard) with a matrix. | first defined: Chapter 097 L2
+gate (CI) | merge gate | The blocking CI tier; every required check is a true production predicate, fast and deterministic. | first defined: Chapter 097 L3
+signal check | signal tier | A CI check that runs and reports but never blocks a merge; answers "is the codebase healthy?" not "is it safe?". | first defined: Chapter 097 L3
+production predicate | - | A check whose failure provably means the merged code breaks production; the bar for joining the gate. | first defined: Chapter 097 L3
+supply-chain attack | supply chain attack | Compromising you by poisoning something upstream: a dependency, build tool, or published package. | first defined: Chapter 097 L3
+advisory database | - | The registry's catalog of known vulnerabilities pnpm audit checks an installed tree against. | first defined: Chapter 097 L3
+SLSA | salsa | Supply-chain Levels for Software Artifacts; the framework npm provenance attestations follow. | first defined: Chapter 097 L3
+yanked | - | Un-published or deprecated from the registry so a version stops resolving. | first defined: Chapter 097 L3
+actionlint | - | Static checker for GitHub Actions: type-checks ${{ }} expressions, validates inputs/runners, runs shellcheck on run: blocks. | first defined: Chapter 097 L3
+shellcheck | - | Static analyzer for shell scripts; actionlint runs it over run: blocks to catch quoting and command bugs. | first defined: Chapter 097 L3
+workflow_dispatch | - | A trigger adding a manual "Run workflow" button; needed to test a scheduled workflow without waiting for cron. | first defined: Chapter 097 L3
+on: schedule | scheduled workflow | GitHub Actions cron trigger; always runs the workflow as it exists on the default branch. | first defined: Chapter 097 L3
