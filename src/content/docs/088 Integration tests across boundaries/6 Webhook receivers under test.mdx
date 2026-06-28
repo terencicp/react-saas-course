@@ -1,0 +1,575 @@
+---
+title: Webhook receivers under test
+tagline: Integration-testing the Stripe webhook receiver by driving its exported handler with a real signed Request against real Postgres.
+chapter-id: 88
+course-progress: 0.834
+rewrites: 2
+sidebar:
+  order: 6
+  label: Webhook receivers under test
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import FourStepBoundaryPipeline from '../../../components/lessons/088/6/four-step-boundary/Pipeline.astro';
+import GetDbFork from '../../../components/lessons/088/6/getdb-fork/Fork.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import Term from '../../../components/ui/Term.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Every test in this chapter so far drove code that *you* call: `createInvoice`, `createSubscription`, a Drizzle query. Your code is the subject, the test is the caller, and you set the inputs.
+
+A webhook receiver inverts that: Stripe calls *you*. It sits at the edge of your system with no session, no logged-in user, no caller you trust, just raw bytes over HTTP from a server you do not own. Some deliveries are replays, a few may be forgeries. It moves money and has the least context to defend itself.
+
+This lesson tests the Stripe receiver you already shipped. You drive its exported `POST` with a real, correctly signed `Request`, run it against the real test Postgres, and assert on two things at once: the `Response` Stripe would see, and the rows that did or did not land in the database. The result is a six-path test that proves the receiver correct before a real `checkout.session.completed` arrives carrying real money.
+
+## The receiver is a four-step trust boundary
+
+You built this route when you wired up Stripe billing, so this is recall: `app/api/webhooks/stripe/route.ts` does four things, in strict order.
+
+1. It reads the <Term definition="The exact bytes off the wire, before any parsing or deserialization. Stripe's signature covers these bytes and only these — re-serializing the parsed object produces different bytes and breaks verification.">raw body</Term> and verifies the `Stripe-Signature` header against it.
+2. It treats the verified bytes as a `Stripe.Event`.
+3. It claims the event against the `processed_events` table, so a redelivery is recognized.
+4. It dispatches the side effect, projecting the subscription into the org's entitlement row, inside a transaction.
+
+That order forms a <Term definition="The line where untrusted input meets trusted code. Everything before the line is hostile until proven otherwise; the verifier is the gate.">trust boundary</Term>, and the boundary's correctness lives in the seams *between* the steps, not in any one function. A unit test of the claim or the dispatch proves that step in isolation; it cannot prove the boundary. Only one test can: one that drives the whole pipeline the way Stripe does, a real signed `Request` through the exported handler, minus the network hop. Each of the four steps fails in production its own way, and a function-level mock catches none of them.
+
+<DiagramSequence>
+  <DiagramStep>
+    <FourStepBoundaryPipeline active={0} />
+    <Fragment slot="caption">
+      **Verify the raw body.** A body parser that runs *before* the verifier changes the bytes, so every signature fails: green locally, every webhook `400`s in production. Skip the verifier and a forged "upgrade me to pro" event gets through. Verification has to come first, on the raw bytes.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <FourStepBoundaryPipeline active={1} />
+    <Fragment slot="caption">
+      **Claim in `processed_events`.** Stripe delivers at-least-once: the same event arrives one *or more* times. Without a claim, a redelivery runs the side effect again and the customer is provisioned twice.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <FourStepBoundaryPipeline active={2} />
+    <Fragment slot="caption">
+      **Dispatch the side effect.** If the claim insert and the side effect do not share one transaction, a crash mid-dispatch leaves a claimed-but-not-applied event: permanent partial state no retry can repair, because the claim already says "already handled".
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <FourStepBoundaryPipeline active={3} />
+    <Fragment slot="caption">
+      **Respond.** The status code tells Stripe what to do: `2xx` stop retrying, `4xx` terminal never retry, `5xx` retry later. The wrong one either drops a real event or keeps redelivering a handled one.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+Each failure mode becomes a path in the test later, and each path proves the bug *cannot happen*.
+
+<VideoCallout videoId="s7tFBA-1MyA" videoTitle="Essential tips for handling Stripe webhook events">
+  Stripe Developers' 6-minute walkthrough of the contract this lesson tests: signature verification, fast 2xx replies, and why Stripe retries on anything else.
+</VideoCallout>
+
+One distinction before any code. The last two lessons mocked *outbound* HTTP, your code calling Stripe, with <Term definition="Mock Service Worker — a library that intercepts outbound HTTP requests at the network layer and answers them with handlers you define, so your code calls a real-looking endpoint without a real server. Used in the previous two lessons to stand in for Stripe's API.">MSW</Term>. This lesson is the mirror image: *inbound*. There is no MSW here, the "network" is a `Request` object your test builds by hand and passes straight to the function.
+
+:::note
+One seam does cross back outbound: when a `checkout.session.completed` arrives, the dispatch fetches the full subscription with `stripe.subscriptions.retrieve(...)`, which combines this lesson's inbound shape with MSW. Here we test events whose dispatch never reaches back out, and leave the combined path to the Stripe money-path project later in this part.
+:::
+
+## Signing a payload the way Stripe does
+
+To test the valid path, the test must hand the receiver a payload `constructEvent` will *accept*: a `Stripe-Signature` header carrying the `t=<timestamp>,v1=<hmac>` string, computed against the same `STRIPE_WEBHOOK_SECRET` the handler verifies with. Get it wrong and the first step rejects everything, so the rest of the test never runs.
+
+You hand-rolled this HMAC in [Verify before parse](/063-webhook-ingestion-and-idempotency/1-verify-before-parse/), so the temptation is to reuse that recipe to sign your fixtures. Don't. That code existed to *explain* the scheme, not to sign with it, and the moment your copy drifts from Stripe's, in header format, tolerance window, or encoding, you ship a <Term definition="A green test over broken code. Here: a signing helper that drifts from Stripe's real scheme, so the test passes against bytes the real Stripe would never produce, and the receiver's verifier goes untested.">false negative</Term> that passes against bytes Stripe would never send.
+
+Stripe ships <Term definition="A Stripe SDK helper that builds a valid Stripe-Signature header for a given payload and secret. It is the exact inverse of constructEvent — what constructEvent verifies, this produces — so tests can sign fixtures without reimplementing the HMAC.">`stripe.webhooks.generateTestHeaderString`</Term> for exactly this: give it a payload and a secret, get back a header `constructEvent` verifies, because it is the precise inverse of `constructEvent`. Same instinct as the last few lessons: drive a contract you don't own through its *published* seam, never by re-deriving its internals.
+
+The two halves are a matched pair, keyed by one secret:
+
+<div data-mark-color="orange">
+
+```ts "secret"
+const header = stripe.webhooks.generateTestHeaderString({ payload, secret });
+const event = stripe.webhooks.constructEvent(payload, header, secret);
+```
+
+</div>
+
+So the test setup reads `STRIPE_WEBHOOK_SECRET` from `.env.test` and fails fast if it is missing, rather than let a `whsec_undefined` silently 400 every test and send you debugging the wrong thing.
+
+:::caution
+A real Stripe project has three non-interchangeable `whsec_...` strings: the one `stripe listen` prints locally, the one the dashboard shows for a deployed endpoint, and the one in `.env.test`. Both calls must read the `.env.test` value. Sign with one and verify with another and every test 400s, indistinguishable from a genuinely broken signature check, the number-one "all webhooks 400" production bug.
+:::
+
+### The payload comes from a factory over a captured event
+
+A Stripe event is a large, nested JSON object you don't want to hand-write, so capture a real one *once* (from `stripe trigger` or the dashboard's event log), store it at `src/test/fixtures/stripe/customer-subscription-updated.json`, and treat that file as the spine.
+
+Then layer a factory over it. `buildStripeEvent({ type, data })` takes the captured event as its base and overrides only the fields that vary per test, the event `type` and the inner object, so each test states just what makes it different. The same factories-over-fixtures discipline you have used all chapter: one realistic base parameterized at the seam that matters.
+
+The factory mints a fresh `event.id` on every call. The replay tests deliberately re-send the *same* id to prove the dedupe works, so a shared id would collide two unrelated tests on the same `processed_events` row and pass the dedupe assertions for the wrong reason.
+
+Last, the timestamp. `generateTestHeaderString` takes a `timestamp` in seconds, defaulting to now; the expired-signature path passes a timestamp ten minutes in the past, outside Stripe's tolerance window. For that to be reproducible "now" must stand still, which is what the frozen clock from [Pinning time, IDs, and randomness](/087-unit-tests-for-lib/3-pinning-time-ids-and-randomness/) gives you: "ten minutes ago" becomes a fixed number rather than a moving target.
+
+Here is the sign-and-build helper, the one piece of new wiring this lesson asks you to write.
+
+<AnnotatedCode lang="ts" maxLines={14} code={`
+const buildSignedRequest = (
+  event: Stripe.Event,
+  options: { timestamp?: number; secret?: string } = {},
+): Request => {
+  const secret = options.secret ?? env.STRIPE_WEBHOOK_SECRET;
+  const payload = JSON.stringify(event);
+  const header = stripe.webhooks.generateTestHeaderString({
+    payload,
+    secret,
+    timestamp: options.timestamp,
+  });
+
+  return new Request('https://app.test/api/webhooks/stripe', {
+    method: 'POST',
+    headers: { 'stripe-signature': header },
+    body: payload,
+  });
+};
+`}>
+  <AnnotatedStep meta={`{5} "secret"`} color="orange">
+    Defaults to the `.env.test` value the handler verifies against; the forged-signature test passes a *wrong* one here to make verification fail. A deliberate, visible input keeps the "all webhooks 400" bug out of the suite.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{6} "JSON.stringify(event)" "payload"`} color="violet">
+    Serialize the event to a string once. These exact bytes are both what gets signed and what gets sent.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{7-11}" color="orange">
+    Produce the `Stripe-Signature` header from that payload and secret. The `timestamp` defaults to now; the expired-path test overrides it. This call is the exact inverse of the `constructEvent` call inside the handler.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{13-17} "body: payload"`} color="green">
+    Build the inbound `Request`. The body is the identical string we signed; signing `event` but sending a re-stringified copy is the classic webhook bug from the sending side.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+This is the only signing code in the suite. Every path test now calls `buildStripeEvent(...)` to shape a payload, `buildSignedRequest(...)` to sign and wrap it, then drives the handler. That leaves one structural problem to solve.
+
+## Reaching the handler's transaction through AsyncLocalStorage
+
+Every integration test in this chapter isolates the same way: open a transaction, run the production code against that `tx`, and roll back. So far the code under test took the transaction because you *passed* it, as in `createInvoice(input, { db: tx })`, the handle explicit and visible at the call site.
+
+A route handler cannot accept that handle. Next.js fixes its signature at `POST(request: Request)`, with no parameter to thread `tx` through. The handler reaches for the database on its own, so if the test cannot substitute `tx` there, its writes commit for real and rollback-per-test fails at the one seam that writes money rows.
+
+This is what the AsyncLocalStorage escape hatch from [Transaction rollback against real Postgres](/088-integration-tests-across-boundaries/1-rollback-against-real-postgres/) was built for. The handler never imports `db`; it calls `getDb()`:
+
+<div data-mark-color="blue">
+
+```ts title="src/db/client.ts" "?? defaultDb"
+export const getDb = (): DbOrTx => testTxContext.getStore() ?? defaultDb;
+```
+
+</div>
+
+`testTxContext` is the `AsyncLocalStorage<DbOrTx>` instance from `src/db/test-tx-context.ts`. In production the store is empty, so `getDb()` returns the real singleton and nothing about the handler changes. A test runs the handler *inside* the store instead:
+
+<div data-mark-color="green">
+
+```ts "testTxContext.run(tx, () => POST(request))"
+const response = await testTxContext.run(tx, () => POST(request));
+```
+
+</div>
+
+`testTxContext.run(tx, fn)` enters `fn` with the store set to `tx`. Now every `getDb()` that fires inside `POST` — in `claimEvent`, in `dispatch`, in the entitlement write — returns `tx` instead of the singleton: one context entry, threaded implicitly through the whole call tree, rolled back by `withRollback` like every other test. The handler's source never changes; the test reaches in through a seam production already exposes, not by mocking the database.
+
+Coming from explicit passing, the question that trips people up is "where did `tx` go?" Nothing in the call tree mentions it, yet every query uses it. Scrub between the two states below: the handler code is identical, only the store differs.
+
+<DiagramSequence>
+  <DiagramStep>
+    <GetDbFork state="prod" />
+    <Fragment slot="caption">
+      **Production.** No test wraps the handler, so `getStore()` returns `undefined` and the `?? defaultDb` fork falls to the real singleton.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <GetDbFork state="test" />
+    <Fragment slot="caption">
+      **Test.** `testTxContext.run(tx, () => POST(request))` wraps the handler, so the *identical* `getStore()` call now returns `tx` and the fork resolves to it.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+<Term definition="A Node.js API that carries a value implicitly through an async call tree without passing it as a parameter — a per-request value scoped to a single logical execution rather than the whole process.">AsyncLocalStorage</Term> is what makes this work, and it is the one place to reach for it. Explicit handles win wherever the signature is yours to control: cheaper to read, with the dependency visible at the call site. AsyncLocalStorage trades that visibility for an implicit flow, and the trade only pays off when the framework fixes the signature and leaves you no parameter. A route handler is exactly that case. It is an <Term definition="A deliberately narrow exception to a default rule, reached for only where the default genuinely cannot apply — not a second equally-valid option.">escape hatch</Term>, not a second default: you will not reach for it in the next lesson's Server Action tests, where the explicit handle is still right.
+
+The alternative it replaces shows why it is the honest choice, not a convenience.
+
+<CodeVariants>
+  <CodeVariant label="Mock the db module">
+    <div data-mark-color="red">
+
+    ```ts {1}
+    vi.mock('@/db/client', () => ({ db: fakeDb }));
+
+    const response = await POST(request);
+    ```
+
+    </div>
+    **This mocks the database the whole chapter exists to avoid mocking.** A fake `db` replaces real Postgres, so the test no longer exercises the unique constraint on `processed_events`, the SQL the claim emits, or column nullability — the exact regressions this chapter catches. It proves the handler calls *something*, not that it talks correctly to a real database.
+  </CodeVariant>
+
+  <CodeVariant label="Run inside the tx context">
+    <div data-mark-color="green">
+
+    ```ts "testTxContext.run"
+    const response = await testTxContext.run(tx, () => POST(request));
+    ```
+
+    </div>
+    **The honest reach.** The real handler runs against real per-worker Postgres, every write rides the test's `tx`, and `withRollback` undoes it — the unique constraint fires, the real SQL executes, nothing commits, all through the seam `getDb()` already exposes with production code untouched.
+  </CodeVariant>
+</CodeVariants>
+
+With signing solved and the transaction reachable, everything left is the Arrange-Act-Assert shape you already know, applied once per path.
+
+## The six paths a webhook test must cover
+
+A webhook receiver is a small matrix of behaviors, and "it works" means every cell is right. Each path is defined by the production bug it catches and the two assertions that catch it.
+
+Those two assertions are independent axes. One is the HTTP `Response` Stripe sees: the status code and JSON body. The other is the persisted truth, the rows that did or did not land in the database, read back inside `tx`. A 200 does not prove a write happened, and a write does not prove the right status came back, so most paths assert on both.
+
+Every path shares one skeleton:
+
+```ts title="src/app/api/webhooks/stripe/route.int.test.ts"
+describe('POST /api/webhooks/stripe', () => {
+  it('<outcome> when <condition>', withRollback(async ({ tx }) => {
+    // Arrange: build a payload, sign it, wrap it in a Request
+    const event = buildStripeEvent({ type, data });
+    const request = buildSignedRequest(event);
+
+    // Act: run the handler inside the tx context
+    const response = await testTxContext.run(tx, () => POST(request));
+
+    // Assert: the Response Stripe sees, and the rows in tx
+    expect(response.status).toBe(/* ... */);
+    const rows = await tx.select().from(processedEvents);
+    // ...
+  }));
+});
+```
+
+One `describe` for the receiver, one `it` per path, AAA in each. The first path is written out in full; the other five are deltas that change one line in Arrange and the assertions and leave everything else identical.
+
+### The valid event commits exactly one side effect
+
+The bug this catches: a correctly signed, genuine event fails to verify, claim, dispatch, or persist, and the receiver silently drops real money.
+
+The worked path runs on `customer.subscription.updated`, whose dispatch is pure inbound work: it projects the subscription carried *in the payload* straight onto the org's entitlement row, with no call back out to Stripe. (`checkout.session.completed` would fetch the subscription outbound, the path the project chapter composes with MSW.) Because the dispatch updates an existing entitlement row, Arrange first builds one for the org, using a factory inside `tx`.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+it(
+  'records the event and updates the entitlement when the signature is valid',
+  withRollback(async ({ tx }) => {
+    const org = await seedEntitledOrg(tx, { plan: 'free' });
+    const event = buildStripeEvent({
+      type: 'customer.subscription.updated',
+      data: { object: buildSubscription({ orgId: org.id, plan: 'pro' }) },
+    });
+    const request = buildSignedRequest(event);
+
+    const response = await testTxContext.run(tx, () => POST(request));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      received: true,
+      duplicate: false,
+    });
+
+    const claimed = await tx
+      .select()
+      .from(processedEvents)
+      .where(eq(processedEvents.eventId, event.id));
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]).toMatchObject({
+      provider: 'stripe',
+      eventType: 'customer.subscription.updated',
+    });
+
+    const [entitlement] = await tx
+      .select()
+      .from(planEntitlements)
+      .where(eq(planEntitlements.organizationId, org.id));
+    expect(entitlement?.plan).toBe('pro');
+  }),
+);
+`}>
+  <AnnotatedStep meta="{4}" color="blue">
+    The precondition: an org with a free entitlement row for the event to update. Built inside `tx` via a factory, so it rolls back with everything else.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{5-8}" color="blue">
+    The payload. The factory starts from a captured real event and overrides only the type and the inner subscription object, here a `pro` subscription owned by this org.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9}" color="blue">
+    Sign that exact payload and wrap it in the inbound `Request`. The earlier helper keeps signature and body consistent by construction.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{11} "testTxContext.run"`} color="green">
+    The single Act line runs the real handler inside the tx context, so every write rides `tx`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13-17}" color="orange">
+    First axis, what Stripe sees: status 200, body `{ received: true, duplicate: false }`. The HTTP contract says nothing yet about what persisted.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{19-27} "event.id"`} color="violet">
+    Second axis: exactly one claim row, matched by `event.id`, the id the test controls. Never match by the auto-increment `id`, which advances and does not roll back. Assert on shape, not on the sequence.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{29-33}" color="violet">
+    The dispatched side effect landed: the org's plan is now `pro`. A 200 alone never proves this; the write is a separate axis with its own assertion.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Every path below reuses this skeleton, changing one line in Arrange and the assertions and nothing else.
+
+### A forged signature is refused and writes nothing
+
+The bug this catches: an attacker or misconfigured sender posts a body Stripe never signed, and the receiver runs business logic on it anyway. A forged "upgrade me to pro" event must be rejected before any handler sees it.
+
+The delta is one line: sign with the *wrong* secret, so verification fails.
+
+<div data-mark-color="red">
+
+```ts "{ secret: 'whsec_wrong' }"
+// Delta on the skeleton: sign with the wrong secret
+const request = buildSignedRequest(event, { secret: 'whsec_wrong' });
+
+const response = await testTxContext.run(tx, () => POST(request));
+
+expect(response.status).toBe(400);
+await expect(response.json()).resolves.toMatchObject({
+  title: 'invalid_signature',
+});
+
+const claimed = await tx.select().from(processedEvents);
+expect(claimed).toHaveLength(0);
+```
+
+</div>
+
+The 400 with `title: 'invalid_signature'` is the same answer a missing header gets, so Stripe treats the delivery as terminal and never retries the forgery. But the status is only half the proof: a 400 does not prove the side effect was skipped, only the empty table does. Zero rows in `processed_events` is verify-before-everything made visible, and it closes the bug a status-only test lets through, "rejected with 400 but wrote anyway."
+
+### A stale but authentic event is rejected on the tolerance window
+
+The bug this catches: an attacker replays a request captured from a log. The signature is *genuine*, since Stripe really did sign it once, so the verifier alone cannot tell it is an attack. Only freshness can.
+
+Stripe stamps every signature with the time it was produced and refuses any whose timestamp is more than 300 seconds off. The delta signs with a timestamp ten minutes in the past, under the frozen clock:
+
+<div data-mark-color="orange">
+
+```ts {1-2}
+// Delta on the skeleton: sign at a timestamp outside the tolerance window
+const tenMinutesAgo = Math.floor(Date.now() / 1000) - 600;
+const request = buildSignedRequest(event, { timestamp: tenMinutesAgo });
+
+const response = await testTxContext.run(tx, () => POST(request));
+
+expect(response.status).toBe(400);
+
+const claimed = await tx.select().from(processedEvents);
+expect(claimed).toHaveLength(0);
+```
+
+</div>
+
+`constructEvent` throws on the stale timestamp, the handler answers 400, and nothing is written. A mirror assertion belongs in the same suite: a timestamp *within* tolerance returns 200, pinning the boundary to the 300-second window rather than a vague "old is bad."
+
+This path is also why the clock seam matters. `Date.now()` here is the frozen value from the unit-test chapter, so "ten minutes ago" is a fixed, exact number. Against a live clock the subtraction races real time: the test passes at 12:00:00 and flakes when it runs as the tolerance boundary ticks over, one of the flake patterns the next lesson catalogs. The fix is the seam you already have. The <Term definition="Stripe's 300-second freshness bound on a signature's timestamp. A signature older than the window is rejected as a replay, even though the HMAC itself is genuine.">tolerance window</Term> is testable only because time stands still.
+
+### A replayed event is deduped to a single side effect
+
+The bug this catches: Stripe's at-least-once delivery sends the same `event.id` twice. That is the delivery contract, not a malfunction, and if the side effect runs on both deliveries the customer is double-provisioned or double-charged.
+
+This path is shaped differently: it acts *twice* with the *same* signed request and counts one side effect. The Arrange matches the valid path, a seeded entitlement row and a signed `customer.subscription.updated` event, so the delta lives entirely in the Act and Assert.
+
+<div data-mark-color="green">
+
+```ts {8}
+const request = buildSignedRequest(event);
+
+const first = await testTxContext.run(tx, () => POST(request.clone()));
+expect(first.status).toBe(200);
+await expect(first.json()).resolves.toMatchObject({ duplicate: false });
+
+// Same signed bytes, delivered again — Stripe's at-least-once contract
+const second = await testTxContext.run(tx, () => POST(request.clone()));
+expect(second.status).toBe(200);
+await expect(second.json()).resolves.toMatchObject({ duplicate: true });
+
+const claimed = await tx
+  .select()
+  .from(processedEvents)
+  .where(eq(processedEvents.eventId, event.id));
+expect(claimed).toHaveLength(1);
+```
+
+</div>
+
+A `Request` body is a single-use stream, and the handler reads it with `request.text()`, so each delivery needs its own readable copy via `request.clone()`.
+
+The first delivery claims the event and dispatches: 200, `duplicate: false`. The second finds the claim taken, short-circuits before dispatch, and returns 200 with `duplicate: true`. Still one row, still one side effect.
+
+Two choices here are deliberate. A duplicate returns **200**, not 4xx or 5xx: a 4xx tells Stripe to stop retrying a real event, a 5xx tells it to retry one you have already applied, and a handled duplicate is a success. The single row holds because the claim insert and the dispatch share one `tx` per delivery, which makes the receiver <Term definition="An operation that yields the same result whether it runs once or many times. The processed_events ledger makes the receiver idempotent: redelivering an event changes nothing.">idempotent</Term>. This is the path that proves the `processed_events` ledger earns its keep.
+
+<Sequence instructions="Order the steps of an idempotency replay test for the receiver — the one path that delivers the same signed bytes twice and proves the side effect runs once.">
+  <Step>Sign one payload into a single `Request`</Step>
+  <Step>Deliver it the first time; assert `200` with `duplicate: false`</Step>
+  <Step>Assert exactly one `processed_events` row exists</Step>
+  <Step>Deliver the *same* signed payload a second time</Step>
+  <Step>Assert `200` with `duplicate: true`</Step>
+  <Step>Assert there is *still* exactly one `processed_events` row</Step>
+</Sequence>
+
+The *last* step proves the dedupe, not the second 200. The replay's 200 only confirms a clean acknowledgement; the unchanged single row proves the side effect did not run again.
+
+### A malformed payload is handled without half-committing
+
+The bug this catches: a body correctly signed but structurally wrong for dispatch, such as a subscription event missing its `data.object`. Stripe will not retry a valid signature, so the receiver must neither 500 in a loop nor leave a half-written transaction behind.
+
+This differs from the forged path, and the difference is the point. There the *signature* was bad and the body never mattered. Here the signature is **valid**, verification passes, and the *content* fails: a different seam, a different defense.
+
+The delta builds a payload that signs fine but breaks dispatch:
+
+<div data-mark-color="orange">
+
+```ts {4}
+const event = buildStripeEvent({
+  type: 'customer.subscription.updated',
+  // Signs fine; structurally broken for dispatch
+  data: { object: undefined },
+});
+const request = buildSignedRequest(event);
+
+const response = await testTxContext.run(tx, () => POST(request));
+
+const claimed = await tx.select().from(processedEvents);
+expect(claimed).toHaveLength(0);
+```
+
+</div>
+
+Whatever status the handler returns, *nothing partial persisted*. The dispatch failed inside the transaction, so it rolled back, and the claim inserted moments earlier rolled back with it because claim and dispatch share one `tx`. That co-rollback is what this path proves: a failed side effect must not strand a claimed-but-unapplied event in the ledger.
+
+:::note
+Assert against what the *shipped* receiver does with a signed-but-malformed body. Read its dispatch and projection code instead of inventing a status. A dispatch that lets an unrecognized shape fall through its `default` arm answers 200 and writes nothing; one that throws on a missing `data.object` surfaces a 500 and rolls back. Either is defensible. The test's job is to lock down the one the code exhibits, because the handler is the contract.
+:::
+
+### An unhandled event type is acknowledged without side effects
+
+The bug this catches: your Stripe dashboard is subscribed to more event types than your app acts on, so events you never handle still arrive. An unhandled type must be *acknowledged* so Stripe stops retrying it, while the receiver does nothing.
+
+The delta sends a type the dispatch does not handle:
+
+<div data-mark-color="blue">
+
+```ts "'invoice.payment_succeeded'"
+const event = buildStripeEvent({
+  // Real, well-formed event — just not one the app acts on
+  type: 'invoice.payment_succeeded',
+  data: { object: buildInvoiceEvent() },
+});
+const request = buildSignedRequest(event);
+
+const response = await testTxContext.run(tx, () => POST(request));
+
+expect(response.status).toBe(200);
+
+const entitlements = await tx.select().from(planEntitlements);
+expect(entitlements).toHaveLength(0);
+```
+
+</div>
+
+The empty entitlement table proves the side effect was skipped. The `processed_events` claim is a separate question: this receiver claims *before* it dispatches, so an unhandled type is still recorded. Confirm that against the shipped handler and assert what is actually true.
+
+The 200 is a design choice: it is the message that stops Stripe's retries for an event the app legitimately ignores. That contrast with the 400 paths is the point of the matrix. A forged or stale event is malformed: 400, terminal, "never send this again." An unhandled-but-valid event is fine, just not ours: 200, acknowledged, "received, no action." Same family of input, opposite correct answer.
+
+### Status and database state are independent axes
+
+The status Stripe sees and the database state do **not** move together: a 200 can mean "wrote" or "deliberately wrote nothing," and "wrote nothing" can pair with a 200 or a 400. Conflate the two axes and you ship a receiver that returns the right status while doing the wrong thing.
+
+<Buckets twoCol instructions="Sort each delivery by the two independent axes: the Response status Stripe sees, and whether anything persisted to the database, read back inside tx.">
+  <Bucket name="write" label="200 + write" description="Acknowledged, and a side effect landed" />
+  <Bucket name="ack" label="200 + no write" description="Acknowledged, but the database is untouched" />
+  <Bucket name="reject" label="400 + no write" description="Refused at the gate, nothing persisted" />
+
+  <Item bucket="write">Valid `customer.subscription.updated`</Item>
+  <Item bucket="ack">Duplicate `event.id` — the second delivery of the same signed bytes</Item>
+  <Item bucket="ack">Unhandled type `invoice.payment_succeeded`, validly signed</Item>
+  <Item bucket="reject">Forged signature, signed with the wrong secret</Item>
+  <Item bucket="reject">Authentic signature carrying a 10-minute-old timestamp</Item>
+</Buckets>
+
+The malformed-payload path is deliberately absent: its `(status, persistence)` outcome is handler-defined, so it slots into whichever cell the shipped receiver implements. It is the one cell you cannot fill from the matrix alone, only by reading the code.
+
+## The same shape covers every signed webhook
+
+What you built is not Stripe-specific. The matrix you wrote — sign a captured payload with the provider's own test helper, drive the exported handler with the resulting `Request`, and assert on both the `Response` and the database across the valid, forged, stale, replay, malformed, and unhandled paths — holds for any signed webhook. Only the signing primitive and header names change.
+
+The Resend webhooks from [Resend bounces and complaints](/063-webhook-ingestion-and-idempotency/5-resend-bounces-and-complaints/) make the point. Resend signs through <Term definition="The webhook-delivery service Resend uses, with its own signature scheme and signing SDK.">Svix</Term>, so its headers (`svix-id`, `svix-timestamp`, `svix-signature`) and test-signing helper differ. The test does not: swap `generateTestHeaderString` for Svix's signer and the three header names, and the same six-path matrix, AsyncLocalStorage reach, and `processed_events` dedupe assertion transfer untouched.
+
+```ts
+// Stripe: HMAC, one Stripe-Signature header
+stripe.webhooks.generateTestHeaderString({ payload, secret });
+
+// Resend (Svix): different scheme, three svix-* headers
+new Webhook(secret).sign(messageId, timestamp, payload);
+```
+
+You did not learn to test the Stripe receiver; you learned to test a *signed inbound boundary*. For the next provider, the only thing to look up is which crypto helper produces the header.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Stripe — Webhook signatures"
+    href="https://docs.stripe.com/webhooks"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="The constructEvent contract this lesson drives, plus the raw-body and tolerance-window rules its tests pin."
+  />
+  <ExternalResource
+    title="Node.js — AsyncLocalStorage"
+    href="https://nodejs.org/api/async_context.html"
+    icon="simple-icons:nodedotjs"
+    iconColor="#5FA04E"
+    description="Official reference for run() and getStore() — the seam the test reaches the handler's transaction through."
+  />
+  <ExternalResource
+    title="Stripe — Test webhook handlers"
+    href="https://docs.stripe.com/webhooks/test"
+    icon="simple-icons:stripe"
+    iconColor="#635BFF"
+    description="Capturing real events with stripe trigger and stripe listen — where the fixtures this lesson signs come from."
+  />
+  <ExternalResource
+    title="Svix — Verifying payloads"
+    href="https://docs.svix.com/receiving/verifying-payloads/how"
+    icon="lucide:webhook"
+    iconColor="#FF3300"
+    description="The svix-* header scheme Resend uses — the same six-path matrix, a different signing primitive."
+  />
+</CardGrid>

@@ -1,0 +1,559 @@
+---
+title: One database per worker
+tagline: Isolate Vitest's integration tests by routing one disposable Postgres per worker with VITEST_POOL_ID and globalSetup, on Docker or Neon.
+chapter-id: 88
+course-progress: 0.8256
+sidebar:
+  order: 2
+  label: One DB per worker
+rewrites: 2
+---
+
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Sequence from '../../../components/exercises/sequence/Sequence.astro';
+import Step from '../../../components/exercises/sequence/Step.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson you built `withRollback`, and every test it wraps calls `db.transaction(...)`. What real Postgres does `db` connect to? Not production, where a stray write could drop the database. Not one shared test database either: Vitest runs your test files in parallel, each in its own worker, so pointing them all at one Postgres makes them collide. One worker migrates while another queries half-built tables; a `SELECT ... FOR UPDATE` lock in one file blocks a query in another. You get a suite that passes alone and fails when the order shifts, with nothing in the diff to explain it.
+
+The fix is one isolated database per worker, routed by `VITEST_POOL_ID`: create the databases up front, migrate each once, and let each worker own its database for the whole run. Local uses Docker Compose; CI keeps the same shape and only swaps what provides the database.
+
+## Routing each worker to its own database
+
+Vitest's `integration` project runs each `*.int.test.ts` file in a pool of workers, OS threads by default for a Node project. A worker is long-lived: it boots once and runs many test files in sequence. Each worker carries an env var, <Term definition={"Vitest env var holding the current worker's index (1..N, never more than maxWorkers).\nStable per worker for the whole run — the key the per-worker-database scheme routes on."}>`VITEST_POOL_ID`</Term>, an integer fixed for the whole run: every test on worker 2 reads `VITEST_POOL_ID=2`, start to finish.
+
+That fixed integer is the routing key. You create databases `test_w1` through `test_wN` once, then have each worker connect to `test_w{VITEST_POOL_ID}` and own it for the run. Worker 1 talks only to `test_w1`, worker 3 only to `test_w3`. They share no connection, sequence, or lock, so they can't interfere.
+
+<Figure>
+```d2
+direction: right
+
+**.style.font-size: 26
+
+classes: {
+  worker: {
+    style: {
+      fill: "#dbeafe"
+      stroke: "#2563eb"
+      font-color: "#1e3a8a"
+      border-radius: 12
+    }
+  }
+  db: {
+    style: {
+      fill: "#dcfce7"
+      stroke: "#16a34a"
+      font-color: "#14532d"
+    }
+  }
+  setup: {
+    style: {
+      fill: "#ede9fe"
+      stroke: "#7c3aed"
+      font-color: "#4c1d95"
+      border-radius: 12
+    }
+  }
+}
+
+globalSetup: "globalSetup\nruns once, main process" { class: setup }
+
+workers: "Vitest workers" {
+  style: { fill: transparent; stroke: transparent; font-color: "#64748b" }
+
+  w1: "Worker 1\nVITEST_POOL_ID=1\nruns files 1..k" { class: worker }
+  w2: "Worker 2\nVITEST_POOL_ID=2\nruns files 1..k" { class: worker }
+  w3: "Worker 3\nVITEST_POOL_ID=3\nruns files 1..k" { class: worker }
+}
+
+dbs: "Per-worker databases" {
+  style: { fill: transparent; stroke: transparent; font-color: "#64748b" }
+
+  d1: "test_w1" { class: db; shape: cylinder }
+  d2: "test_w2" { class: db; shape: cylinder }
+  d3: "test_w3" { class: db; shape: cylinder }
+}
+
+workers.w1 -> dbs.d1: "connects to" { style.stroke: "#2563eb"; style.stroke-width: 2 }
+workers.w2 -> dbs.d2: "connects to" { style.stroke: "#2563eb"; style.stroke-width: 2 }
+workers.w3 -> dbs.d3: "connects to" { style.stroke: "#2563eb"; style.stroke-width: 2 }
+
+globalSetup -> dbs.d1: "creates" { style.stroke: "#7c3aed"; style.stroke-dash: 4 }
+globalSetup -> dbs.d2: "creates" { style.stroke: "#7c3aed"; style.stroke-dash: 4 }
+globalSetup -> dbs.d3: "creates" { style.stroke: "#7c3aed"; style.stroke-dash: 4 }
+```
+  <Fragment slot="caption">
+    `globalSetup` creates one database per worker up front; `VITEST_POOL_ID` routes each worker to its own.
+  </Fragment>
+</Figure>
+
+Why per-worker, rather than a finer granularity?
+
+- **A database per test** means thousands of heavyweight `CREATE DATABASE` and `DROP DATABASE` cycles per run, more time spent provisioning than testing. Unusable.
+- **A database per file** drops that to hundreds, but each one runs your full migration stack. Hundreds of migration runs is still an order of magnitude too slow.
+- **A database per worker** lands at exactly `maxWorkers` migration runs, four to eight on a typical machine. Each worker migrates its database once, then reuses it across every file it runs.
+
+This stacks on last lesson's per-test rollback: the per-worker database isolates files from each other, while `withRollback` isolates tests within one worker's database.
+
+## `globalSetup` vs `setupFiles`: once per run vs once per worker
+
+The two scopes run in different places at different times, and each task belongs in exactly one of them.
+
+- **`globalSetup`** runs **once**, in Vitest's main process, before the suite starts and again after it ends. It runs *outside* every worker, so it has no test globals and no `VITEST_POOL_ID`. This is the scope for run-level work: bring up Docker, connect to Postgres as a superuser, and `CREATE DATABASE test_w1 .. test_wN`. On teardown, optionally drop them.
+- **`setupFiles`** runs **once per worker**, *inside* the worker, before that worker's test files. The worker is live here, so `VITEST_POOL_ID` is set. This is the scope for per-worker work: connect to *this* worker's database, run migrations, insert the baseline seed, and register the MSW server and the `withRollback` machinery.
+
+Get the scope wrong and it breaks: creation in `setupFiles` makes N workers race to create the same databases, and migrations in `globalSetup` have no `VITEST_POOL_ID` to tell them which database to target. Sort each task by *when in the run* it happens exactly once:
+
+| Task | `globalSetup` (once for the run) | `setupFiles` (once per worker) |
+| --- | :---: | :---: |
+| Bring up the Docker Postgres | ✅ | |
+| `CREATE DATABASE test_w1 .. test_wN` | ✅ | |
+| Connect to *this* worker's database | | ✅ |
+| Run `migrate()` against the schema | | ✅ |
+| Insert the baseline seed org and user | | ✅ |
+| `server.listen()` for MSW | | ✅ |
+| Drop the test databases | ✅ | |
+
+You already have a root `vitest.config.ts` with an `integration` project from the runner lesson; add two keys to it, one for each scope.
+
+<div data-mark-color="blue">
+
+```ts title="vitest.config.ts" {7,8}
+// inside test.projects of vitest.config.ts
+{
+  test: {
+    name: 'integration',
+    environment: 'node',
+    include: ['src/**/*.int.test.ts'],
+    globalSetup: ['./src/test/db/global-setup.ts'],
+    setupFiles: ['./src/test/db/setup.ts'],
+    maxWorkers: 4,
+  },
+},
+```
+
+</div>
+
+`maxWorkers` is a **flat key on the `test` block**. Older guides put the worker count at `poolOptions.threads.maxThreads`, but Vitest 4 removed `poolOptions` and flattened it to `maxWorkers` (env override: `VITEST_MAX_WORKERS`). `VITEST_POOL_ID` is unchanged: the per-worker index, still always `≤ maxWorkers`.
+
+:::note
+If a guide tells you to write `poolOptions: { threads: { maxThreads: 4 } }`, it predates Vitest 4. The current API is a flat `maxWorkers: 4`.
+:::
+
+<CodeVariants maxLines={18}>
+  <CodeVariant label="global-setup.ts" icon="seti:typescript">
+    <div data-mark-color="green">
+
+    ```ts title="src/test/db/global-setup.ts" {8-11}
+    import { Client } from 'pg';
+
+    const WORKER_COUNT = 4;
+
+    export default async function setup() {
+      const admin = new Client({ connectionString: process.env.DATABASE_URL });
+      await admin.connect();
+      for (let id = 1; id <= WORKER_COUNT; id++) {
+        await admin.query(`DROP DATABASE IF EXISTS test_w${id}`);
+        await admin.query(`CREATE DATABASE test_w${id}`);
+      }
+      await admin.end();
+
+      return async () => {
+        // teardown after the whole suite
+      };
+    }
+    ```
+
+    </div>
+    **Once, in the main process, before any worker.** It connects as superuser, recreates each `test_w{id}` so the run starts clean, and returns a teardown that drops them.
+  </CodeVariant>
+
+  <CodeVariant label="setup.ts" icon="seti:typescript">
+    <div data-mark-color="orange">
+
+    ```ts title="src/test/db/setup.ts" "VITEST_POOL_ID"
+    import { beforeAll } from 'vitest';
+    import { migrate } from 'drizzle-orm/node-postgres/migrator';
+    import { getWorkerDb } from './worker-db';
+
+    beforeAll(async () => {
+      const workerId = process.env.VITEST_POOL_ID;
+      const db = getWorkerDb(workerId);
+      await migrate(db, { migrationsFolder: 'drizzle' });
+      await seedBaseline(db);
+    });
+    ```
+
+    </div>
+    **Once per worker, inside the worker.** It reads `VITEST_POOL_ID`, migrates that worker's database, and seeds the baseline. The next two sections cover the lazy-open and once-per-worker details.
+  </CodeVariant>
+</CodeVariants>
+
+<Buckets twoCol instructions="Sort each setup task into the scope it belongs to. Ask: does it happen once for the whole run, or once inside each worker?">
+  <Bucket name="global" label="globalSetup" description="Once, in the main process" />
+  <Bucket name="worker" label="setupFiles" description="Once per worker" />
+
+  <Item bucket="global">Bring up the Docker Postgres</Item>
+  <Item bucket="global">`CREATE DATABASE test_w1..N`</Item>
+  <Item bucket="global">Drop the test databases at the end</Item>
+  <Item bucket="worker">Connect to this worker's database</Item>
+  <Item bucket="worker">Run `migrate()` against the schema</Item>
+  <Item bucket="worker">Insert the seed baseline org and user</Item>
+  <Item bucket="worker">`server.listen()` for MSW</Item>
+</Buckets>
+
+## Migrating each worker's database
+
+Import `migrate` from `drizzle-orm/node-postgres/migrator` and run it against the worker's connection, pointed at the same `drizzle/` folder production migrates from:
+
+```ts
+await migrate(db, { migrationsFolder: 'drizzle' });
+```
+
+There's no separate test schema: the test database *is* the production schema, built from the exact migration files that build production. When a migration adds a `NOT NULL` column or a unique constraint, your tests run against it automatically, which catches the schema-drift class of bug a mocked database never can.
+
+Two details make migration reliable. **Migrate once per worker, not once per file:** a worker runs many files, and re-migrating before each returns the per-file cost this topology avoids, so put the migrate in a `beforeAll` that runs once per worker. **Open the connection lazily, not at import time:** a top-level `const db = drizzle(...)` opens the pool at module-evaluation time, which can fire before `globalSetup` has run `CREATE DATABASE`, so you connect to a database that doesn't exist yet and crash. Open the pool inside `beforeAll` or behind a memoized getter, which runs late enough that the worker's database already exists.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+import { beforeAll } from 'vitest';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { getWorkerDb } from './worker-db';
+import { seedBaseline } from './seed';
+
+beforeAll(async () => {
+  const workerId = process.env.VITEST_POOL_ID;
+  const db = getWorkerDb(workerId);
+  await migrate(db, { migrationsFolder: 'drizzle' });
+  await seedBaseline(db);
+});
+`}>
+  <AnnotatedStep meta="{6} {8}" color="blue">
+    `beforeAll` fires once per worker, and `getWorkerDb` opens the pool lazily on first call, after `globalSetup` has created this worker's database.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7} "getWorkerDb(workerId)"`} color="orange">
+    `VITEST_POOL_ID` is the routing key: worker 2 reads `2`, `getWorkerDb` builds the URL for `test_w2`, and this worker now talks only to its own database.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9}" color="green">
+    Migrate once, against the same `drizzle/` folder production uses. The test database is the production schema.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10}" color="violet">
+    With the schema in place, insert the baseline of one org and one user, once per worker right after migrate. The next section covers it.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Drizzle Kit's `migrate` *applies* migration files to a database; `check` *detects drift*, failing if the schema and the migration journal disagree because a developer edited the schema without generating a migration. Run `check` before the suite and in CI to fail that push at the seam, before the drift reaches anyone else:
+
+```bash
+pnpm drizzle-kit check
+```
+
+## One baseline seed, then per-test factories
+
+The worker inserts one tiny seed: a single `seed_org` and `seed_admin_user`. A test that doesn't care about org or user setup still needs a valid foreign-key target to hang an invoice on, and the seed gives every test that minimal valid world.
+
+Both rows get fixed IDs, exported as constants so tests reach them by name instead of querying.
+
+```ts title="src/test/db/seed.ts"
+export const SEED_ORG_ID = 'seed_org';
+export const SEED_ADMIN_USER_ID = 'seed_admin_user';
+
+export const seedBaseline = async (db: DbOrTx) => {
+  await db
+    .insert(organizations)
+    .values({ id: SEED_ORG_ID, name: 'Seed Org' });
+  await db.insert(users).values({
+    id: SEED_ADMIN_USER_ID,
+    orgId: SEED_ORG_ID,
+    email: 'admin@seed.test',
+    role: 'admin',
+  });
+};
+```
+
+Heavy, realistic data is a separate concern: `drizzle-seed` fills a database you want to browse in the app, not test setup.
+
+Per-test rows come from factories like `buildInvoice({ status: 'paid' }, tx)`, the pattern from the unit-testing chapter, called inside the test's transaction. A factory row written on `tx` rolls back when the test ends. The seed is committed outside any test transaction and shared read-only across every test the worker runs.
+
+That sharing is safe only if seed rows stay immutable. A write to a seed row commits, since the seed lives outside `tx`, and the change then leaks into every later test on that worker. So a test that needs to change a row builds its own with a factory and mutates that.
+
+<Buckets twoCol instructions="Sort each piece of test data into where it belongs. Ask: is it a shared, read-only baseline, or data this one test builds and asserts on?">
+  <Bucket name="seed" label="Baseline seed" description="Committed once per worker, read-only" />
+  <Bucket name="factory" label="Per-test factory" description="Built inside tx, rolls back" />
+
+  <Item bucket="seed">The `seed_org` every test hangs rows on</Item>
+  <Item bucket="seed">The `seed_admin_user` that owns the org</Item>
+  <Item bucket="factory">A `paid` invoice a test asserts gets archived</Item>
+  <Item bucket="factory">Three overdue invoices a reminder test scans</Item>
+  <Item bucket="factory">An invoice the test mutates and re-reads</Item>
+  <Item bucket="seed">A valid FK target a test doesn't otherwise care about</Item>
+</Buckets>
+
+## The `.env.test` surface and the production-URL guard
+
+A careless connection string here doesn't make a test flaky, it drops production tables.
+
+The test harness loads a dedicated `.env.test`, and only `.env.test`; production `.env` and `.env.local` are never loaded. That exclusion is the first line of defense. Inside live two values: a base `DATABASE_URL` pointing at the superuser `globalSetup` uses to create databases, and a `WORKER_DATABASE_URL_PATTERN` like `postgres://test:test@localhost:5433/test_w{id}` that each worker fills in with its `VITEST_POOL_ID` to reach its own database.
+
+Point that `DATABASE_URL` at production, or let a stray `.env.local` shadow it with a production URL, and the first `pnpm vitest run` does exactly what `globalSetup` is built to do: `DROP DATABASE` and recreate, or migrate, against production. Rollback does not save you, because `CREATE DATABASE` and `migrate` run outside any test transaction.
+
+So the guard goes at the very top of `globalSetup` and refuses to run unless the URL looks like a test target:
+
+<div data-mark-color="red">
+
+```ts title="src/test/db/global-setup.ts" {3-5}
+const url = process.env.DATABASE_URL ?? '';
+if (!url.includes('localhost:5433') && !isNeonBranch(url)) {
+  throw new Error(
+    `Refusing to run tests against a non-test database: ${url}`,
+  );
+}
+```
+
+</div>
+
+Read it as an allow-list, not a port check: local Docker answers on `localhost:5433`, a Neon CI branch passes `isNeonBranch`, and the GitHub Actions sidecar below answers on `localhost:5432`. Each recognized disposable database joins the list as you wire that environment. The one URL on no list is your production database, and that is the one the guard refuses.
+
+Because the test database is recreated every run, it has nothing worth surviving a crash, so you can turn off the durability a real database works hardest to guarantee. The switch is <Term definition={"Postgres setting that forces a commit to physical disk before it's acknowledged.\noff trades crash-durability for speed — safe only on a throwaway database."}>`fsync`</Term> off, alongside `synchronous_commit=off` and `full_page_writes=off`, baked into the test Docker image and never set on a server holding real data. The database then runs roughly an order of magnitude faster, real wall-clock time once you multiply it across every worker's migrate-and-seed and hundreds of transactions. That same disposability is what makes the guard mandatory.
+
+<CodeVariants maxLines={18}>
+  <CodeVariant label=".env.test" icon="seti:config">
+    <div data-mark-color="orange">
+
+    ```bash title=".env.test" "5433"
+    DATABASE_URL=postgres://test:test@localhost:5433/postgres
+    WORKER_DATABASE_URL_PATTERN=postgres://test:test@localhost:5433/test_w{id}
+    ```
+
+    </div>
+    **The test connection surface, nothing from production.** The base superuser URL for `globalSetup`, and the per-worker pattern each worker fills in with its `VITEST_POOL_ID`.
+  </CodeVariant>
+
+  <CodeVariant label="docker-compose.test.yml" icon="seti:docker">
+    <div data-mark-color="green">
+
+    ```yaml title="docker-compose.test.yml" {11-13}
+    services:
+      postgres-test:
+        image: postgres:17
+        ports:
+          - '5433:5432'
+        environment:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        command: >
+          postgres
+          -c fsync=off
+          -c synchronous_commit=off
+          -c full_page_writes=off
+    ```
+
+    </div>
+    **A disposable Postgres on 5433 with durability off.** Mapped to host port 5433, not 5432, to sit beside a local dev Postgres, with `fsync` and friends disabled in the `command`.
+  </CodeVariant>
+</CodeVariants>
+
+## Running the suite in GitHub Actions
+
+Only the way Postgres is provided changes from local; the per-worker shape is identical. Matrix builds, caching, and the JUnit reporter belong to the later CI chapter; this is the minimal job.
+
+GitHub Actions runs a sidecar container alongside your job through `services`. Declare a Postgres 17 service, install with a frozen lockfile, and run the integration project, which migrates each worker's database itself just as it does locally:
+
+<div data-mark-color="green">
+
+```yaml title=".github/workflows/test.yml" {13-16}
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm vitest run --project integration
+        env:
+          DATABASE_URL: postgres://test:test@localhost:5432/postgres
+```
+
+</div>
+
+Declaring `services.postgres` makes the container *start*, not *accept connections*. Without `--health-cmd pg_isready`, your migrate step races the container's boot and fails intermittently on connection-refused. The health-check gates on readiness, not existence, the same lesson the lazy-open taught.
+
+Put `if: always()` on any cleanup step so a failed run still tears down its resources instead of leaking them into the next one.
+
+| When | Command |
+| --- | --- |
+| Local, while you code | `vitest --project integration` (watch) |
+| CI, every push | `vitest run --project integration` |
+| Pre-push hook, only affected files | `vitest run --project integration --changed` |
+
+## When to swap Docker for a Neon branch per CI run
+
+The trigger is the seed step getting slow. The baseline seed is tiny by design, but some suites need production-shaped data to assert on: real row counts that exercise pagination, or the data depth that row-level-security policies act on. Once building that volume on every run pushes your local seed step past roughly five seconds, the empty-Docker default has stopped being cheap. Until then, `services: postgres` wins.
+
+Neon forks a full database, schema *and* data, from a parent such as a staging branch using <Term definition={"Branch shares the parent's data pages until written to.\nA new branch is near-instant and cheap regardless of database size."}>copy-on-write</Term>: the branch shares the parent's storage pages until something writes. Every CI run gets its own isolated, full-data copy of staging in under a second, runs against it, and throws it away. The per-worker shape is unchanged; only the substrate swaps.
+
+A create-branch action at job start forks the branch and exposes its connection string as the `db_url` output, fed in as the run's `DATABASE_URL`. A delete-branch action on `if: always()` tears it down when the job ends, on success or failure.
+
+<div data-mark-color="violet">
+
+```yaml title=".github/workflows/test.yml" {3,14}
+steps:
+  - uses: actions/checkout@v4
+  - uses: neondatabase/create-branch-action@v6
+    id: branch
+    with:
+      project_id: ${{ vars.NEON_PROJECT_ID }}
+      parent: staging
+      api_key: ${{ secrets.NEON_API_KEY }}
+  - run: pnpm install --frozen-lockfile
+  - run: pnpm vitest run --project integration
+    env:
+      DATABASE_URL: ${{ steps.branch.outputs.db_url }}
+  - if: always()
+    uses: neondatabase/delete-branch-action@v3
+    with:
+      project_id: ${{ vars.NEON_PROJECT_ID }}
+      branch_id: ${{ steps.branch.outputs.branch_id }}
+      api_key: ${{ secrets.NEON_API_KEY }}
+```
+
+</div>
+
+<VideoCallout videoId="aAOV8WpBnes" videoTitle="CI/CD for Databases with GitHub Actions + Neon Ephemeral branches">
+  Abhishek Veeramalla builds this workflow end to end: a per-pull-request ephemeral Neon branch the CI job validates against, then tears down on close, even when the run fails.
+</VideoCallout>
+
+The driver may differ, local Docker on node-postgres and Neon CI on the serverless driver, but your test code never changes, because it talks to `db` and `tx`, not the driver underneath: the explicit-handle seam from the last lesson paying off again. The cost is real too: Neon's free-tier branch limits can queue concurrent CI runs against each other, which is itself the signal to upgrade the plan.
+
+<StateMachineWalker title="Which CI database substrate?">
+  <Question id="data-shape" prompt="Does your integration suite assert on production-shaped data — real row counts, or RLS-policy depth?" description="A freshly-migrated empty database has the schema but no volume.">
+    <Branch label="No — schema is enough" to="leaf-docker" />
+    <Branch label="Yes — it needs real data volume" to="seed-time" />
+  </Question>
+
+  <Question id="seed-time" prompt="Does building that data push your local seed step past ~5s?" description="Below the threshold, the simple default still wins.">
+    <Branch label="No — seed is still fast" to="leaf-docker" />
+    <Branch label="Yes — seeding is the bottleneck" to="leaf-neon" />
+  </Question>
+
+  <Leaf id="leaf-docker" verdict="Docker `services: postgres` (the default)">
+    Free, fast, no external dependency: a sidecar Postgres per job, migrated fresh at start. Stay here until the seed step gives you a concrete reason to leave.
+  </Leaf>
+
+  <Leaf id="leaf-neon" verdict="Neon branch per CI run">
+    Copy-on-write forks a full-data staging branch in under a second, so every run gets production-shaped data without a slow seed. Same per-worker shape, swapped substrate. Watch the free-tier branch limit, which queues concurrent runs.
+  </Leaf>
+</StateMachineWalker>
+
+## Sizing the worker pool
+
+`maxWorkers` is a performance dial, not a correctness one: because each worker owns its own database and shares no mutable state, changing the count only moves throughput, never results. Start at `Math.min(4, cpuCount)` locally and go higher on CI runners with more cores. More workers means more startup migrations and more connections contending over one Postgres, so the gains flatten past a knee around four to eight; measure your own suite rather than memorize a number.
+
+## Putting it together
+
+Order the boot steps that stack the two isolation layers, separate databases per worker and transaction rollback per test.
+
+<Sequence instructions="Order the steps of a single `vitest run --project integration`, from cold start to the first test executing.">
+  <Step>`globalSetup` connects to Postgres as superuser</Step>
+  <Step>It creates `test_w1` through `test_wN`</Step>
+  <Step>Workers start, each reading its `VITEST_POOL_ID`</Step>
+  <Step>Each worker lazily connects to its own `test_w{id}`</Step>
+  <Step>Each worker runs `migrate()` once against the schema</Step>
+  <Step>Each worker inserts its baseline seed</Step>
+  <Step>Tests run, each inside a `withRollback` transaction</Step>
+</Sequence>
+
+<MultipleChoice>
+  A new integration run just dropped three production tables on its very first execution, because a stray config pointed it at the production database. Which single change would have stopped it?
+
+  <McqChoice correct>Have `globalSetup` throw on its first line unless `DATABASE_URL` matches a known test target like `localhost:5433`.</McqChoice>
+  <McqChoice>Wrap each test in `withRollback` so every write is discarded when the test ends.</McqChoice>
+  <McqChoice>Set `fsync=on` so commits are flushed to disk and nothing is lost.</McqChoice>
+  <McqChoice>Bump `maxWorkers` so each worker touches a smaller slice of the schema.</McqChoice>
+
+  <McqWhy>The damage is done by `CREATE DATABASE` and `migrate` inside `globalSetup`, which run *outside* any test transaction — so `withRollback` has nothing to roll back, and durability (`fsync`) or worker count don't change which database gets hit. The only thing that helps is refusing to run at all when the URL isn't a test target, which is why the guard sits at the very top of `globalSetup`, before a single database is touched.</McqWhy>
+</MultipleChoice>
+
+Next you'll cross one more boundary, the network, replacing the mocked SDK with real HTTP intercepted at the wire so your serialization, signing, and parsing go under test.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Vitest — globalSetup & setupFiles"
+    href="https://vitest.dev/config/#globalsetup"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="The config reference for the two lifecycle scopes this lesson's whole topology rests on."
+  />
+  <ExternalResource
+    title="Vitest — Workers and pools"
+    href="https://vitest.dev/guide/parallelism"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="How VITEST_POOL_ID, maxWorkers, and the threads pool shape parallel execution."
+  />
+  <ExternalResource
+    title="GitHub Actions — PostgreSQL service containers"
+    href="https://docs.github.com/en/actions/tutorials/use-containerized-services/create-postgresql-service-containers"
+    icon="simple-icons:githubactions"
+    iconColor="#2088FF"
+    description="The full sidecar-Postgres job, including the --health-cmd pg_isready block the CI section depends on."
+  />
+  <ExternalResource
+    title="Postgres — Non-Durable Settings"
+    href="https://www.postgresql.org/docs/current/non-durability.html"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="Why fsync, synchronous_commit, and full_page_writes off make a throwaway test database far faster."
+  />
+  <ExternalResource
+    title="Drizzle — Migrations"
+    href="https://orm.drizzle.team/docs/migrations"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The migrate() programmatic API and the drizzle/ journal your test databases run against."
+  />
+  <ExternalResource
+    title="Neon — Branching"
+    href="https://neon.com/docs/introduction/branching"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="How copy-on-write branches fork a full-data database in under a second for each CI run."
+  />
+</CardGrid>

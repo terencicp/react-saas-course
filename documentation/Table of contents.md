@@ -762,15 +762,15 @@
 - 6 Asserting the unhappy path (Teaches the two-path rule, `toThrow(ClassName)` and structured-code matching over message strings, `toMatchObject` and custom matchers for `Result.err`, Zod issue inspection, and `Error.cause` chain assertions.)
 - 7 Quiz
 
-### Chapter 088 — Integration tests at the seams
+### Chapter 088 — Integration tests across boundaries
 - 1 Transaction rollback against real Postgres (Teaches the `withRollback` wrapper, the `tx` seam threaded through production code, and why integration tests run against a real test Postgres instead of mocking Drizzle.)
 - 2 One database per worker (Teaches the `VITEST_POOL_ID`-keyed database scheme, `globalSetup` vs. per-worker `setupFiles`, fsync-off tuning, and Neon branch-per-CI-run as the conditional move.)
 - 3 The signedInAs fixture (Teaches a single-call auth fixture that inserts user, org, and session inside `tx`, stubs `cookies()` and `auth()`, and parameterizes role, plan, and tenant for every Server Action and route-handler test.)
 - 4 Mock the wire, not the SDK (Teaches why mocking at `fetch` keeps SDK serialization, signing, retry, and parsing under test, and where the "mock what you don't own, roll back what you do" line sits.)
-- 5 MSW mechanics in practice (Teaches the MSW v2 `setupServer` + `http.*` API, default handlers per third party, per-test overrides via `server.use`, sequenced responses with `{ once: true }`, and capturing requests for after-the-fact assertions.)
+- 5 Mocking outbound HTTP with MSW (Teaches the MSW v2 `setupServer` + `http.*` API, default handlers per third party, per-test overrides via `server.use`, sequenced responses with `{ once: true }`, and capturing requests for after-the-fact assertions.)
 - 6 Webhook receivers under test (Teaches end-to-end testing of a Stripe webhook handler by signing raw-body bytes and covering the valid, invalid, expired, replayed, malformed, and unhandled-type paths against a real `processed_events` table inside `tx`.)
-- 7 Server Actions through the full wrapper (Teaches calling exported actions with auth fixtures, real `tx`, and MSW handlers; asserting `Result.ok`/`Result.err`, DB rows, `revalidatePath`, and `NEXT_REDIRECT` across happy, validation-fail, unauth, forbid, and plan-gated branches.)
-- 8 Flake has a structural cause (Teaches the nine flake taxa (DB leak, timer leak, MSW leak, mock-impl leak, real clock, unawaited promise, random data, port collision, order dependency), why `--retry` hides bugs, and how `--shuffle` and `--repeat` quantify and locate them.)
+- 7 Testing Server Actions end to end (Teaches calling exported actions with auth fixtures, real `tx`, and MSW handlers; asserting `Result.ok`/`Result.err`, DB rows, `revalidatePath`, and `NEXT_REDIRECT` across happy, validation-fail, unauth, forbid, and plan-gated branches.)
+- 8 Diagnose and fix flaky tests (Teaches the nine flake taxa (DB leak, timer leak, MSW leak, mock-impl leak, real clock, unawaited promise, random data, port collision, order dependency), why `--retry` hides bugs, and how `--shuffle` and `--repeat` quantify and locate them.)
 - 9 Quiz
 
 ### Chapter 089 — Component tests, off by default

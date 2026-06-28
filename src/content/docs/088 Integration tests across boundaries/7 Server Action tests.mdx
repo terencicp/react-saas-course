@@ -1,0 +1,560 @@
+---
+title: Testing Server Actions end to end
+tagline: Integration-test a Server Action with Vitest by calling the exported action the way production does, putting its parse, authorize, mutate, revalidate, and typed return under test at once.
+chapter-id: 88
+course-progress: 0.8362
+sidebar:
+  order: 7
+  label: Server Action tests
+rewrites: 2
+---
+
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CodeTooltips from '../../../components/code/CodeTooltips.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import ScriptCoding from '../../../components/live-coding/ScriptCoding/ScriptCoding.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Term from '../../../components/ui/Term.astro';
+import ThreeAxesCard from '../../../components/lessons/088/7/ThreeAxesCard.astro';
+import ComposedTestSequence from '../../../components/lessons/088/7/ComposedTestSequence.astro';
+import { FileTree, CardGrid } from '@astrojs/starlight/components';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+From the outside a Server Action is one function call. Inside, it does five distinct things before it returns. `createInvoice`, the action you have carried through this chapter, **parses** its input through Zod, **authorizes** the caller against their role, **mutates** Postgres, **revalidates** the cache path the new row affects, and **returns** a typed `Result`.
+
+A unit test of the inner body sees only one of those five. It hands the body an input it already knows is valid and a `user` it already knows is allowed, then asserts on the insert; the parse, the authorize, the revalidate, and the typed return never run. Four-fifths of what the action does to a real request stays invisible, and four-fifths of the bugs live there.
+
+This lesson closes that gap by assembly, not new code. Every primitive is already built: `withRollback` and `tx`, the per-worker database, `signedInAs` and `anonymous`, MSW. You call the exported action exactly as production calls it, so the wrapper, the session resolution, the revalidate, and the typed return all come under test at once.
+
+## The action test, end to end
+
+Start from the whole test, then vary one line at a time: every branch you write later is a small change against this skeleton.
+
+Here is the action under test, at its wrapper shape so the seams show:
+
+```ts
+export const createInvoice = authedAction(
+  'member',
+  createInvoiceSchema,
+  async (input, { user, orgId, db }) => {
+    const [invoice] = await db
+      .insert(invoices)
+      .values({ ...input, orgId, createdBy: user.id })
+      .returning();
+    revalidatePath('/invoices');
+    return ok(invoice);
+  },
+);
+```
+
+You built this wrapper when you wired up Server Actions; here you test what it produces. You do not test parse, authorize, the body, and the typed return as implementation. You test the contract they produce, observed from the outside, exactly as the form that submits this action observes it.
+
+Here is the complete happy-path test. Read it top to bottom: arrange, act, then the three things it asserts.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+it('creates an invoice for a member', withRollback(async ({ tx }) => {
+  const ctx = await signedInAs({ role: 'admin', plan: 'pro' }, tx);
+
+  const result = await createInvoice(
+    { amount: 4200, currency: 'eur' },
+    { db: tx },
+  );
+
+  expect(result).toBeOkResult({ id: expect.stringMatching(/^inv_/) });
+
+  const [row] = await tx
+    .select()
+    .from(invoices)
+    .where(eq(invoices.orgId, ctx.org.id));
+  expect(row).toMatchObject({ amount: 4200, currency: 'eur' });
+
+  expect(revalidatePath).toHaveBeenCalledWith('/invoices');
+}));
+`}>
+  <AnnotatedStep meta="{1}" color="blue">
+    The body runs inside a transaction that rolls back when the test ends. `tx` is the handle you write against, and nothing here ever commits.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{2}" color="blue">
+    One call inserts the user, org, membership, and session inside `tx`, and stubs the session seam so the wrapper reads this identity. The `admin`/`pro` caller is over-privileged on purpose: the happy path proves success, so give it every permission.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{4-7}" color="green">
+    The act. Call the *exported* action the way production does: a parsed input object plus an options object `{ db: tx }`. That handle substitutes `tx` for the default `db`, so the write lands in the transaction the test will roll back. The next three steps are the assertion axes.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{9}" color="blue">
+    Axis 1, the return. The custom matcher from the previous chapter asserts the `Result` is `ok` and its data matches. Match the *shape* of the id (`/^inv_/`), never an exact value: sequence-backed ids advance across rolled-back tests, so an exact match flakes.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{11-15}" color="blue">
+    Axis 2, the database. Re-read the row through the **same `tx`**: the write is uncommitted, so only `tx` can see it. The `ok` proves the action reported a write; this proves Postgres stored the right values.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{17}" color="blue">
+    Axis 3, the cache. `revalidatePath` is a spy, wired in setup in the next section. Assert it was called with the path the new invoice invalidates. A written row does not prove the cache was told, so this axis catches a forgotten `revalidatePath`.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The three assertions are independent, and each catches a regression the other two are blind to: the action could return `ok` and skip the insert, or write the row and never revalidate, serving stale data over a correct database. This three-axis shape is the spine of every action test you will write.
+
+<Figure caption="One call, three independent axes to verify.">
+  <ThreeAxesCard />
+</Figure>
+
+## Wiring the framework mocks once
+
+The action touches three pieces of the Next.js runtime that are absent in a test process: it reads cookies, resolves a session, and calls the cache. Register their mocks once in the integration `setupFiles` and every test inherits them, the same register-once, set-per-call discipline as the signedInAs lesson.
+
+The three seams:
+
+- `next/headers`: the wrapper reads `cookies()`. Already registered in the signedInAs setup, returning the fixture's `cookieJar`.
+- `@/lib/auth`: `auth.api.getSession` is the session seam, already registered. `signedInAs` sets its per-call value; `anonymous` sets it to `null`.
+- `next/cache`: what this lesson adds. The mock turns the cache call into a spy you can assert on, and stops a real invalidation from firing against a router that does not exist in tests.
+
+<CodeTooltips tooltips={{
+  revalidatePath: 'Path-scoped cache invalidation. Single argument: the path to purge.',
+  revalidateTag: "Tag-scoped invalidation. Next.js 16 requires a cacheLife profile as the 2nd argument — revalidateTag('invoices', 'max'). The 1-arg form is a TypeScript error.",
+  updateTag: 'Read-your-writes companion: refreshes a tag within the same request, synchronously. The third spy; assert on it only if the action calls it.',
+}}>
+```ts title="src/test/setup.int.ts"
+vi.mock('next/cache', () => ({
+  revalidatePath: vi.fn(),
+  revalidateTag: vi.fn(),
+  updateTag: vi.fn(),
+}));
+```
+</CodeTooltips>
+
+These spies record their calls across tests, so wipe their history between tests or test B inherits test A's calls and `toHaveBeenCalledWith` reports a false result. The existing `afterEach(() => vi.clearAllMocks())` covers them, one of the flake causes you will catalogue next lesson.
+
+<VideoCallout videoId="XMk1sG6ndwY" videoTitle="Unit Testing (Vitest) Tutorial #12 - Creating Spies">
+  The Net Ninja builds a spy with `vi.spyOn`, then asserts on its recorded calls with `toHaveBeenCalledTimes` and `toHaveBeenCalledWith`: the mechanics behind the `revalidatePath` cache spy above (11 min).
+</VideoCallout>
+
+The signatures changed in Next.js 16, so pin them down. `createInvoice` calls `revalidatePath(path)`, and the happy-path test asserts that single argument. `revalidateTag` now takes a <Term definition="A named cache-duration policy in Next.js 16 ('max', 'minutes', 'hours', …) that tells the cache how long an entry stays fresh. revalidateTag must name one as its second argument.">`cacheLife`</Term> profile as its second argument, so a tag-revalidation test reads `expect(revalidateTag).toHaveBeenCalledWith('invoices', 'max')`.
+
+## Validation failure: the parse gate returns before the body runs
+
+Hand the action a structurally invalid input and the wrapper's parse gate fires *before* the body: it returns `err('validation', …)`, and `mutate` never runs. The proof is not the error alone, it is that **nothing was written**.
+
+```ts title="createInvoice.int.test.ts"
+it('rejects invalid input without touching the database', withRollback(async ({ tx }) => {
+  const ctx = await signedInAs({ role: 'admin', plan: 'pro' }, tx);
+
+  const result = await createInvoice(
+    { amount: -1, currency: 'xyz' },
+    { db: tx },
+  );
+
+  expect(result).toBeErrResult('validation');
+  expect(result.error.fieldErrors).toEqual(expect.any(Object));
+
+  const rows = await tx
+    .select()
+    .from(invoices)
+    .where(eq(invoices.orgId, ctx.org.id));
+  expect(rows).toHaveLength(0);
+}));
+```
+
+Two assertions carry the test. First, you assert that `fieldErrors` is *present* (`expect.any(Object)`), not what it says: the per-field strings like "Amount must be positive" are localizable copy that a translation or a product change can rewrite, and pinning them breaks the test on a wording change that broke nothing real. Second, you assert **zero rows**. The session is a fully entitled `pro` `admin`, so the only reason the table stays empty is the early return. A test that checked only the returned code would pass even if the wrapper ran the body *and then* reported validation; the empty table is what proves the short-circuit.
+
+## Unauthenticated: the action throws a redirect, not an error
+
+Your intuition, trained on every other branch, says: call the action with no session and get back `err('unauthenticated')`. That is not how this codebase works.
+
+The auth ladder, where `requireOrgUser` calls down to `requireUser`, does not *return* an error for a session-less caller. It **redirects** them to sign-in. A redirect is a navigation, not a value, so it cannot be packed into a `Result`. `requireUser` calls Next.js's `redirect()`, which works by *throwing*, so a session-less call throws <Term definition="The sentinel error redirect() throws to abort execution and signal a navigation. Its digest has the form NEXT_REDIRECT;<type>;<url>;<status>;. Next.js catches it at the boundary and turns it into the redirect.">`NEXT_REDIRECT`</Term> straight out of the wrapper, before the body runs. A throw, not a return, because it must abort the whole call stack: the `Result` contract covers only failures the *body* can produce, while a missing session is handled one layer up.
+
+So the test asserts the *throw*, not a `Result`.
+
+<CodeVariants>
+  <CodeVariant label="What you'd expect">
+    <div data-mark-color="red">
+
+    ```ts {4}
+    it('returns an error when signed out', withRollback(async ({ tx }) => {
+      anonymous();
+      const result = await createInvoice(input, { db: tx });
+      expect(result).toBeErrResult('unauthenticated');
+    }));
+    ```
+
+    </div>
+    **This test never reaches its assertion.** The act *throws*, so execution stops at the `createInvoice` line and the test fails with an uncaught `NEXT_REDIRECT`. There is no `'unauthenticated'` code to assert against either: the path was never modeled as a `Result`.
+  </CodeVariant>
+
+  <CodeVariant label="What actually happens">
+    <div data-mark-color="green">
+
+    ```ts {6}
+    it('redirects an unauthenticated caller to sign-in', withRollback(async ({ tx }) => {
+      anonymous();
+
+      await expect(
+        createInvoice({ amount: 4200, currency: 'eur' }, { db: tx }),
+      ).rejects.toThrow('NEXT_REDIRECT');
+
+      const rows = await tx.select().from(invoices);
+      expect(rows).toHaveLength(0);
+    }));
+    ```
+
+    </div>
+    **`anonymous()` sets the session to `null`, so the act throws.** Hand `expect` the un-awaited promise and assert it rejects with `'NEXT_REDIRECT'`, then assert **zero rows**, since the redirect fired before the body. Do *not* mock `redirect`; let it throw and observe the same bytes production would see.
+  </CodeVariant>
+</CodeVariants>
+
+To confirm it was a redirect and not an unrelated failure, check `error.digest.startsWith('NEXT_REDIRECT;')`. Next.js ships `isRedirectError(error)` for this, which production code uses to tell a redirect from a real error; in tests, default to the `rejects.toThrow('NEXT_REDIRECT')` string match.
+
+The pattern is not special to the auth bounce. Any action that calls `redirect()` on success, such as a create-then-redirect, is tested the same way: `rejects.toThrow('NEXT_REDIRECT')` plus a DB-row assertion to prove the write happened *before* the redirect threw.
+
+:::caution
+A `try/catch` in *production* code that swallows `NEXT_REDIRECT` breaks navigation: Next.js never sees the digest, never issues the redirect, and the user sits on a page that should have navigated away. This is the must-propagate rule from the auth ladder. In tests, `rejects.toThrow` observes the redirect without swallowing it, but a bare `try/catch` that asserts inside the `catch` risks eating it the same way.
+:::
+
+## Insufficient role: the authorize gate refuses in place
+
+This third wrapper branch draws the sharpest line against the last section. An *unauthenticated* caller is thrown out and redirected to sign-in; an *authenticated but underprivileged* caller gets the opposite exit from the same gate, `err('forbidden')`, returned in place as a value. The exit fits the caller: with no identity, sign-in is the only thing you can show; with a session already inside the app, you refuse where the user stands and let the UI explain.
+
+To test this you need an action whose floor is above `member`. `deleteInvoice` requires `admin`, because destroying a record is not a member's job:
+
+```ts title="deleteInvoice.int.test.ts"
+it('refuses a member who lacks the admin role', withRollback(async ({ tx }) => {
+  const ctx = await signedInAs({ role: 'member', plan: 'pro' }, tx);
+  const invoice = await buildInvoice({ orgId: ctx.org.id }, tx);
+
+  const result = await deleteInvoice({ id: invoice.id }, { db: tx });
+
+  expect(result).toBeErrResult('forbidden');
+
+  const [row] = await tx
+    .select()
+    .from(invoices)
+    .where(eq(invoices.id, invoice.id));
+  expect(row).toBeDefined();
+}));
+```
+
+The arrange seeds a `member` and a real invoice for them to fail to delete. The assertion `toBeErrResult('forbidden')` is a value a form renders as "you don't have permission to do that," right where the user is. The side-effect check inverts the validation test's empty table: here the row still **exists**, because the authorize gate fired before the body and the delete never ran.
+
+## Plan-gated branch: an entitlement check inside the body
+
+`signedInAs` takes a `plan` parameter, but the `authedAction` wrapper checks only session, role, and schema, never the plan. A plan or entitlement check therefore lives **inside the action body**, early, returning a domain `err(...)` the wrapper passes straight through. That makes a "plan test" a body-logic test reached through the full wrapper, which is exactly why it belongs in this suite and not a unit test.
+
+`exportInvoices` is a pro-only feature, and its body checks the caller's plan before doing any work:
+
+```ts title="exportInvoices.int.test.ts"
+it('refuses a free-plan caller before exporting', withRollback(async ({ tx }) => {
+  await signedInAs({ role: 'admin', plan: 'free' }, tx);
+
+  const result = await exportInvoices({ format: 'csv' }, { db: tx });
+
+  expect(result).toBeErrResult('forbidden');
+}));
+```
+
+The caller is an `admin`, so the role is not the obstacle; the plan is `free`. The body sees the plan, refuses, and returns `err('forbidden')` before touching a single invoice. Assert the transport code; if the project attaches a domain reason, assert it through `result.error`, never the user-facing message string. There are no side effects to check, because the check sits at the top of the body, before any read or write, so a refusal costs no more than the wrapper's own gates.
+
+## Outbound HTTP inside the action: the full stack in one test
+
+This is the capstone: an action that mutates the database *and* calls a third party, tested end to end. The action is `createSubscription`, the outbound sibling whose wire you mocked two lessons ago: it posts to Stripe and writes a subscription row.
+
+One test, four assertion axes. Read the arrange, then the four things it proves.
+
+```ts title="createSubscription.int.test.ts"
+it('subscribes a pro user: charges Stripe and records the row', withRollback(async ({ tx }) => {
+  const ctx = await signedInAs({ role: 'admin', plan: 'pro' }, tx);
+
+  const seen: Request[] = [];
+  server.use(
+    http.post('https://api.stripe.com/v1/subscriptions', async ({ request }) => {
+      seen.push(request.clone());
+      return HttpResponse.json({ id: 'sub_123', status: 'active' });
+    }),
+  );
+
+  const result = await createSubscription(
+    { priceId: 'price_pro_monthly' },
+    { db: tx },
+  );
+
+  expect(result).toBeOkResult({ id: 'sub_123' });
+
+  const body = await seen[0].text();
+  expect(body).toContain(`metadata[orgId]=${ctx.org.id}`);
+  expect(seen[0].headers.get('Idempotency-Key')).toBeTruthy();
+
+  const [row] = await tx
+    .select()
+    .from(subscriptions)
+    .where(eq(subscriptions.orgId, ctx.org.id));
+  expect(row).toMatchObject({ stripeSubscriptionId: 'sub_123' });
+}));
+```
+
+The **return** (`toBeOkResult`) proves the action reported success. The **intercepted request** proves the wire: `seen[0].text()` decodes the form body Stripe received, where you assert the `metadata` fields and `Idempotency-Key` header are present. The **database row**, read through `tx`, proves the subscription persisted with Stripe's id. Had the action revalidated a path, a fourth assertion on the `revalidatePath` spy would cover the cache axis.
+
+Assert the **intercepted request**, the bytes Stripe would have seen, never that the SDK's `create` method was called. The `Idempotency-Key` shows why: nothing in your code wrote it, the SDK generated it, so no mock of your code could verify it. Only watching the wire can.
+
+Scrub through the sequence below to see the layers fire in order.
+
+<ComposedTestSequence />
+
+One last point: a Server Action takes its database handle as an explicit `{ db: tx }` argument, which is correct here. The route-handler lesson reached for an `AsyncLocalStorage` escape hatch to thread `tx` into a handler whose signature Next.js fixes. An action's signature is yours, so pass the handle explicitly. `AsyncLocalStorage` is the route-handler tool, for the one place you cannot add a parameter.
+
+## One file, one action, every branch
+
+The shape is fixed: one action gets one colocated test file, with one `describe` and one `it` per branch.
+
+The file is `createInvoice.int.test.ts`, next to `createInvoice.ts`. The `.int.test.ts` suffix routes it into the integration project, with real test Postgres and the rollback wrapper, instead of the fast unit lane.
+
+<FileTree>
+- src/
+  - server/
+    - actions/
+      - create-invoice.ts the action under test
+      - **create-invoice.int.test.ts** the test file
+  - test/
+    - fixtures/
+      - auth.ts `signedInAs`, `anonymous`
+    - db/
+      - with-rollback.ts `withRollback`, `tx`
+    - msw/
+      - server.ts the MSW server + handlers
+</FileTree>
+
+What makes the file trustworthy is enumeration: list the branches an action owes, and give each one its `it`. For `createInvoice` the checklist is the happy path, validation failure, the unauthenticated redirect, insufficient role, and (only for an action that calls a third party) the outbound call. Six to ten `it` blocks is healthy. To review an action test, run that list against the `describe` and look for the gap: a missing branch is a behavior nobody is watching.
+
+Four watch-outs live at this file level:
+
+- **Import the action directly, never through a barrel.** An `index.ts` re-export drags the whole Next.js runtime into the test bundle.
+- **Await every act.** An un-awaited call races the rollback, so the test passes or fails at random.
+- **Call `signedInAs` inside each `it`, never once for the file.** A shared context carries mutable user state that bleeds between tests; use a fresh identity per test.
+- **Thread `tx`, never mock `db`.** Mocking the database defeats the test, and a query on the global `db` instead of `tx` commits real rows the rollback never touches: the silent-commit bug.
+
+## Cross-action workflows in one transaction
+
+Sometimes the thing to test is a *workflow*: two actions in sequence, where the second depends on what the first wrote. Both run against the same `tx`, so the second sees the first's uncommitted writes and you assert the combined end state.
+
+```ts title="invoice-workflow.int.test.ts"
+it('creates then pays an invoice in one transaction', withRollback(async ({ tx }) => {
+  const ctx = await signedInAs({ role: 'admin', plan: 'pro' }, tx);
+
+  const created = await createInvoice(
+    { amount: 4200, currency: 'eur' },
+    { db: tx },
+  );
+  const invoiceId = created.data.id;
+
+  const paid = await markInvoicePaid({ id: invoiceId }, { db: tx });
+
+  expect(paid).toBeOkResult();
+  const [row] = await tx
+    .select()
+    .from(invoices)
+    .where(eq(invoices.id, invoiceId));
+  expect(row).toMatchObject({ status: 'paid' });
+}));
+```
+
+`markInvoicePaid` finds the invoice `createInvoice` just wrote and flips its status only because the two share the same transaction, and the whole sequence rolls back when the test ends. Reserve this for genuine workflows; most of the time, one action and one test is the right grain.
+
+## Exercise: write the failure branches
+
+The skill here is choosing the right assertion per branch. The unauthenticated branch is the one instinct gets wrong: it throws, it doesn't return.
+
+A real `.int.test.ts` can't run in the browser, so this exercise uses shims that mimic the wrapper: a fake `db` you read back, stubbed `signedInAs`/`anonymous`, and a `createInvoice` double that runs the real parse → authorize → body → return order and throws `NEXT_REDIRECT` when there's no session. The assertions you write here are the ones you'd write against the real thing. The happy path is green; fill the three failure branches.
+
+<ScriptCoding
+  runner="sandpack"
+  maxHeight={460}
+  instructions="The happy-path test is written and green. Fill the three empty it blocks below it — one per failure branch. Assert on the Result code (result.error.code), never the user message, and check the fake db wrote zero rows. The unauthenticated path THROWS: use expect(() => createInvoice(...)).toThrow('NEXT_REDIRECT'), not an err assertion. resetDb() runs before each block, so db.rows starts empty every time."
+  starter={`// ---- Shims: a tiny stand-in for the real wrapper + Postgres ----
+// db.rows is the fake table you read back to prove writes (or none).
+const db = { rows: [] };
+function resetDb() { db.rows = []; }
+
+// Session seam. signedInAs stubs an identity; anonymous() clears it.
+let session = null;
+function signedInAs({ role = 'member', plan = 'free' } = {}) {
+  session = { user: { id: 'usr_1' }, org: { id: 'org_1' }, role, plan };
+  return session;
+}
+function anonymous() { session = null; }
+
+// The action double: same order the real authedAction runs in —
+// parse -> authorize -> body -> return. No session => redirect() THROWS.
+function makeAction({ floor, schema }) {
+  return (input) => {
+    // 1. authenticate: no session is a redirect, not a Result.
+    if (!session) {
+      const err = new Error('NEXT_REDIRECT;replace;/sign-in;307;');
+      err.digest = 'NEXT_REDIRECT;replace;/sign-in;307;';
+      throw err;
+    }
+    // 2. parse
+    if (!schema(input)) {
+      return { ok: false, error: { code: 'validation', fieldErrors: {} } };
+    }
+    // 3. authorize (role floor)
+    const rank = { member: 1, admin: 2 };
+    if (rank[session.role] < rank[floor]) {
+      return { ok: false, error: { code: 'forbidden' } };
+    }
+    // 4. body + return
+    const row = { id: 'inv_' + (db.rows.length + 1), ...input, orgId: session.org.id };
+    db.rows.push(row);
+    return { ok: true, data: row };
+  };
+}
+
+const validInvoice = (i) => i && i.amount > 0 && i.currency === 'eur';
+// member-floored: anyone signed in may create an invoice.
+const createInvoice = makeAction({ floor: 'member', schema: validInvoice });
+// admin-floored: a member is signed in but underprivileged here.
+const archiveReport = makeAction({ floor: 'admin', schema: validInvoice });
+
+// ---- Tests ----
+test('creates an invoice for a member', () => {
+  resetDb();
+  signedInAs({ role: 'admin', plan: 'pro' });
+
+  const result = createInvoice({ amount: 4200, currency: 'eur' });
+
+  expect(result.ok).toBe(true);
+  expect(result.data.id).toContain('inv_');
+  expect(db.rows).toHaveLength(1);
+});
+
+test('rejects invalid input', () => {
+  resetDb();
+  // arrange a valid caller, act with bad input, assert validation + zero rows.
+  // your assertions here
+});
+
+test('redirects when signed out', () => {
+  resetDb();
+  // arrange with anonymous(), assert the act THROWS NEXT_REDIRECT + zero rows.
+  // your assertions here
+});
+
+test('refuses an underprivileged caller', () => {
+  resetDb();
+  // arrange a member against archiveReport (admin floor); assert forbidden + zero rows.
+  // your assertions here
+});`}
+  tests={`
+// Grader: each branch verified independently against the shims.
+test('grader · validation returns err.code "validation" with zero writes', () => {
+  resetDb();
+  signedInAs({ role: 'admin', plan: 'pro' });
+  const result = createInvoice({ amount: -1, currency: 'xyz' });
+  expect(result.ok).toBe(false);
+  expect(result.error.code).toBe('validation');
+  expect(db.rows).toHaveLength(0);
+});
+
+test('grader · unauthenticated throws NEXT_REDIRECT with zero writes', () => {
+  resetDb();
+  anonymous();
+  expect(() => createInvoice({ amount: 4200, currency: 'eur' })).toThrow('NEXT_REDIRECT');
+  expect(db.rows).toHaveLength(0);
+});
+
+test('grader · underprivileged caller returns err.code "forbidden" with zero writes', () => {
+  resetDb();
+  signedInAs({ role: 'member', plan: 'pro' });
+  const result = archiveReport({ amount: 4200, currency: 'eur' });
+  expect(result.ok).toBe(false);
+  expect(result.error.code).toBe('forbidden');
+  expect(db.rows).toHaveLength(0);
+});
+`}
+/>
+
+<details>
+<summary>Reveal the three filled branches</summary>
+
+```ts
+test('rejects invalid input', () => {
+  resetDb();
+  signedInAs({ role: 'admin', plan: 'pro' });
+
+  const result = createInvoice({ amount: -1, currency: 'xyz' });
+
+  expect(result.ok).toBe(false);
+  expect(result.error.code).toBe('validation');
+  expect(db.rows).toHaveLength(0);
+});
+
+test('redirects when signed out', () => {
+  resetDb();
+  anonymous();
+
+  expect(() => createInvoice({ amount: 4200, currency: 'eur' }))
+    .toThrow('NEXT_REDIRECT');
+
+  expect(db.rows).toHaveLength(0);
+});
+
+test('refuses an underprivileged caller', () => {
+  resetDb();
+  signedInAs({ role: 'member', plan: 'pro' });
+
+  const result = archiveReport({ amount: 4200, currency: 'eur' });
+
+  expect(result.ok).toBe(false);
+  expect(result.error.code).toBe('forbidden');
+  expect(db.rows).toHaveLength(0);
+});
+```
+
+- **Validation** asserts `code === 'validation'` (the code, never the localizable field message) and zero rows: the parse gate returned before the body ran.
+- **Unauthenticated** asserts the *throw*, not a `Result`: a session-less caller hits `redirect()`, so there's no `err` to return. Wrap the call and use `toThrow`.
+- **Forbidden** asserts `code === 'forbidden'` returned in place, with the row never written.
+
+</details>
+
+## Where this goes
+
+Arrange identity, act through the real wrapper against `tx`, assert on the `Result`, the rows, and the cache spies: that shape is now your default for the most common file in the suite, with one branch front of mind, the unauthenticated path *throws* a redirect rather than returning an error. The next lesson turns missing-reset flakiness into a taxonomy with a named cause and a structural fix for each flake; the form component calling the action and the browser clicking the flow end to end come in the chapters just after.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Next.js — redirect()"
+    href="https://nextjs.org/docs/app/api-reference/functions/redirect"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="Why redirect() throws NEXT_REDIRECT and must propagate — the unauthenticated branch, from the source."
+  />
+  <ExternalResource
+    title="Next.js — revalidateTag()"
+    href="https://nextjs.org/docs/app/api-reference/functions/revalidateTag"
+    icon="simple-icons:nextdotjs"
+    iconColor="#000000"
+    description="The Next.js 16 two-argument signature: why the cacheLife profile is now required and the bare form is deprecated."
+  />
+  <ExternalResource
+    title="Vitest — Mocking guide"
+    href="https://vitest.dev/guide/mocking"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="vi.mock, vi.fn, and vi.spyOn — the spies you wire once in setup and clear between tests."
+  />
+  <ExternalResource
+    title="Mock Service Worker"
+    href="https://mswjs.io/docs/"
+    icon="simple-icons:mockserviceworker"
+    iconColor="#FF6A33"
+    description="The request-interception library behind the outbound Stripe test — assert the wire, not the SDK."
+  />
+</CardGrid>

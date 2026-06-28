@@ -2585,3 +2585,53 @@ toContainEqual | - | Vitest matcher asserting an array contains an element deep-
 asymmetric matcher | expect.any, expect.objectContaining | Matcher placed inside an expected object to assert a field's presence/type without pinning its exact value. | first defined: Chapter 087 L6
 not.toThrow | - | Asserts a wrapped call completes without throwing; an absence check, pair with a positive assertion. | first defined: Chapter 087 L6
 it.fails | - | Inverts a test's verdict so it passes only when its assertions fail; for recording a known-broken behavior with a tracking issue. | first defined: Chapter 087 L6
+withRollback | - | Test wrapper opening a transaction, running the body on tx, then throwing a sentinel to force rollback; isolation comes from the rollback, not cleanup. | first defined: Chapter 088 L1
+RollbackSignal | - | Module-private Error subclass thrown to roll back the test transaction; the wrapper catches only it and swallows it. | first defined: Chapter 088 L1
+DbOrTx | - | Type union of the db singleton and a live Transaction; query helpers take it so a fn may run inside a tx. | first defined: Chapter 088 L1
+explicit db handle | database handle injection | Passing the db/tx as a defaulted argument so production uses the singleton and tests pass tx; the course default over AsyncLocalStorage. | first defined: Chapter 088 L1
+tautology (test) | - | A test that can only pass; asserts the same inputs it supplied, so a green result carries no information. | first defined: Chapter 088 L1
+23502 | not-null violation | Postgres error code for a NOT NULL violation: a write left a required column empty. | first defined: Chapter 088 L1
+TRUNCATE (SQL) | - | SQL that empties a table fast but commits outside any transaction, so a rollback can't undo it. | first defined: Chapter 088 L1
+sentinel error | RollbackSignal | A private error value thrown only as a control-flow signal, never surfaced to the caller. | first defined: Chapter 088 L1
+AsyncLocalStorage | als | Node API carrying a value through an async call chain without passing it as an argument; request-scoped context. | first defined: Chapter 088 L1
+sequence (Postgres) | nextval | The counter Postgres uses for serial/identity columns; advancing it is not transactional, a rollback doesn't give the number back. | first defined: Chapter 088 L1
+pg_notify | - | Postgres pub/sub command emitting a message to listeners; fires immediately, not on commit, so a rollback can't recall it. | first defined: Chapter 088 L1
+no-restricted-imports | - | ESLint rule banning imports of specific module paths from specific files. | first defined: Chapter 088 L1
+VITEST_POOL_ID | - | Vitest env var holding the current worker's index (1..N, <= maxWorkers); stable per worker, the routing key for per-worker databases. | first defined: Chapter 088 L2
+Vitest worker | - | A long-lived process/thread that boots once and runs many test files in sequence; one per pool slot. | first defined: Chapter 088 L2
+globalSetup (Vitest) | - | Vitest setup running once in the main process before/after the whole suite; no test globals, no VITEST_POOL_ID. | first defined: Chapter 088 L2
+setupFiles (Vitest) | - | Vitest setup running once per worker inside the worker, before its files; VITEST_POOL_ID is set. | first defined: Chapter 088 L2
+maxWorkers | - | Flat Vitest test-block key capping worker count (Vitest 4, replaced poolOptions); a performance dial, not correctness. | first defined: Chapter 088 L2
+fsync (Postgres) | - | Postgres setting forcing each commit to physical disk before acknowledging; off trades crash-durability for speed, safe only on throwaway databases. | first defined: Chapter 088 L2
+signedInAs | - | Auth fixture inserting a real user/org/session through tx and stubbing getSession; returns the signed-in test context. | first defined: Chapter 088 L3
+anonymous (fixture) | - | Signed-out counterpart of signedInAs: resolves getSession to null, sets Origin=Host; names the no-session case. | first defined: Chapter 088 L3
+aliasing (test) | - | Two tests referencing the same record by a shared hardcoded id, so a write in one changes what the other reads. | first defined: Chapter 088 L3
+CookieJar | cookie jar | Map-backed stand-in exposing cookies()'s get/set surface so an action's cookie reads resolve in a test. | first defined: Chapter 088 L3
+FROZEN | - | The named canonical frozen test instant (2026-01-15T12:00:00Z) the clock seam returns instead of the wall clock. | first defined: Chapter 088 L3
+membership row | membership | Join row recording a user's role within one org; requireOrgUser reads it to resolve identity and tenant. | first defined: Chapter 088 L3
+NEXT_REDIRECT | - | Sentinel Next.js redirect() throws to unwind the request; the auth ladder throws it instead of returning an error Result. | first defined: Chapter 088 L3
+application/x-www-form-urlencoded | form-urlencoded | Key/value body encoding HTML forms post (a=1&b=2, nested keys flattened); Stripe's v1 API speaks this, not JSON. | first defined: Chapter 088 L4
+contract test | - | Test run against a provider's live sandbox API on a schedule (nightly, not per commit) to catch when boundary-mock assumptions have drifted from reality. | first defined: Chapter 088 L4
+setupServer | - | MSW's Node-side request interceptor; constructed once with default handlers, driven via listen/use/resetHandlers/close. | first defined: Chapter 088 L5
+MSW v2 | - | The Oct 2023 MSW rewrite: http replaced rest, resolvers return an HttpResponse directly instead of res(ctx.json(...)). | first defined: Chapter 088 L5
+resolver (MSW) | - | Function MSW calls when a request matches; receives { request, params, cookies, requestId } and returns an HttpResponse. | first defined: Chapter 088 L5
+MSW handler | request handler | Method+URL matcher plus a resolver; default handlers state the happy-path contract, overrides stack on top. | first defined: Chapter 088 L5
+HttpResponse | - | MSW's response builder: .json/.text/.error()/raw constructor for the reply a resolver returns. | first defined: Chapter 088 L5
+server.use | - | Pushes handlers on top of the defaults for the current test; resetHandlers() in afterEach strips them. | first defined: Chapter 088 L5
+once (MSW) | once: true | Handler option (third arg to http.*) making a handler answer exactly one matching request, then retire. | first defined: Chapter 088 L5
+onUnhandledRequest | - | setupServer.listen policy; 'error' makes any request with no matching handler throw instead of passing through. | first defined: Chapter 088 L5
+clone-and-capture | - | Test pattern: clone the request inside the resolver, push the copy into a per-test array, assert on it after the act. | first defined: Chapter 088 L5
+raw body | raw-body invariant | The exact bytes off the wire before parsing; what Stripe's signature covers, so re-serializing breaks verification. | first defined: Chapter 088 L6
+generateTestHeaderString | stripe.webhooks.generateTestHeaderString | Stripe SDK helper that builds a valid Stripe-Signature header for a payload+secret; the exact inverse of constructEvent, for signing test fixtures. | first defined: Chapter 088 L6
+tolerance window | - | Stripe's 300-second freshness bound on a signature timestamp; an older one is rejected as a replay even though the HMAC is genuine. | first defined: Chapter 088 L6
+isRedirectError | - | Next.js helper that tests whether a caught error is a NEXT_REDIRECT; lets production code tell a redirect throw from a real error. | first defined: Chapter 088 L7
+clearAllMocks | vi.clearAllMocks | Vitest reset wiping every mock's recorded call history between tests so one test's calls don't leak into the next. | first defined: Chapter 088 L7
+isolation (test) | isolated test | Each test runs against a clean world with no row, mock, handler, or timer left by an earlier test. | first defined: Chapter 088 L8
+two-bucket model | two buckets | Every flake is a state leak or an order/nondeterminism bug; the bucket dictates the fix shape. | first defined: Chapter 088 L8
+state leak | leak (test) | A test leaves a mutation behind (row, handler, mock, timer, shared array) and the next test inherits it; passes alone, fails in suite. | first defined: Chapter 088 L8
+order dependency | order/nondeterminism | A test passes only because of when it ran (run order, wall-clock time, random value); fixed by removing the dependency. | first defined: Chapter 088 L8
+repeats | { repeats: N } | Per-test Vitest option running the test N times in one go to measure its flake rate on demand. | first defined: Chapter 088 L8
+--sequence.shuffle.files | shuffle flag | Vitest flag randomizing the order test files run in, surfacing cross-file leaks and order dependencies. | first defined: Chapter 088 L8
+--retry (test) | vitest --retry | Re-runs a failing test until one attempt passes and reports green; forbidden for test-logic flake because it hides the cause. | first defined: Chapter 088 L8
+infrastructure flake | infra flake | Nondeterminism outside your test (CI network blip, slow container start, external sandbox timeout); the one place a scoped retry is legitimate. | first defined: Chapter 088 L8
+quarantine (test) | quarantine | Visibly skipping a flaky test out of the CI gate (it.skipIf(CI)) with an owner, issue, and date; buys time, never the fix. | first defined: Chapter 088 L8

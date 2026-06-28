@@ -1,0 +1,452 @@
+---
+title: Transaction rollback against real Postgres
+chapter-id: 88
+tagline: Integration tests that run real Drizzle queries against Postgres, each wrapped in a transaction that always rolls back to stay isolated and fast.
+course-progress: 0.8232
+rewrites: 2
+sidebar:
+  order: 1
+  label: Rollback against real Postgres
+---
+
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import RollbackLifecycleStage from '../../../components/lessons/088/1/rollback-lifecycle/Stage.astro';
+import CostTiers from '../../../components/lessons/088/1/cost-tiers/CostTiers.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import Buckets from '../../../components/exercises/buckets/Buckets.astro';
+import Bucket from '../../../components/exercises/buckets/Bucket.astro';
+import Item from '../../../components/exercises/buckets/Item.astro';
+import Term from '../../../components/ui/Term.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import { Code } from '@astrojs/starlight/components';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+In the previous chapter you tested `/lib` with everything mocked, because `/lib` is pure: same input, same output, no database, no network.
+The instinct that builds, mock the collaborator and assert the call, is wrong at the seams, and carrying it across the line ships a class of bugs that pass green.
+
+This chapter tests those seams: the Server Action that parses input and writes a row, the route handler that verifies and dedupes a webhook, the query that leans on a column you forgot was `NOT NULL`.
+Most production regressions live there, where a mock at the boundary can't see them.
+So we stop mocking the database and run the real query against a real Postgres, each test wrapped in a transaction that always rolls back, so one test never sees another's rows.
+
+## Why a mocked database proves nothing at the seam
+
+Here is a Server Action that inserts an invoice and returns the saved row.
+
+```ts
+export const createInvoice = async (input: CreateInvoiceInput) => {
+  const [invoice] = await db.insert(invoices).values(input).returning();
+  return ok(invoice);
+};
+```
+
+The instinct from the previous chapter is to mock the `db` client and assert the call shape.
+
+<CodeVariants>
+  <CodeVariant label="Mocked db (proves nothing)">
+    <div data-mark-color="red">
+
+    ```ts {7}
+    vi.mock('@/db/client');
+
+    it('inserts an invoice', async () => {
+      const input = buildInvoiceInput();
+      await createInvoice(input);
+
+      expect(vi.mocked(db).insert).toHaveBeenCalledWith(invoices);
+    });
+    ```
+
+    </div>
+    This passes against a fictional database. It asserts the exact arguments the test just supplied, so it can never fail for a real reason.
+  </CodeVariant>
+
+  <CodeVariant label="Real db (proves behavior)">
+    <div data-mark-color="green">
+
+    ```ts {4-7}
+    it('inserts an invoice', withRollback(async ({ tx }) => {
+      const result = await createInvoice(buildInvoiceInput(), { db: tx });
+
+      const [saved] = await tx
+        .select()
+        .from(invoices)
+        .where(eq(invoices.id, result.data.id));
+      expect(saved.status).toBe('draft');
+    }));
+    ```
+
+    </div>
+    This passes only if Postgres accepts the row. The action runs real SQL against a real test database and reads the row back out, so the schema, the constraints, and the defaults are all under test. You haven't met `withRollback` or `tx` yet; we build both in a moment. For now, read `tx` as "the database, but every write vanishes after this test."
+  </CodeVariant>
+</CodeVariants>
+
+The mocked test is a <Term definition="A test that can only pass. It asserts the same inputs it just supplied, so there is no behavior left for it to verify.">tautology</Term>, so a green result carries no information.
+
+A fake `db` cannot hold:
+
+- Column nullability: the insert silently omits a `NOT NULL` column.
+- Unique constraints: the `(org_id, slug)` unique the data layer carries for tenant safety.
+- Defaults and generated values: the UUIDv7 `id` and the `created_at` timestamp Postgres fills in.
+- The SQL Drizzle emits: the query that either is or isn't valid against this schema.
+- `onDelete` cascade behavior: what happens to invoice lines when the invoice goes.
+
+Each is a real regression class.
+Say a migration adds a `NOT NULL` `currency` column and `createInvoice` never sets it.
+Under the mock, the insert is just a function call with whatever arguments, so it stays green.
+Against real Postgres, the insert is rejected with error code <Term definition="Postgres error code for a NOT NULL violation — a write left a required column empty.">23502</Term>, and the test goes red the instant the schema and the code disagree.
+
+That costs something.
+A mocked unit test is no I/O, just function calls, so it takes microseconds; a real insert is a connection and a round-trip, so it takes milliseconds.
+The rest of this lesson is the discipline that holds that price to tens of milliseconds rather than hundreds.
+
+## Which layer a test belongs to
+
+Unit tests own `/lib`'s pure logic: same input, same output, no I/O, no mocks.
+Integration tests own anything that crosses a process boundary the *runtime* cares about: Drizzle reaching Postgres, a Server Action running through its full wrapper, a route handler with request and response serialization, a webhook receiver with signature verification.
+
+:::tip[The litmus test]
+If mocking the collaborator would mean the test no longer catches a column-rename, a schema-drift, or a constraint-violation regression, it belongs at the integration layer.
+:::
+
+The line can be subtle inside one feature.
+A Zod schema is a unit test: pure validation, no database.
+The Server Action that *calls* that schema and writes the parsed result is an integration test, because the write breaks when the schema and the table drift apart.
+
+<Buckets twoCol instructions="Apply the litmus test: would mocking the collaborator stop the test from catching a column-rename, schema-drift, or constraint violation? If yes, it's an integration test.">
+  <Bucket name="unit" label="Unit test" description="/lib, pure, mock-free" />
+  <Bucket name="integration" label="Integration test" description="Real DB or full wrapper" />
+
+  <Item bucket="unit">`formatInvoiceTotal` — sums line items into a `Money` value</Item>
+  <Item bucket="unit">`mapDatabaseError` — turns a Postgres error code into an `ErrorCode`</Item>
+  <Item bucket="unit">the `createInvoiceSchema` Zod validator</Item>
+  <Item bucket="integration">`createInvoice` — parses input, then inserts a row</Item>
+  <Item bucket="integration">`listInvoices` — queries invoices scoped to an `orgId`</Item>
+  <Item bucket="integration">the Stripe webhook `POST` handler</Item>
+</Buckets>
+
+## How one test stays isolated: open, run, roll back
+
+Hundreds of integration tests share one database, and each one writes rows.
+With no isolation, test B reads the invoice test A inserted and breaks; flip the order and it passes.
+The suite turns order-dependent, the hardest failure to debug.
+Every test needs to start clean and leave nothing behind.
+
+The obvious fix is to clean up after each test: `TRUNCATE` every table and re-insert the baseline rows.
+It works, but it's slow, because a <Term definition="SQL that empties a table fast, but commits the change. It happens outside any transaction, so a rollback can't undo it.">TRUNCATE</Term> plus a reseed is a full disk round-trip, roughly 500 ms per test.
+A few hundred tests and your suite runs for minutes.
+
+Invert it. Instead of writing rows and cleaning them up, wrap the whole test in a transaction and *never commit it*:
+
+```ts
+await db.transaction(async (tx) => {
+  // run the whole test body against tx
+  // ...and force a rollback at the end
+});
+```
+
+Run the body against `tx`, then force a rollback: Postgres discards every write in sub-millisecond time, with no truncate and no reseed.
+The baseline seed (one org, one admin user, wired up in the next lesson) lives *outside* the transaction, so every test sees it and no rollback touches it.
+
+How do you force the rollback?
+One fact about Drizzle transactions carries the whole pattern: **a transaction commits when its callback resolves, and rolls back when its callback throws.**
+So once the body finishes, the wrapper throws a private <Term definition="A private error value used only as a control-flow signal. It's thrown to trigger behavior, never surfaced to the caller.">sentinel error</Term>, then catches *only* that sentinel and swallows it, so the test reports green.
+Any *real* error from the body isn't the sentinel, so it propagates and fails the test.
+
+Watch the row appear and vanish:
+
+<DiagramSequence>
+  <DiagramStep>
+    <RollbackLifecycleStage active={0} />
+    <Fragment slot="caption">
+      `BEGIN`: the transaction opens, `tx` is live, nothing written yet.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <RollbackLifecycleStage active={1} />
+    <Fragment slot="caption">
+      The body runs against `tx`: it inserts the invoice and reads it back, visible only inside the transaction.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <RollbackLifecycleStage active={2} />
+    <Fragment slot="caption">
+      The body done, the wrapper throws its private `RollbackSignal`.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <RollbackLifecycleStage active={3} />
+    <Fragment slot="caption">
+      Postgres discards every write; the invoice is gone.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <RollbackLifecycleStage active={4} />
+    <Fragment slot="caption">
+      The wrapper catches the sentinel and stops it here, so the test reports green.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+The invoice was real enough to insert and read back, then never existed: isolation comes from a write that was never allowed to land, not from cleanup that runs afterward.
+
+<Figure caption="Per-test cost on a log scale. Rollback is two orders of magnitude cheaper than truncate-and-reseed.">
+  <CostTiers />
+</Figure>
+
+The middle bar, tens of milliseconds, is the price of catching everything the mock couldn't, and it's the right price at the seam.
+
+## Building the `withRollback` wrapper
+
+The helper lives in `src/test/db/with-rollback.ts`. It wraps a test body that receives `{ tx }`.
+
+<AnnotatedCode lang="ts" maxLines={16} code={`
+class RollbackSignal extends Error {}
+
+export const withRollback = (body: (ctx: { tx: DbOrTx }) => Promise<void>) => {
+  return async () => {
+    try {
+      await db.transaction(async (tx) => {
+        await body({ tx });
+        throw new RollbackSignal();
+      });
+    } catch (err) {
+      // rethrow anything that isn't our rollback signal
+      if (!(err instanceof RollbackSignal)) throw err;
+    }
+  };
+};
+`}>
+  <AnnotatedStep meta="{3-4}" color="blue">
+    The wrapper returns a zero-argument async function, which is what `it` runs per test.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{6-9}" color="blue">
+    Open a transaction, run the body against `tx`, then throw the sentinel. The throw forces Drizzle to roll back, so the body's writes never commit.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{10-13}" color="green">
+    The load-bearing line: swallow *only* the sentinel and rethrow everything else, so genuine errors still fail the test. A catch-all here would hide every real failure.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+The call site reads cleanly.
+
+```ts
+it('creates an invoice', withRollback(async ({ tx }) => {
+  // ...use tx as the database; every write rolls back
+}));
+```
+
+`RollbackSignal` is module-private, so nothing outside this file can throw it or mistake it for a real error.
+The `db` here opens against the per-worker test connection, which the next lesson wires up.
+
+## Accepting the database handle in production code
+
+The rollback only isolates the test if the production query runs on `tx`.
+If `createInvoice` reaches for the global `db` instead, its write commits for real, outside the transaction where the rollback can't reach.
+So production code has to *accept* the database handle as an argument.
+
+The change is one line on the action from the top of the lesson: keep the real arguments, then add an options object with a defaulted `db`.
+
+```ts {2}
+export const createInvoice = async (
+  input: CreateInvoiceInput,
+  { db = defaultDb }: { db?: DbOrTx } = {},
+) => {
+  const [invoice] = await db.insert(invoices).values(input).returning();
+  return ok(invoice);
+};
+```
+
+The default is the singleton, so production code passes nothing and is unaffected; the test passes `{ db: tx }` to put the write inside the transaction.
+The handle is invisible in production and swappable in tests:
+
+<CodeVariants>
+  <CodeVariant label="Production code">
+    ```ts
+    const result = await createInvoice(input);
+    ```
+    **Invisible in production.** No call site passes a `db`, so the default singleton fires every time. The new parameter changes nothing.
+  </CodeVariant>
+
+  <CodeVariant label="Test code">
+    <div data-mark-color="green">
+
+    ```ts "{ db: tx }"
+    it('creates an invoice', withRollback(async ({ tx }) => {
+      const result = await createInvoice(input, { db: tx });
+
+      const [saved] = await tx.select().from(invoices).where(eq(invoices.id, result.data.id));
+      expect(saved).toBeDefined();
+    }));
+    ```
+
+    </div>
+    **The test passes `tx`.** Same call, but the write now runs inside the test's transaction and rolls back with everything else. The assertion reads back through the same `tx`.
+  </CodeVariant>
+
+  <CodeVariant label="AsyncLocalStorage (the alternative)">
+    ```ts
+    await als.run(tx, () => createInvoice(input));
+    ```
+    **Ambient, no signature change.** <Term definition="A Node API that carries a value through an async call chain without passing it as an argument — like request-scoped context.">AsyncLocalStorage</Term> carries `tx` through the call chain without touching the signature, at the cost of a context module, a `.run()` wrapper, and a `getDb()` indirection. Reach for it only when the signature is fixed, the route-handler case in the next section.
+  </CodeVariant>
+</CodeVariants>
+
+The course default is the explicit handle. AsyncLocalStorage is weight a readable call site doesn't need.
+
+## Carrying `tx` into route handlers
+
+The route handler is the exception.
+Its signature is fixed, `export async function POST(request: Request)`, with no second parameter to thread `tx` through, and Next.js controls the call.
+
+A module-scope `AsyncLocalStorage<DbOrTx>` solves this.
+The test wraps the handler call in a context carrying `tx`, while production reads the database through a helper that falls back to the <Term definition="The single shared `db` client exported once from `db/index.ts`. Every non-test caller uses it.">singleton</Term> when no context is set:
+
+<Code code={`import { AsyncLocalStorage } from 'node:async_hooks';
+import { db as defaultDb } from '@/db/client';
+import type { DbOrTx } from '@/db/types';
+
+export const testTxContext = new AsyncLocalStorage<DbOrTx>();
+
+export const getDb = (): DbOrTx => testTxContext.getStore() ?? defaultDb;`} lang="ts" title="src/db/test-tx-context.ts" />
+
+The handler calls `getDb()` instead of importing `db`.
+In production nothing calls `.run`, the store is empty, and `getDb()` returns the singleton.
+Under test, the test runs the handler inside `testTxContext.run(tx, () => POST(request))`, so the store holds `tx` and `getDb()` hands it to the handler.
+
+<VideoCallout videoId="6pA3jufJA-k" videoTitle="Node.js AsyncLocalStorage Explained in 84.3 seconds">
+  Wes Bos in 84 seconds: a store opened in one function, readable anywhere down the call stack, which is exactly how `tx` reaches the handler.
+</VideoCallout>
+
+:::caution[One mechanism, one place]
+Explicit handles stay the default wherever you control the signature: Server Actions, `/lib` helpers, and `db/queries/` functions. Reserve AsyncLocalStorage for the framework-fixed-signature case, route handlers and webhook receivers.
+:::
+
+## What the rollback does not undo
+
+The rollback undoes rows, and nothing else.
+Any state that isn't a transactional Postgres row escapes it, and the failure is silent. Three cases come up.
+
+- **Sequences advance and stay advanced.** A rolled-back insert still consumes its <Term definition="The counter Postgres uses for serial and identity columns. Advancing it is not transactional — a rollback does not give the number back.">sequence</Term> value, so never assert on an exact auto-incrementing ID. Assert on shape instead (`expect.stringMatching(/^inv_/)`, `expect.any(String)`), never `id === 42`. An ID that's correct today is off-by-one the moment another test runs first.
+- **`pg_notify` and triggers fire before the rollback.** The <Term definition="A Postgres pub/sub command that emits a message to listeners. It fires immediately, not on commit — so a later rollback can't recall it.">`pg_notify`</Term> message is already out and the trigger has already run. Don't assert on the notify; assert through whatever observable state it was supposed to produce.
+- **External side effects aren't transactional at all.** A `fetch`, a queue enqueue, an email send: none live inside the Postgres transaction. Isolate these with a different tool (MSW, later in this chapter, or in-memory stubs) and assert on *intent*, such as "the handler was called with body X", not on a real side effect.
+
+Sort each effect by whether the rollback undoes it:
+
+<Buckets twoCol instructions="Sort each effect by whether the test's transaction rollback undoes it. Remember the principle: the rollback undoes rows, and nothing else.">
+  <Bucket name="rolledback" label="Rolled back automatically" description="Transactional Postgres state" />
+  <Bucket name="survives" label="Survives the rollback" description="Needs other isolation" />
+
+  <Item bucket="rolledback">An inserted `invoices` row</Item>
+  <Item bucket="rolledback">An `UPDATE` to an existing row</Item>
+  <Item bucket="survives">A `nextval` consumed by a serial column</Item>
+  <Item bucket="survives">A `pg_notify` to a listening channel</Item>
+  <Item bucket="survives">A Stripe API call the action made</Item>
+  <Item bucket="survives">An email enqueued to the send queue</Item>
+</Buckets>
+
+## Two type guards against the silent-commit bug
+
+One failure mode remains, and it's the worst because it's silent.
+Inside `withRollback`, suppose a production function reaches for the imported singleton `db` instead of the `tx` it was handed.
+That query runs *outside* the test's transaction, so its writes commit for real.
+The rollback can't undo them, and the test still passes: its assertions go through `tx`, which never saw the committed row.
+The row leaks into the next test while the test that should have caught it stays green.
+
+Care won't catch this; care is the first thing to go under a deadline.
+You catch it structurally, with two guards.
+
+**Guard one is the `DbOrTx` type.** Define the transaction type once and union it with the singleton's type:
+
+<Code code={`import type { PgTransaction } from 'drizzle-orm/pg-core';
+import type { NodePgQueryResultHKT } from 'drizzle-orm/node-postgres';
+import type { ExtractTablesWithRelations } from 'drizzle-orm';
+import { db } from '@/db/client';
+import * as schema from '@/db/schema';
+
+type Transaction = PgTransaction<
+  NodePgQueryResultHKT,
+  typeof schema,
+  ExtractTablesWithRelations<typeof schema>
+>;
+
+export type DbOrTx = typeof db | Transaction;`} lang="ts" title="src/db/types.ts" />
+
+Every query helper and threaded function takes `DbOrTx`, not the concrete `db` type.
+Both the singleton and a live transaction satisfy the union, so production and tests type-check.
+The union also states intent: it says "this function might run inside a transaction" out loud, making "called on `tx`" an expected shape rather than a happy accident.
+And it's the type the lint rule keys off.
+
+The database side uses `typeof db` rather than re-deriving `NodePgDatabase`'s generics: cleaner, and it sidesteps a known incompatibility where a bare `PgTransaction` won't assign to a `NodePgDatabase` parameter.
+Drizzle moves fast here, so check the import against your pinned version.
+
+**Guard two is a lint rule.** The union still lets a test *import* the singleton and call it with no handle, so forbid that import.
+ESLint's <Term definition="An ESLint rule that bans importing specific module paths from specific files.">`no-restricted-imports`</Term> blocks `@/db/client` from any `*.int.test.ts` file:
+
+<Code code={`{
+  "files": ["**/*.int.test.ts"],
+  "rules": {
+    "no-restricted-imports": ["error", {
+      "paths": [{
+        "name": "@/db/client",
+        "message": "Integration tests must use the tx from withRollback, not the global db."
+      }]
+    }]
+  }
+}`} lang="json" />
+
+Now an integration test cannot reach the global `db`; it has only the `tx` the wrapper handed it.
+The wrong handle stops being a silent runtime leak and becomes a red squiggle at author time.
+
+That `.int.test.ts` suffix is the discriminator the whole tooling chain keys on: the `integration` Vitest project globs it and the lint rule targets it, keeping a fast unit test out of the slow lane.
+`invoice.test.ts` is a unit test; `invoice.int.test.ts` is an integration test.
+
+For 20 to 80 ms per test, you exercise the real query against the real schema: the column rename, the constraint violation, the schema drift a mock can never see, with isolation coming from the rollback rather than from cleanup.
+The next lesson wires up what this took on faith: one isolated database per worker, migrations run once, the baseline seed inserted.
+
+## External resources
+
+<CardGrid>
+  <ExternalResource
+    title="Drizzle — Transactions"
+    href="https://orm.drizzle.team/docs/transactions"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The commit-on-resolve, roll-back-on-throw contract the whole pattern rests on."
+  />
+  <ExternalResource
+    title="Vitest — Test Context"
+    href="https://vitest.dev/guide/test-context"
+    icon="simple-icons:vitest"
+    iconColor="#6E9F18"
+    description="How a wrapper like withRollback hands per-test values to the test body."
+  />
+  <ExternalResource
+    title="Node.js — Asynchronous context tracking"
+    href="https://nodejs.org/api/async_context.html"
+    icon="simple-icons:nodedotjs"
+    iconColor="#5FA04E"
+    description="Official AsyncLocalStorage reference: run() and getStore(), the escape hatch for framework-fixed handler signatures."
+  />
+  <ExternalResource
+    title="From 4 Minutes to 3 Seconds"
+    href="https://dev.to/miry/from-4-minutes-to-3-seconds-how-database-transaction-rollback-revolutionized-test-suite-4olh"
+    icon="simple-icons:devdotto"
+    iconColor="#0A0A0A"
+    description="A real suite trading truncate-and-reseed for rollback — the two-orders-of-magnitude speedup this lesson claims, measured."
+  />
+</CardGrid>
