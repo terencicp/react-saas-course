@@ -737,10 +737,10 @@
 - 7 Quiz
 
 ### Chapter 085 — Project: tri-locale invoices list
-- 1 Project Overview
+- 1 Project overview
 - 2 Wire next-intl and ship three catalogs
-- 3 Format dates in profile tz and currency from data
-- 4 Emit hreflang, sitemap alternates, and per-locale OG
+- 3 Dates in profile tz, currency from data
+- 4 hreflang, sitemap alternates, and per-locale OG
 
 ---
 

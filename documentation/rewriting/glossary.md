@@ -2487,3 +2487,17 @@ x-default | - | Pseudo-locale hreflang entry naming the fallback URL for users w
 self-canonical | - | Each locale variant declaring its own localized URL as canonical, not the default-locale original; the rule that keeps translations indexable. | first defined: Chapter 084 L6
 sitemap index | - | Root sitemap.xml that lists no URLs itself but points at child sitemaps, often one per locale; a scale option above a single sitemap.ts. | first defined: Chapter 084 L6
 noindex | robots index:false | Per-page directive (metadata.robots index:false) telling Google to crawl but not index/rank a page; distinct from robots.txt, which blocks crawling. | first defined: Chapter 084 L6
+setRequestLocale | - | next-intl call opting a segment into static rendering; must run before any other next-intl call in the segment. | first defined: Chapter 085 L2
+hasLocale | - | next-intl type guard validating a string against routing.locales; narrows the type and gates notFound(). | first defined: Chapter 085 L2
+getRequestConfig | - | next-intl/server seam evaluated once per request to resolve the locale and load its catalog; must stay prerender-safe. | first defined: Chapter 085 L2
+getTranslations | - | next-intl/server async translator for Server Components, scoped to a namespace. | first defined: Chapter 085 L2
+useTranslations | - | next-intl hook translator for Client Components, scoped to a namespace. | first defined: Chapter 085 L2
+NextIntlClientProvider | - | next-intl provider passing the (pick-scoped) message catalog to Client Components. | first defined: Chapter 085 L2
+useFormatter | - | next-intl hook returning a formatter wired to the request locale and shared formats presets; format.dateTime/number/relativeTime inside the render tree. | first defined: Chapter 084 L5
+Formats type | - | next-intl's preset-config type with slots only for dateTime/number/list/displayName; no relativeTime slot. | first defined: Chapter 085 L3
+narrowSymbol | currencyDisplay narrowSymbol | currencyDisplay option rendering the short currency glyph ($, €) instead of US$ or USD. | first defined: Chapter 085 L3
+minor units | minor currency units | Smallest currency denomination money is stored in (integer cents); divide by 100 at display. | first defined: Chapter 085 L3
+self-referential (hreflang) | - | Rule that each page's hreflang set must list its own locale, not just the others; Google ignores the cluster otherwise. | first defined: Chapter 085 L4
+bidirectional (hreflang) | mutual hreflang | Rule that hreflang links must be reciprocal: if A points at B, B must point back at A, else Google drops the declaration. | first defined: Chapter 085 L4
+localePrefix as-needed | as-needed prefix | next-intl routing option leaving the default locale unprefixed while every other locale gets a URL prefix. | first defined: Chapter 085 L4
+getPathname | - | next-intl locale-aware path builder; given a locale and href, returns the correctly prefixed pathname. | first defined: Chapter 085 L4
