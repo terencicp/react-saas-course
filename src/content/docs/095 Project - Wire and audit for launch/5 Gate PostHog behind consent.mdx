@@ -1,0 +1,455 @@
+---
+title: Gate PostHog behind consent
+chapter-id: 95
+course-progress: 0.8999
+sidebar:
+  order: 5
+  label: Consent-gate PostHog
+rewrites: 2
+---
+
+import TabbedContent from '../../../components/figures/tabbed-content/TabbedContent.astro';
+import TabbedItem from '../../../components/figures/tabbed-content/TabbedItem.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import { Code, CardGrid } from '@astrojs/starlight/components';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The seeded app loads PostHog before the visitor agrees to anything.
+Open the marketing page in a fresh incognito window with the Network panel open: before you click, PostHog has loaded its SDK and sent a request to the analytics backend.
+This lesson closes that gap, so product analytics stays silent until the visitor accepts, and the choice is saved in a cookie so it survives a reload.
+
+The finished feature is a consent banner pinned to the bottom of the page, with equal-weight Accept and Reject buttons that turn capture on or leave it off.
+
+<TabbedContent syncKey="consent-banner-viewport">
+  <TabbedItem label="Desktop · 1280">
+    <Screenshot viewport="desktop">
+      <img
+        src="/screenshots/095/l5-desktop-1280.png"
+        alt="The marketing homepage at 1280px: the hero image, the 'Run your business on Acme' headline, and a subhead, with the cookie-consent banner pinned to the bottom — a sentence on the left ('We use product analytics to understand which features earn their weight. Nothing non-essential runs until you choose.') and equal-weight 'Reject' (outline) and 'Accept' (solid) buttons on the right."
+      />
+    </Screenshot>
+  </TabbedItem>
+
+  <TabbedItem label="Mobile · 390">
+    <Screenshot viewport="mobile">
+      <img
+        src="/screenshots/095/l5-mobile-390.png"
+        alt="The same marketing homepage at 390px: the hero image, the headline wrapped to two lines, the subhead, and a 'Get started' button, with the cookie-consent banner pinned to the bottom — the explanatory sentence stacked above the equal-weight 'Reject' (outline) and 'Accept' (solid) buttons."
+      />
+    </Screenshot>
+  </TabbedItem>
+</TabbedContent>
+
+## Your mission
+
+The seeded `providers.tsx` imports `posthog-js` at module scope and inits with `opt_out_capturing_by_default: false`, so events fire the moment the page paints, with nothing in the tree to gate them.
+
+Two independent belts have to hold.
+Belt one is capture-off-by-default at init: pass `opt_out_capturing_by_default: true` so a loaded SDK records nothing until something opts it in.
+Belt two is a consent-gated dynamic `import('posthog-js')` that keeps the SDK chunk off the page until consent is given.
+Either belt alone has a hole; together they fail safe both ways.
+
+Every grant and revoke routes through one seam, `lib/analytics/consent.ts`, so capture turns on in exactly one place a privacy review can read.
+
+The case to watch is session continuity.
+After a reload, `init` runs again with capture off, so a returning visitor who accepted last week is silently not captured.
+When the consent cookie says they consented, opt them back in on mount.
+
+The tests run in Node with no DOM, so they check the shape of what you produce, the init flag, the source of truth, the seam, and the finding file; you confirm the runtime behaviors by hand in the browser.
+
+<Checklist id="mission">
+  <ChecklistItem chip="untested">A fresh visit, with cookies and localStorage cleared, produces zero `/ingest` requests.</ChecklistItem>
+  <ChecklistItem chip="untested">Clicking Accept starts capture; the next navigation fires a `$pageview`, and the event lands in the PostHog dashboard within about thirty seconds.</ChecklistItem>
+  <ChecklistItem chip="untested">Clicking Reject stops capture.</ChecklistItem>
+  <ChecklistItem chip="untested">Reloading after consent was granted resumes capture without a second click.</ChecklistItem>
+  <ChecklistItem chip="tested">PostHog is initialized with capture off by default.</ChecklistItem>
+  <ChecklistItem chip="tested">The consent decision is held in one source of truth that every consumer reads.</ChecklistItem>
+  <ChecklistItem chip="tested">Every grant and revoke routes through the single `lib/analytics/consent.ts` seam.</ChecklistItem>
+  <ChecklistItem chip="tested">`findings/004-posthog-consent-gate.md` carries all four sections, its rule cites the consent-gated-init pattern and the cookie-consent discipline, its location names the provider and the Network surface, and its fix names the opt-out/opt-in pair and the seam.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Build the gate against the brief and the lesson tests first. The `/ingest` reverse proxy and the PostHog env keys already ship in `next.config.ts` and `src/env.ts`, so you are wiring the consent layer on top of existing plumbing. Open the walkthrough below once you have an attempt running, or once you are stuck.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+Four files in dependency order: the seam, the source of truth that calls it, the banner that reads it, and the rewritten providers that tie them together.
+
+### The single seam — `src/lib/analytics/consent.ts`
+
+This is the one place capture turns on and off. Both exported functions write the cookie, dynamically import `posthog-js`, and call the opt-in/opt-out pair, so the SDK loads only on a grant or teardown, never speculatively.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const ANALYTICS_CONSENT_COOKIE = 'consent_analytics';
+
+const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 400;
+
+const writeConsentCookie = (granted: boolean) => {
+  const maxAge = granted ? COOKIE_MAX_AGE_SECONDS : 0;
+  document.cookie = \`\${ANALYTICS_CONSENT_COOKIE}=\${granted ? '1' : '0'}; path=/; max-age=\${maxAge}; SameSite=Lax\`;
+};
+
+export const hasAnalyticsConsentCookie = () =>
+  typeof document !== 'undefined' &&
+  document.cookie
+    .split('; ')
+    .some((entry) => entry === \`\${ANALYTICS_CONSENT_COOKIE}=1\`);
+
+export const grantAnalyticsConsent = async () => {
+  writeConsentCookie(true);
+  const { default: posthog } = await import('posthog-js');
+  posthog.opt_in_capturing();
+  posthog.capture('analytics_consent_granted');
+};
+
+export const revokeAnalyticsConsent = async () => {
+  writeConsentCookie(false);
+  const { default: posthog } = await import('posthog-js');
+  posthog.opt_out_capturing();
+  posthog.reset();
+};
+`}>
+  <AnnotatedStep meta={`{1-8} "ANALYTICS_CONSENT_COOKIE"`} color="blue">
+    The cookie records the choice. `max-age` is 400 days (the ePrivacy 13-month cap), `SameSite=Lax`, and deliberately **not** `HttpOnly`, because the client reads it on mount to decide whether to re-opt-in. As the record of an essential decision, it needs no consent of its own.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{16-21} "opt_in_capturing" "import('posthog-js')"`} color="green">
+    `grantAnalyticsConsent` writes the cookie, dynamic-imports posthog, calls `opt_in_capturing()` (belt one lifted), then fires the one-off `analytics_consent_granted` event. The `await import('posthog-js')` is belt two: the SDK enters the page only on this consented branch.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{23-28} "opt_out_capturing" "reset"`} color="orange">
+    `revokeAnalyticsConsent` writes the cookie off, then calls `opt_out_capturing()` and `reset()`. Withdrawal means stop and forget, dropping the queued events and the stored identity, not just stop future capture.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+### The source of truth — `src/app/_components/consent-provider.tsx`
+
+One context holds the decision; every tracker reads it through `useConsent`. The subtlety is the two boolean flags and why both start `false`.
+
+<AnnotatedCode lang="tsx" maxLines={18} code={`
+'use client';
+
+import { createContext, type ReactNode, use, useEffect, useState } from 'react';
+
+import {
+  grantAnalyticsConsent,
+  hasAnalyticsConsentCookie,
+  revokeAnalyticsConsent,
+} from '@/lib/analytics/consent';
+
+type ConsentValue = {
+  analytics: boolean;
+  decided: boolean;
+  accept: () => Promise<void>;
+  reject: () => Promise<void>;
+};
+
+const ConsentContext = createContext<ConsentValue | null>(null);
+
+export const ConsentProvider = ({ children }: { children: ReactNode }) => {
+  const [analytics, setAnalytics] = useState(false);
+  const [decided, setDecided] = useState(false);
+
+  useEffect(() => {
+    if (hasAnalyticsConsentCookie()) {
+      setAnalytics(true);
+      setDecided(true);
+    }
+  }, []);
+
+  const accept = async () => {
+    await grantAnalyticsConsent();
+    setAnalytics(true);
+    setDecided(true);
+  };
+
+  const reject = async () => {
+    await revokeAnalyticsConsent();
+    setAnalytics(false);
+    setDecided(true);
+  };
+
+  return (
+    <ConsentContext value={{ analytics, decided, accept, reject }}>
+      {children}
+    </ConsentContext>
+  );
+};
+
+export const useConsent = () => {
+  const value = use(ConsentContext);
+  if (!value) {
+    throw new Error('useConsent must be used within a ConsentProvider');
+  }
+  return value;
+};
+`}>
+  <AnnotatedStep meta={`{11-16} "analytics" "decided"`} color="blue">
+    `analytics` is "is capture on"; `decided` is "has the visitor chosen yet". `decided` separates undecided (show the banner) from rejected (banner gone, flag still off). Both collapse to `analytics: false`, so nothing fires before the click.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{21-29} "useState(false)"`} color="green">
+    Both flags start `false` so the server render and first client render agree; `document.cookie` is unreadable on the server, so reading it during render would cause a hydration mismatch. The mount effect runs only on the client, after hydration, and flips the flags for a returning visitor.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{31-41} "grantAnalyticsConsent" "revokeAnalyticsConsent"`} color="orange">
+    `accept` and `reject` each call the seam, then set state. The provider defers to `consent.ts`; it never writes the cookie or calls PostHog itself.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{50-56} "throw"`} color="red">
+    `useConsent` throws outside the provider, so a missing provider fails loudly rather than handing back an undefined decision that reads as "no consent" and silently disables analytics everywhere.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+### The banner — `src/app/_components/consent-banner.tsx`
+
+The banner is plain by design. It shows only while the choice is undecided, and both buttons route through the hook, never an inline cookie write or `opt_in_capturing()`.
+
+<Code
+  lang="tsx"
+  title="src/app/_components/consent-banner.tsx"
+  code={`'use client';
+
+import { useConsent } from '@/app/_components/consent-provider';
+import { Button } from '@/components/ui/button';
+
+export const ConsentBanner = () => {
+  const { decided, accept, reject } = useConsent();
+
+  if (decided) {
+    return null;
+  }
+
+  return (
+    <div
+      data-testid="consent-banner"
+      className="fixed inset-x-0 bottom-0 z-50 border-t bg-background p-4 shadow-lg"
+    >
+      <div className="mx-auto flex max-w-3xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-muted-foreground">
+          We use product analytics to understand which features earn their
+          weight. Nothing non-essential runs until you choose.
+        </p>
+        <div className="flex shrink-0 gap-2">
+          <Button variant="outline" onClick={reject}>
+            Reject
+          </Button>
+          <Button onClick={accept}>Accept</Button>
+        </div>
+      </div>
+    </div>
+  );
+};`}
+/>
+
+Accept and Reject carry equal visual weight: one solid, one outline, both one click. Burying Reject behind a second screen or styling it as a faint link is a dark pattern that regulators treat as no consent at all, so equal weight is a compliance requirement, not a design choice.
+
+### The rewrite — `src/app/_components/providers.tsx`
+
+This is where both belts come together: `ConsentProvider` wraps a `PostHogGate` that loads and inits the SDK only on the consented branch.
+
+<CodeVariants syncKey="providers" maxLines={18}>
+  <CodeVariant label="Before — capture on at first paint">
+    <div data-mark-color="red">
+
+    ```tsx title="src/app/_components/providers.tsx"
+    'use client';
+
+    import { ThemeProvider } from 'next-themes';
+    import posthog, { type PostHogConfig } from 'posthog-js';
+    import { PostHogProvider } from 'posthog-js/react';
+    import { type ReactNode, useEffect } from 'react';
+
+    import { env } from '@/env';
+
+    export const Providers = ({ children }: { children: ReactNode }) => {
+      useEffect(() => {
+        const config: Partial<PostHogConfig> & {
+          opt_out_capturing_by_default: boolean;
+        } = {
+          api_host: env.NEXT_PUBLIC_POSTHOG_HOST,
+          opt_out_capturing_by_default: false,
+        };
+        posthog.init(env.NEXT_PUBLIC_POSTHOG_KEY, config as Partial<PostHogConfig>);
+      }, []);
+
+      return (
+        <PostHogProvider client={posthog}>
+          <ThemeProvider
+            attribute="class"
+            defaultTheme="system"
+            enableSystem
+            disableTransitionOnChange
+          >
+            {children}
+          </ThemeProvider>
+        </PostHogProvider>
+      );
+    };
+    ```
+
+    </div>
+    **The seeded defect, both belts absent.** `posthog-js` imports at module scope and `init` runs unconditionally with `opt_out_capturing_by_default: false`, so capture is on before the visitor consents.
+  </CodeVariant>
+
+  <CodeVariant label="After — two-belt consent gate">
+    <div data-mark-color="green">
+
+    ```tsx title="src/app/_components/providers.tsx"
+    'use client';
+
+    import { ThemeProvider } from 'next-themes';
+    import type { PostHogConfig } from 'posthog-js';
+    import { type ReactNode, useEffect } from 'react';
+
+    import { ConsentBanner } from '@/app/_components/consent-banner';
+    import {
+      ConsentProvider,
+      useConsent,
+    } from '@/app/_components/consent-provider';
+    import { env } from '@/env';
+    import { hasAnalyticsConsentCookie } from '@/lib/analytics/consent';
+
+    type ConsentGatedConfig = Partial<PostHogConfig> & {
+      opt_out_capturing_by_default: boolean;
+    };
+
+    const PostHogGate = ({ children }: { children: ReactNode }) => {
+      const { analytics } = useConsent();
+
+      useEffect(() => {
+        if (!analytics) {
+          return;
+        }
+
+        let cancelled = false;
+        void import('posthog-js').then(({ default: posthog }) => {
+          if (cancelled) {
+            return;
+          }
+          const config: ConsentGatedConfig = {
+            api_host: '/ingest',
+            ui_host: 'https://eu.posthog.com',
+            defaults: '2026-01-30',
+            capture_pageview: false,
+            opt_out_capturing_by_default: true,
+          };
+          posthog.init(
+            env.NEXT_PUBLIC_POSTHOG_KEY,
+            config as Partial<PostHogConfig>,
+          );
+          if (hasAnalyticsConsentCookie()) {
+            posthog.opt_in_capturing();
+          }
+        });
+
+        return () => {
+          cancelled = true;
+        };
+      }, [analytics]);
+
+      return <>{children}</>;
+    };
+
+    export const Providers = ({ children }: { children: ReactNode }) => (
+      <ConsentProvider>
+        <PostHogGate>
+          <ThemeProvider
+            attribute="class"
+            defaultTheme="system"
+            enableSystem
+            disableTransitionOnChange
+          >
+            {children}
+            <ConsentBanner />
+          </ThemeProvider>
+        </PostHogGate>
+      </ConsentProvider>
+    );
+    ```
+
+    </div>
+    **Both belts in place.** The gate short-circuits before the dynamic `import('posthog-js')` (belt two), `init` carries `opt_out_capturing_by_default: true` (belt one), and `hasAnalyticsConsentCookie()` re-opts a returning visitor back in.
+  </CodeVariant>
+</CodeVariants>
+
+Three details carry their weight here. Both belts stay because each covers the other's failure mode: belt two stops the SDK chunk from shipping to a visitor who hasn't consented, and belt one keeps capture off if a mistyped config or a changed default lets the SDK load anyway. Grant and revoke route through the one `grantAnalyticsConsent` / `revokeAnalyticsConsent` seam so a privacy review can grep every place capture can turn on. And the explicit `if (hasAnalyticsConsentCookie()) posthog.opt_in_capturing()` makes session continuity legible in code, rather than leaving it to PostHog's persisted opt-in state.
+
+:::caution
+posthog-js 1.386 omits `opt_out_capturing_by_default` from its public `PostHogConfig` type, and `init` rejects unknown keys. Type the config through the local `ConsentGatedConfig` extension and pass it as `Partial<PostHogConfig>`; the installed runtime supports the key even though the published types lag.
+:::
+
+### The finding — `findings/004-posthog-consent-gate.md`
+
+Fill all four sections. The rule cites the consent-gated PostHog init from chapter 93 and the cookie-consent discipline from chapter 81. The location names the ungated init in `providers.tsx` and the pre-consent `/ingest` request on the Network panel. The consequence is processing without prior consent, since the first event leaves the browser before the banner renders. The fix names the seam, the init flag, the runtime opt-in/opt-out pair, and the session-continuity re-call. Because this finding is fixed, not documented-only, write it as the record of a gate that now exists.
+
+Optionally, file `findings/009-missing-next-font.md` if you spot that `src/app/(marketing)/layout.tsx` loads a font with a raw `<link>` tag instead of `next/font`.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Building a Next.js cookie consent banner"
+    href="https://posthog.com/tutorials/nextjs-cookie-banner"
+    icon="simple-icons:posthog"
+    iconColor="#F54E00"
+    description="PostHog's own walkthrough of the exact feature in the exact stack — banner plus opt-in/opt-out wiring."
+  />
+  <ExternalResource
+    title="Controlling data collection"
+    href="https://posthog.com/docs/privacy/data-collection"
+    icon="simple-icons:posthog"
+    iconColor="#F54E00"
+    description="API reference for opt_out_capturing_by_default, opt_in_capturing, and opt_out_capturing — the calls your seam owns."
+  />
+  <ExternalResource
+    title="PostHog & GDPR compliance"
+    href="https://posthog.com/docs/privacy/gdpr-compliance"
+    icon="simple-icons:posthog"
+    iconColor="#F54E00"
+    description="The consent-before-processing rule your finding cites, from the source."
+  />
+  <ExternalResource
+    title="MDN — Set-Cookie"
+    href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie"
+    icon="simple-icons:mdnwebdocs"
+    iconColor="#000000"
+    description="Max-Age and SameSite=Lax semantics behind the consent cookie writeConsentCookie sets."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's test suite:
+
+```sh
+pnpm test:lesson 5
+```
+
+A clean pass confirms the shape: the init flag set behind a dynamic import, the source-of-truth consent state, the seam owning opt-in/opt-out, and the finding file.
+
+The tests run in Node with no browser, so verify the request and banner behavior by hand with the **DevTools Network panel** open beside your **PostHog dashboard**.
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">With cookies and localStorage cleared, a fresh load shows zero `/ingest` requests (filter the Network panel to `ingest`).</ChecklistItem>
+  <ChecklistItem chip="untested">Clicking Accept fires the `/ingest` capture, and the next navigation fires a `$pageview`.</ChecklistItem>
+  <ChecklistItem chip="untested">The events appear in the PostHog dashboard within about thirty seconds.</ChecklistItem>
+  <ChecklistItem chip="untested">Clicking Reject leaves capture off — no `/ingest` request fires.</ChecklistItem>
+  <ChecklistItem chip="untested">Reloading after consent resumes capture with no second click.</ChecklistItem>
+  <ChecklistItem chip="untested">The finding's Fix section names the seam and all three changes — the init flag, the runtime opt-in/opt-out calls, and the session-continuity re-call.</ChecklistItem>
+</Checklist>
+
+:::note
+Live events need real PostHog credentials. With the dummy values from `.env.example` the consent gate and Network-panel behavior still work, but nothing lands in a dashboard; paste a free-tier project key into `NEXT_PUBLIC_POSTHOG_KEY` to watch the `$pageview` arrive.
+:::

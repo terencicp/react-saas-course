@@ -1,0 +1,389 @@
+---
+title: Redact secrets and correlate logs
+chapter-id: 95
+course-progress: 0.8986
+sidebar:
+  order: 4
+  label: Redact and correlate
+rewrites: 2
+---
+
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+Last lesson you wired Sentry, and the deliberate throw now lands in the dashboard with a readable stack and a release tag. Two gaps remain. The event tells you something broke on the server but not which request, and it makes no promise that what it captured is safe to read: a secret that rode in on a request can ride straight into the breadcrumbs and context. The structured logger leaks too — replay the Stripe webhook flow now and the dev console prints the `stripe-signature` header, the live HMAC that proves a delivery came from Stripe, in the clear.
+
+This lesson closes both. No drop-listed secret ever serializes, and every log line and Sentry event for one request share a `requestId` you can pivot on. The webhook handler goes from dumping the whole header set:
+
+```ts frame="none"
+log.info(
+  { headers: Object.fromEntries(request.headers) },
+  'request_received',
+);
+```
+
+…to one clean line the request scope stamps with an id, no header payload to leak:
+
+```text frame="none"
+{"level":30,"time":...,"seam":"webhook.stripe","requestId":"0190f...","msg":"request_received"}
+```
+
+## Your mission
+
+The seeded Pino logger in `src/lib/logger.ts` has no scrubbing seam, so the webhook flow logs `stripe-signature` — and any other dropped key — in the clear, violating the 3am rule from [*Logging policy and PII redaction*](/092-errors-logs-and-debugging/3-logging-policy-and-pii-redaction/): a line you wouldn't paste into a public incident channel does not ship. Nothing stamps a request with an id either, so a log line and the Sentry event for the same request share no value to join on.
+
+You close both through **one logger seam**. The scrubber and the correlation id both have to reach Pino *and* Sentry's `beforeSend` (wired last lesson), so the discipline is *one redactor, two callers*: declare the redaction routine once as a single exported function, then reuse it in Pino's output formatter and in `beforeSend`. Duplicate the scrub logic and the failure mode is built in — someone adds a key to the drop-list, edits one copy, and the other sink keeps leaking. Refactor the redactor *before* you wire the second caller.
+
+For correlation, use `AsyncLocalStorage`, never module-level or `globalThis` state, which one request's id would bleed across under load. The mechanics are those from [*Structured logs with correlation IDs*](/092-errors-logs-and-debugging/2-structured-logs-with-correlation-ids/), with one Next.js 16 wrinkle: a scope opened in the proxy does **not** propagate into route handlers. So the proxy mints the id and threads it across the boundary on a header, and each handler — here, the webhook route — recovers it and opens its *own* scope. The id is high-cardinality, one value per request, so it rides the Sentry event as **context**, never a tag. This fills the Fix sections of findings 002 and 003.
+
+<Checklist id="mission">
+  <ChecklistItem chip="tested">A single redaction routine carries the canonical drop-list — `authorization`, `cookie`, `stripe-signature`, `password`, `token`, `apikey`, the PII keys `email` / `phone` / `ip` / `ssn`, and any key ending in `_key` or `_secret`, all matched case-insensitively — and is the only redaction logic in the codebase.</ChecklistItem>
+  <ChecklistItem chip="tested">Replaying the webhook flow renders `stripe-signature` as `[REDACTED]` in the log lines instead of printing the signing material in the clear.</ChecklistItem>
+  <ChecklistItem chip="untested">Any Sentry event captured during a request runs through that same redactor, so a drop-listed secret never reaches Sentry either.</ChecklistItem>
+  <ChecklistItem chip="tested">Each request opens its own correlation scope — the proxy reads-or-mints `x-request-id` and echoes it on the request and response headers; the webhook handler recovers that id and opens its own scope.</ChecklistItem>
+  <ChecklistItem chip="untested">Every log line for a request carries a top-level `requestId` field sourced from the request-scoped context.</ChecklistItem>
+  <ChecklistItem chip="untested">A thrown error inside a request produces a Sentry event carrying that same `requestId` in its request context (not a tag), so a log line and its Sentry event join on one value.</ChecklistItem>
+  <ChecklistItem chip="untested">The Fix sections of `findings/002-log-secret-leak.md` and `findings/003-missing-correlation-id.md` name the installed seam and the call sites it governs.</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Implement against the brief and the lesson's tests, then read the reference solution below. The tests can't import the seam — `redact`, the logger, and the request context all sit behind `import 'server-only'`, which throws in a Node test environment — so they read your source and check its structure. Attempting it yourself is worth more than usual here: matching the shape passes the gate, but only a live replay proves the secret is gone.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+Five files move in dependency order. Start with the context store, since both the logger's mixin and Sentry's `beforeSend` read from it.
+
+**`src/lib/request-context.ts`** is the new store every seam reads.
+
+```ts title="src/lib/request-context.ts"
+import 'server-only';
+
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+export type RequestContext = {
+  requestId: string;
+  userId?: string;
+  orgId?: string;
+};
+
+const storage = new AsyncLocalStorage<RequestContext>();
+
+export const runWithContext = <T>(context: RequestContext, fn: () => T): T =>
+  storage.run(context, fn);
+
+export const getRequestContext = (): RequestContext | undefined =>
+  storage.getStore();
+```
+
+`requestId` is the join key the whole lesson turns on; `userId` and `orgId` are optional passengers a seam attaches once it knows them, so a log line, a Sentry event, and a downstream service all point at the same request. `import 'server-only'` keeps this Node primitive off the client bundle.
+
+**`src/lib/logger.ts`** gains the redactor and the mixin. The redaction routine's branches are the whole correctness argument, so step through them.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+const DROP_KEYS = new Set([
+  'authorization',
+  'cookie',
+  'stripe-signature',
+  'password',
+  'token',
+  'apikey',
+]);
+
+const PII_KEYS = new Set(['email', 'phone', 'ip', 'ssn']);
+
+const REDACTED = '[REDACTED]';
+
+const shouldDrop = (key: string): boolean => {
+  const lower = key.toLowerCase();
+  return (
+    DROP_KEYS.has(lower) ||
+    PII_KEYS.has(lower) ||
+    lower.endsWith('_key') ||
+    lower.endsWith('_secret')
+  );
+};
+
+export const redact = <T>(payload: T): T => {
+  if (Array.isArray(payload)) {
+    return payload.map((item) => redact(item)) as T;
+  }
+  if (payload !== null && typeof payload === 'object') {
+    const entries = Object.entries(payload as Record<string, unknown>).map(
+      ([key, value]) =>
+        shouldDrop(key) ? [key, REDACTED] : [key, redact(value)],
+    );
+    return Object.fromEntries(entries) as T;
+  }
+  return payload;
+};
+`}>
+  <AnnotatedStep meta={`"DROP_KEYS" "PII_KEYS" /lower\\.endsWith\\(.+\\)/`} color="blue">
+    Lowercasing first matches `Stripe-Signature` and `stripe-signature` alike; the `_key`/`_secret` suffix catches a future `stripe_api_key` by pattern, no list edit.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{26-28}" color="green">
+    Arrays recurse element-by-element, so a secret nested in a list is still found.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{29-35}" color="violet">
+    Replacing a dropped value with `[REDACTED]` rather than deleting the key keeps the line's structure readable while the secret never serializes.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{36}" color="orange">
+    Scalars pass through untouched — the recursion's base case.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Then the Pino instance, where the redactor becomes caller one and the mixin reads the context:
+
+<div data-mark-color="blue">
+
+```ts title="src/lib/logger.ts" {4-6} "mixin: () => getRequestContext() ?? {}"
+export const logger = pino({
+  level: process.env.LOG_LEVEL ?? 'info',
+  base: undefined,
+  formatters: {
+    log: (object) => redact(object),
+  },
+  mixin: () => getRequestContext() ?? {},
+});
+```
+
+</div>
+
+`formatters.log` scrubs every log object on the way out, so no call site has to remember to. `mixin` runs per line and merges in the live scope; with no scope it merges `{}`, leaving the line un-correlated rather than crashing.
+
+**`src/proxy.ts`** is where the id is born. The existing cookie redirects and CSP nonce move into a `handle` function, and `proxy` becomes a thin shell that mints the id and opens the scope.
+
+<CodeVariants>
+  <CodeVariant label="Before">
+    <div data-mark-color="red">
+
+    ```ts title="src/proxy.ts" del={1-9}
+    export async function proxy(request: NextRequest) {
+      // cookiePrefix is mandatory — the better-auth default silently misses the
+      // __Host- cookie. This is presence-only; no authz decision lives here.
+      const cookie = getSessionCookie(request, {
+        cookiePrefix: SESSION_COOKIE_PREFIX,
+      });
+      // ...
+    }
+    ```
+
+    </div>
+    **No correlation scope.** The proxy returns without minting a request id or opening a scope, so nothing downstream can join a log line to its request.
+  </CodeVariant>
+
+  <CodeVariant label="After">
+    <div data-mark-color="green">
+
+    ```ts title="src/proxy.ts" ins={1-4}
+    export async function proxy(request: NextRequest) {
+      const requestId = request.headers.get('x-request-id') ?? uuidv7();
+      return runWithContext({ requestId }, () => handle(request, requestId));
+    }
+
+    async function handle(request: NextRequest, requestId: string) {
+      // ...
+    }
+    ```
+
+    </div>
+    **Mint-or-recover, then open the scope.** `proxy` reuses an inbound `x-request-id` (an upstream proxy may have minted one) or makes a fresh `uuidv7()`, then runs the request inside one scope so any line it emits carries the id. The real work lives in `handle`.
+  </CodeVariant>
+</CodeVariants>
+
+Inside `handle`, the id is set on the request headers and on every response path, including both redirects and the final `NextResponse.next`:
+
+<div data-mark-color="blue">
+
+```ts title="src/proxy.ts" "x-request-id"
+  if (isProtected && !cookie) {
+    const next = encodeURIComponent(path + request.nextUrl.search);
+    const redirect = NextResponse.redirect(
+      new URL(`/sign-in?next=${next}`, request.url),
+    );
+    redirect.headers.set('x-request-id', requestId);
+    return redirect;
+  }
+
+  // ...
+
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set('x-nonce', nonce);
+  requestHeaders.set('x-request-id', requestId);
+
+  const response = NextResponse.next({ request: { headers: requestHeaders } });
+  response.headers.set('Content-Security-Policy', csp);
+  response.headers.set('x-request-id', requestId);
+  return response;
+```
+
+</div>
+
+The *request* header is what the route handler recovers, the next file. The *response* header is easy to skip but worth keeping: a downstream service — a CDN log, a browser network panel, the next hop — can join on the same request.
+
+**`src/app/api/webhooks/stripe/route.ts`** is the boundary the proxy scope can't cross, so the handler recovers the id and opens its own scope.
+
+<CodeVariants>
+  <CodeVariant label="Before — leaks + no scope">
+    <div data-mark-color="red">
+
+    ```ts title="src/app/api/webhooks/stripe/route.ts" del={5-8}
+    export const POST = async (request: Request): Promise<Response> => {
+      const body = await request.text();
+      const signature = request.headers.get('stripe-signature');
+
+      log.info(
+        { headers: Object.fromEntries(request.headers) },
+        'request_received',
+      );
+      // ...
+    };
+    ```
+
+    </div>
+    **`Object.fromEntries(request.headers)` is the leak.** It serializes the whole header set — `stripe-signature`, `cookie`, `authorization` — verbatim. And `POST` runs with no scope, so the logger's mixin finds no `requestId` to read here.
+  </CodeVariant>
+
+  <CodeVariant label="After — recover + scope + clean line">
+    <div data-mark-color="green">
+
+    ```ts title="src/app/api/webhooks/stripe/route.ts" ins={1-4} "log.info('request_received')"
+    export const POST = async (request: Request): Promise<Response> => {
+      const requestId = request.headers.get('x-request-id') ?? uuidv7();
+      return runWithContext({ requestId }, () => handle(request));
+    };
+
+    const handle = async (request: Request): Promise<Response> => {
+      const body = await request.text();
+      const signature = request.headers.get('stripe-signature');
+
+      log.info('request_received');
+      // ...
+    };
+    ```
+
+    </div>
+    **Recover the id, open a scope, log only what you mean to.** `POST` recovers `x-request-id` (or mints its own, staying correlated even when hit directly) and wraps the work in `runWithContext`. The log call carries no payload, and the two layers reinforce each other: the call site never dumps headers, and `formatters.log` scrubs anything that slips.
+  </CodeVariant>
+</CodeVariants>
+
+**`sentry.server.config.ts`** is the second caller, where last lesson's placeholder `beforeSend` now does two jobs in one hook.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+import * as Sentry from '@sentry/nextjs';
+
+import { redact } from '@/lib/logger';
+import { getRequestContext } from '@/lib/request-context';
+
+const release = process.env.VERCEL_GIT_COMMIT_SHA ?? 'dev';
+
+Sentry.init({
+  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
+  release,
+  tracesSampleRate: 1.0,
+  beforeSend: (event) => {
+    const scrubbed = redact(event);
+    const requestId = getRequestContext()?.requestId;
+    if (requestId !== undefined) {
+      scrubbed.contexts = {
+        ...scrubbed.contexts,
+        request: { ...scrubbed.contexts?.request, requestId },
+      };
+    }
+    return scrubbed;
+  },
+});
+`}>
+  <AnnotatedStep meta={`"import { redact } from '@/lib/logger';" "redact(event)"`} color="green">
+    Caller two reuses the same `redact` from `lib/logger.ts`. One definition, both sinks — a second copy here is exactly the drift the design forbids.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"getRequestContext()?.requestId" {15-20}`} color="violet">
+    The join lives inside `beforeSend` on purpose: it runs per event with the request scope live, whereas reading at module scope would run once at boot, with no request, and attach nothing.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"request: { ...scrubbed.contexts?.request, requestId }"`} color="blue">
+    The id rides as request **context**, never a tag: one distinct value per request would blow out a tag index's cardinality.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+One choice the code doesn't explain: Next.js 16 runs route handlers in a different async context and won't propagate a proxy-opened scope into them, so the header carries the id across the boundary and the handler reopens a scope from it. Forgetting that handler scope is the named trap — its lines would carry no id while the proxy's do.
+
+:::caution
+`AsyncLocalStorage` is the one primitive here you must not swap. A `let currentRequestId` at module scope or a value on `globalThis` is shared across every concurrent request the process serves, so under load one request's id bleeds into another's log lines — and the join now points at the wrong request. It looks fine in a single-request dev session and corrupts your correlation exactly when you need it. The store is per-async-context for a reason; keep it.
+:::
+
+Close out the findings work. In `findings/002-log-secret-leak.md`, fill the **Fix** section to name the single `redact` seam, its two callers (Pino's `formatters.log` and Sentry's `beforeSend`), and the webhook handler that stopped dumping headers. In `findings/003-missing-correlation-id.md`, name the `AsyncLocalStorage` store, the `proxy.ts` mint-and-echo, the Pino `mixin`, and the `beforeSend` join, noting that route handlers open their own scope. Point each at the seams, not at a re-explanation; the 3am rule and the correlation-ID concept are already taught in [*Logging policy and PII redaction*](/092-errors-logs-and-debugging/3-logging-policy-and-pii-redaction/) and [*Structured logs with correlation IDs*](/092-errors-logs-and-debugging/2-structured-logs-with-correlation-ids/).
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="Node.js — Asynchronous context tracking"
+    href="https://nodejs.org/api/async_context.html"
+    icon="simple-icons:nodedotjs"
+    iconColor="#5FA04E"
+    description="The AsyncLocalStorage reference — run() and getStore(), the primitive your request-context store wraps."
+  />
+  <ExternalResource
+    title="Pino — Redaction"
+    href="https://github.com/pinojs/pino/blob/main/docs/redaction.md"
+    icon="simple-icons:pino"
+    iconColor="#687634"
+    description="How Pino formatters and the censor string work — context for the redact seam you hang off formatters.log."
+  />
+  <ExternalResource
+    title="Sentry — Scrubbing sensitive data"
+    href="https://docs.sentry.io/platforms/javascript/guides/nextjs/data-management/sensitive-data/"
+    icon="simple-icons:sentry"
+    iconColor="#362D59"
+    description="Using beforeSend to strip secrets before an event leaves the process — the second caller of your redactor."
+  />
+  <ExternalResource
+    title="Next.js — proxy.ts file convention"
+    href="https://nextjs.org/docs/app/api-reference/file-conventions/proxy"
+    icon="simple-icons:nextdotjs"
+    description="The Next.js 16 proxy reference, including setting request headers via NextResponse.next — how you thread x-request-id across the boundary."
+  />
+</CardGrid>
+
+## Moment of truth
+
+Run the lesson's gate:
+
+```bash frame="none"
+pnpm test:lesson 4
+```
+
+A clean pass shows both finding blocks green:
+
+```text frame="none"
+ ✓ Req 1/2 — one redaction seam carrying the canonical drop-list (6)
+ ✓ Req 4 — a per-request correlation scope joined on x-request-id (3)
+
+ Test Files  1 passed (1)
+      Tests  9 passed (9)
+```
+
+The gate reads your source for shape, not runtime behavior; it can't watch the bytes actually move. Hand-verify the two surfaces where they do: the **dev console** (your log lines) and the **Sentry dashboard** (the event for a thrown request).
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Replaying the webhook flow (Stripe CLI `stripe trigger payment_intent.succeeded` or `stripe listen --forward-to localhost:3000/api/webhooks/stripe`) shows `stripe-signature` as `[REDACTED]` in the console, never the raw `t=...,v1=<hex>` signing material.</ChecklistItem>
+  <ChecklistItem chip="untested">Every log line for that request carries a top-level `requestId` field.</ChecklistItem>
+  <ChecklistItem chip="untested">A thrown error in the webhook flow produces a Sentry event whose breadcrumbs and context hold no un-redacted signature.</ChecklistItem>
+  <ChecklistItem chip="untested">That Sentry event carries the same `requestId` as the log line — in its request context, not a tag — so you can pivot from one to the other.</ChecklistItem>
+  <ChecklistItem chip="untested">The Fix sections of `findings/002-log-secret-leak.md` and `findings/003-missing-correlation-id.md` each name their seam and the call sites it governs.</ChecklistItem>
+</Checklist>

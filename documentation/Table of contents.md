@@ -825,11 +825,11 @@
 - 7 Indexes and N+1 in production (Revisiting the two SQL failure classes at production scale: missing composite `(org_id, ...)` indexes diagnosed via `EXPLAIN ANALYZE`, N+1 fixed with Drizzle relations or joins, plus the pre-launch DB checklist and weekly slow-query review.)
 - 8 Quiz
 
-### Chapter 095 — Project: wire observability, audit performance
+### Chapter 095 — Project: wire and audit for launch
 - 1 Project Overview
-- 2 The audit method, modeled on finding 7
+- 2 The audit method and a worked finding
 - 3 Wire Sentry
-- 4 The production logger seam
+- 4 Redact secrets and correlate logs
 - 5 Gate PostHog behind consent
 - 6 Document the performance findings
 - 7 Verify and self-grade

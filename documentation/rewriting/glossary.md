@@ -2706,6 +2706,11 @@ PostHog | - | Product-analytics platform folding events, feature flags, session 
 field data | real-user data | Performance measured from real users on their own devices and networks; what Google ranks on. | first defined: Chapter 093 L1
 lab data | synthetic data | Performance from a synthetic test: one run, one machine, controlled conditions. | first defined: Chapter 093 L1
 pre-PMF | product-market fit, PMF | Early-stage product still searching for a repeatable paying audience, before proven steady demand. | first defined: Chapter 093 L1
+opt_out_capturing_by_default | - | PostHog init flag; true loads the SDK disabled, capturing nothing until opted in. | first defined: Chapter 093 L3
+opt_in_capturing | opt-in capturing | PostHog call turning capture on; lifts opt-out-by-default on the consented path. | first defined: Chapter 093 L3
+opt_out_capturing | opt-out capturing | PostHog call turning capture off; paired with reset() to drop queued events and identity. | first defined: Chapter 093 L3
+$pageview | pageview event | PostHog event for a page view; fired manually per route change when autocapture is off. | first defined: Chapter 093 L3
+autocapture | - | PostHog default recording clicks, form submits, and other interactions without a per-event capture call. | first defined: Chapter 093 L3
 INP | Interaction to Next Paint | Core Web Vital timing tap-to-paint latency across the visit (~p98); replaced FID. | first defined: Chapter 094 L1
 p75 | 75th percentile | The value 75% of samples fall at or below; how Core Web Vitals are scored. | first defined: Chapter 094 L1
 CrUX | Chrome User Experience Report | Google's public 28-day field dataset of real Chrome-user metrics; what Search scores against. | first defined: Chapter 094 L1
@@ -2737,3 +2742,13 @@ lighthouserc.json | - | The single LHCI config file with collect, assert, and up
 RSC | React Server Component | Component running on the server that awaits data in its body, sending only rendered output to the browser. | first defined: Chapter 094 L6
 trace | request trace | Tree of timed spans recorded for one request: what ran, when, for how long. | first defined: Chapter 094 L6
 pg_stat_statements | - | Postgres extension tracking per-statement call counts and timing, to rank queries by cost. | first defined: Chapter 094 L7
+Performance panel | Performance trace, Performance recording | Chrome DevTools panel that records a trace: a load timeline of network, main-thread, and paint work, read for shape. | first defined: Chapter 095 L2
+mixin (pino) | requestId mixin | Pino function whose returned fields merge into every log line; a requestId mixin stamps a correlation ID on each line. | first defined: Chapter 095 L2
+withSentryConfig | - | Wrapper around next.config that adds Sentry's build-time work: instrumentation injection and source-map upload. | first defined: Chapter 095 L3
+tracesSampleRate | trace sample rate | Sentry.init fraction (0–1) of requests captured as traces; 1.0 locally, 0.1–0.2 in production since traces cost more than error events. | first defined: Chapter 095 L3
+register (instrumentation) | - | The instrumentation.ts function Next.js runs once per runtime at boot; lazy-imports the matching Sentry config by NEXT_RUNTIME. | first defined: Chapter 095 L3
+redact (seam) | redaction routine, redact() | Single recursive function stripping drop-listed secret/PII keys to [REDACTED]; reused by Pino's formatter and Sentry's beforeSend. | first defined: Chapter 095 L4
+request-context store | runWithContext, getRequestContext | AsyncLocalStorage store holding a request's requestId; opened per request, read by the Pino mixin and Sentry beforeSend. | first defined: Chapter 095 L4
+x-request-id | request id header | Header carrying the correlation id across the proxy/route-handler boundary, since a proxy-opened scope does not propagate into handlers. | first defined: Chapter 095 L4
+.toSQL() | toSQL | Drizzle method returning the SQL string and bound params a query would emit without running it; used to count and inspect statements. | first defined: Chapter 095 L6
+lateral join | left join lateral, lateral-join | Join whose right side is a subquery run once per left row, referencing that row; how Drizzle relations fetch related rows in one statement. | first defined: Chapter 095 L6
