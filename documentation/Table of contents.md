@@ -704,13 +704,13 @@
 - 9 Quiz
 
 ### Chapter 082 — Project: the pre-launch audit pass
-- 1 Project Overview
+- 1 Project overview
 - 2 Finding 1: the fail-closed bypass
 - 3 Finding 2: the XSS HTML sink
 - 4 Finding 3: the missing audit-log write
-- 5 Finding 4: the CSP header omission
+- 5 Finding 4: the missing CSP header
 - 6 Finding 5: the secret in `NEXT_PUBLIC_*`
-- 7 Finding 6: the missing rate limit on password-reset
+- 7 Finding 6: the unthrottled password-reset
 - 8 Finding 7: the dep-hygiene gap
 - 9 Finding 8: the GDPR deletion gap
 - 10 Commit and self-grade

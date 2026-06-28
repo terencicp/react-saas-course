@@ -1924,6 +1924,7 @@ active org | activeOrganizationId, active organization | The one org a session i
 org slug | organization slug | A URL-safe lowercase identifier for an org (the acme in /o/acme/dashboard); user-chosen, uniqueness-checked. | first defined: Chapter 056 L1
 tenancy model | unit of tenancy | The entity an app's data and ownership are scoped to; here the organization, not the user. | first defined: Chapter 056 L1
 requireOrgUser | - | Third session-read ladder rung returning {user, orgId, role}; redirects null-org users to onboarding, the only trusted source of orgId. | first defined: Chapter 056 L1
+requireRole | requireRole(required) | Fail-closed role gate that throws when the actor's role is below required; callers run it for its throw and must not swallow it in a try/catch, letting authedAction convert the throw to a refusal. | first defined: Chapter 080 L1
 tenant-owned table | - | A table whose every row belongs to exactly one organization, pinned by an organizationId column. | first defined: Chapter 056 L2
 tenantDb | tenantDb(orgId) | Thin org-scoped wrapper around the raw Drizzle client; injects the org filter on every read and write so unscoped tenant queries can't be written. | first defined: Chapter 056 L2
 table registry (tenancy) | tenant table registry, TENANT_TABLES | A single source-of-truth list of org-owned table names the type system reads to constrain the scoped client's surface. | first defined: Chapter 056 L2
@@ -2345,6 +2346,9 @@ CAPTCHA | - | A challenge distinguishing a human from an automated client; now u
 Cloudflare Turnstile | Turnstile | Cloudflare's free, mostly invisible CAPTCHA gate for public endpoints when per-IP limiting runs out of road. | first defined: Chapter 081 L2
 superadmin | super-admin | Platform-operator role (your own staff) that can cross tenant boundaries; its use is gated and logged. | first defined: Chapter 081 L3
 right to erasure | right to be forgotten | GDPR Art. 17 right letting a person demand erasure of their personal data. | first defined: Chapter 081 L3
+canonical audit-log event set | six-category event set, audit-log event catalog | Fixed list of audit-log categories (auth, membership, billing, data-export, deletion, ownership/tenancy) each mandating a co-transacted row; a project-level invariant, not a per-feature call. | first defined: Chapter 081 L3
+entity.verb-pasttense | event slug, audit action name | Single-dot naming convention for an audit-log action (member.role-changed, org.ownership-transferred); past tense because the row records what happened. | first defined: Chapter 081 L3
+co-transact (audit write) | in-transaction audit write | Writing the audit row inside the same db.transaction as the mutation, so a committed change can never exist without its audit record. | first defined: Chapter 081 L3
 data minimization | - | GDPR principle: don't keep personal data longer than its purpose needs; the basis for automated retention limits. | first defined: Chapter 081 L4
 anonymize | anonymization | Deletion shape that scrubs the PII columns and keeps the rest of the row's forensic/relational data. | first defined: Chapter 081 L4
 subprocessor | subprocessor list | Third-party vendor (Stripe, Resend, PostHog) processing your users' PII; the published list is the checklist erasure must cover. | first defined: Chapter 081 L4
@@ -2391,3 +2395,17 @@ Socket | - | A tool that flags packages by suspicious behavior rather than known
 minimumReleaseAge | - | pnpm setting quarantining freshly-published versions until they age past a cutoff (default 1440 min). | first defined: Chapter 081 L8
 blockExoticSubdeps | - | pnpm setting enforcing a registry-only contract across the transitive tree. | first defined: Chapter 081 L8
 allowBuilds | - | pnpm map permitting named packages to run install scripts; everything else is skipped. | first defined: Chapter 081 L8
+strictDepBuilds | - | pnpm setting failing the install when an un-acknowledged dependency wants to run a build script. | first defined: Chapter 081 L8
+onlyBuiltDependencies | - | pnpm 10 build allow-list array, replaced by the allowBuilds map in v11. | first defined: Chapter 081 L8
+Dependabot | - | A bot that opens dependency-update pull requests; a post-install signal, not a pre-install defense. | first defined: Chapter 081 L8
+audit target | - | The read-only running project, seeded with defects, that an audit pass reads against its rules. | first defined: Chapter 082 L1
+finding | audit finding | Written write-up of one defect: the rule it breaks, its location, its consequence, and the fix. | first defined: Chapter 082 L1
+stored XSS | stored cross-site scripting | XSS whose payload is saved in the database and fires for every reader who later loads the page; worse than reflected XSS, which needs a crafted-URL lure. | first defined: Chapter 082 L3
+system of record | authoritative record | The one store treated as the authoritative copy of a fact (audit_logs for ownership history); a gap in it makes the history unrecoverable. | first defined: Chapter 082 L4
+finding severity | severity (high vs critical) | The blast-radius rating of a finding; a lost audit record on a correct mutation is high, a bypassed access gate is critical. | first defined: Chapter 082 L4
+x-nonce | x-nonce header | Request header proxy.ts sets to thread the per-request CSP nonce to Server Components, which stamp it on their script tags. | first defined: Chapter 082 L5
+frame-ancestors | - | CSP directive controlling who may frame the page; the modern replacement for X-Frame-Options. | first defined: Chapter 082 L5
+abusable endpoint | - | Endpoint needing a limiter because it hits a trigger: costs money per call, can attack a third party, or touches state addressable without auth. | first defined: Chapter 081 L2
+rate-limit coverage | coverage rule, three triggers | Rule that every abusable endpoint routes through a named limiter; an endpoint is abusable if it matches any one of three triggers. | first defined: Chapter 081 L2
+coverage matrix | rate-limit coverage matrix | Table with one row per abusable endpoint recording file, limiter, key strategy, and covered Y/N; gaps tracked as open rows, not dropped. | first defined: Chapter 081 L2
+retention catalog | retention map | The full inventory of every table and external service holding a user's PII that an erasure request must clear. | first defined: Chapter 081 L4
