@@ -2926,3 +2926,28 @@ embedding | embedding vector | List of numbers a model assigns to text so simila
 vector space | embedding space | The geometry an embedding model maps text into; incompatible across models, so embeddings don't transfer. | first defined: Chapter 105 L3
 RAG | retrieval-augmented generation | Fetching relevant documents and feeding them to the model as context so its answer is grounded in your data. | first defined: Chapter 105 L3
 LangChain | - | Heavier chains/agents/retrievers framework; fits research-style multi-agent orchestration, not a Next.js streaming surface. | first defined: Chapter 105 L3
+streamText | - | AI SDK primitive returning immediately and emitting text deltas; the shape for anything a person reads. | first defined: Chapter 106 L1
+generateText | - | AI SDK primitive running the model to completion and resolving one string on .text; for output code consumes. | first defined: Chapter 106 L1
+text delta | text deltas | A small chunk of a streamed answer the model emits as it generates; piped to the client as it arrives. | first defined: Chapter 106 L1
+time to first token | TTFT | The moment streamed words start appearing; what a reader feels as fast, not total completion time. | first defined: Chapter 106 L1
+ModelMessage | - | The lossy message shape the model reads: roles and content, nothing the model can't use. | first defined: Chapter 106 L1
+UIMessage | - | The full message shape the app stores and renders: a parts array, metadata, and tool calls. | first defined: Chapter 106 L1
+convertToModelMessages | - | AI SDK call converting UIMessage[] down to ModelMessage[], dropping everything the model doesn't read. | first defined: Chapter 106 L1
+system prompt | system message | Trusted, code-authored instructions setting the model's role and rules; the controller, never templated from user data. | first defined: Chapter 106 L1
+toUIMessageStreamResponse | - | AI SDK call serializing a stream into the structured parts the client hook knows how to render. | first defined: Chapter 106 L1
+onFinish | - | AI SDK callback firing once after generation completes with { text, usage, finishReason, response }; where post-call accounting lives. | first defined: Chapter 106 L1
+finishReason | - | Why the model stopped: 'stop', 'length', 'content-filter', 'tool-calls', 'error', or 'other'; the UI reacts to it. | first defined: Chapter 106 L1
+temperature | - | AI SDK arg controlling output randomness; keep low (0-0.3) for stable format, raise only when variance is the feature. | first defined: Chapter 106 L1
+structured output | - | Model returns a value constrained to a supplied schema, not free text; the SDK validates and types it. | first defined: Chapter 106 L2
+generateObject | - | AI SDK call running the model to completion against a Zod schema, validating, retrying on a miss, resolving a typed object. | first defined: Chapter 106 L2
+streamObject | - | AI SDK call streaming partial objects as schema fields populate; rendered client-side with useObject. | first defined: Chapter 106 L2
+output: 'enum' / output: 'array' | enum mode, array mode | generateObject output modes returning one label from a set, or a typed list of records. | first defined: Chapter 106 L2
+useChat | - | AI SDK React hook for a multi-turn conversation surface; owns messages, sendMessage, status, stop. | first defined: Chapter 106 L3
+useCompletion | - | AI SDK React hook for single-shot text: one prompt in, a streaming completion string out, no history. | first defined: Chapter 106 L3
+useObject | experimental_useObject | AI SDK React hook streaming a typed object that fills in field by field; aliased from experimental_useObject. | first defined: Chapter 106 L3
+parts | parts array | The array on a UIMessage holding typed content pieces (text, reasoning, file, tool calls); the v5 render source of truth. | first defined: Chapter 106 L3
+ChatTransport | DefaultChatTransport | The object useChat delegates sending to; DefaultChatTransport speaks HTTP POST plus streaming against a route. | first defined: Chapter 106 L3
+status (useChat) | - | useChat request lifecycle string union: 'submitted' | 'streaming' | 'ready' | 'error'; drives the streaming UX. | first defined: Chapter 106 L3
+initialMessages | - | Conventional variable name for history loaded from the database; in v5 assigned to the messages option, not its own option. | first defined: Chapter 106 L3
+DeepPartial | DeepPartial<RESULT> | A result type with every field at every depth optional; models a half-built streamed object. | first defined: Chapter 106 L3
+toTextStreamResponse | - | AI SDK call serializing a stream as plain text, not parts; what useCompletion reads. | first defined: Chapter 106 L3
