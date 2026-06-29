@@ -899,8 +899,8 @@
 - 3 Quiz
 
 ### Chapter 104 — Project: Review a PR, write the ADR
-- 1 Project Overview
-- 2 The auth bypass
+- 1 Project overview
+- 2 The first blocking comment
 - 3 Four more blocking findings
 - 4 ADR 0007
 

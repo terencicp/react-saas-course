@@ -2903,3 +2903,4 @@ question (review comment) | question: | Severity label for a comment that needs 
 praise (review comment) | praise: | Severity label for genuine, specific praise of a non-trivial good call. | first defined: Chapter 103 L2
 epistemic cowardice | - | Dressing a position you're certain about as an open question to avoid committing to it. | first defined: Chapter 103 L2
 drive-by approval | drive-by review | A review verdict submitted without engaging the content; an unread approve or an over-blocking request-changes. | first defined: Chapter 103 L2
+Nygard ADR | Nygard template, Nygard sections | Michael Nygard's 2011 four-section ADR template: Status, Context, Decision, Consequences; the canonical ADR shape. | first defined: Chapter 104 L4
