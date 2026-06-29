@@ -920,7 +920,7 @@
 - 3 useChat, useObject, and the parts array (The v5 transport-based UI hooks (`useChat`, `useCompletion`, `useObject`), the `UIMessage` `parts` array as rendering source of truth, manually managed input state with plain `useState`, `sendMessage` / `regenerate` / `stop` / `status`, the `convertToModelMessages` / `toUIMessageStreamResponse` handler contract, and the Server-Component-loads-`initialMessages` / Client-Component-mounts-`useChat` boundary.)
 - 4 Quiz
 
-### Chapter 107 — Tool calling, generative UI, and retrieval
+### Chapter 107 — Tools, generative UI, and retrieval
 - 1 Tools and the agentic loop (Defining tools with Zod `inputSchema`, the server-side `execute` trust boundary, and the v5 `stopWhen` loop with `onStepFinish` audit and quota seams.)
 - 2 Generative UI via tool parts (Rendering bespoke React components by switching on `UIMessage` tool-part `type` and `state`, with `InferUITools` typing the client and per-tool skeletons over generic spinners.)
 - 3 Embeddings and pgvector RAG (When retrieval earns its weight, the `embed` / `embedMany` primitives, and the two-phase index-and-query pipeline on pgvector via Drizzle with `orgId`-filtered retrieval.)

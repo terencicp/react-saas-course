@@ -1,0 +1,614 @@
+---
+title: Embeddings and pgvector RAG
+tagline: "Ground AI answers in your own data: embeddings stored in Postgres via pgvector."
+chapter-id: 107
+course-progress: 0.9928
+rewrites: 2
+sidebar:
+  order: 3
+  label: Embeddings and RAG
+---
+
+import Term from '../../../components/ui/Term.astro';
+import Figure from '../../../components/figures/Figure.astro';
+import AnnotatedCode from '../../../components/code/annotated-code/AnnotatedCode.astro';
+import AnnotatedStep from '../../../components/code/annotated-code/AnnotatedStep.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+import DiagramSequence from '../../../components/figures/diagram-sequence/DiagramSequence.astro';
+import DiagramStep from '../../../components/figures/diagram-sequence/DiagramStep.astro';
+import StateMachineWalker from '../../../components/figures/state-machine-walker/StateMachineWalker.astro';
+import Question from '../../../components/figures/state-machine-walker/Question.astro';
+import Branch from '../../../components/figures/state-machine-walker/Branch.astro';
+import Leaf from '../../../components/figures/state-machine-walker/Leaf.astro';
+import MultipleChoice from '../../../components/exercises/multiple-choice/MultipleChoice.astro';
+import McqChoice from '../../../components/exercises/multiple-choice/McqChoice.astro';
+import McqWhy from '../../../components/exercises/multiple-choice/McqWhy.astro';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import VideoCallout from '../../../components/embeds/VideoCallout.astro';
+import EmbeddingSpaceCartoon from '../../../components/lessons/107/3/EmbeddingSpaceCartoon.astro';
+import RagPipelineStrip from '../../../components/lessons/107/3/RagPipelineStrip.astro';
+import { CardGrid } from '@astrojs/starlight/components';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The chat surface you built with tools can answer "what's the total on invoice #INV-203?": a tool fetches that one row and hands it back.
+But "what's our refund policy?" or "summarize the themes across my four thousand support tickets" has no single row to fetch.
+The answer lives in a body of text the model never trained on, your internal handbook or a customer's ticket archive, and that text is far too big to paste into every prompt.
+
+The move is to pull only the *relevant* pieces of that text and feed them to the model as context for this one question.
+That is <Term definition="Retrieval-Augmented Generation. You fetch the relevant slice of a body of text and add it to the model's prompt, so the answer is grounded in that text instead of the model's training data.">retrieval-augmented generation (RAG)</Term>: not a new stack, just the same `streamText` route, Postgres, and `session.orgId` discipline running a query that enriches the system prompt before the model runs.
+The first thing to learn is *when* to reach for it, because the common failure is building the whole apparatus for text that would have fit in one system prompt.
+
+## When to use RAG
+
+Two conditions must *both* hold before RAG pays for itself.
+
+First, the <Term definition="The body of documents you retrieve from — a handbook, a ticket archive, a customer's uploaded files. Whatever text the answer should be grounded in.">corpus</Term> is **internal**, so the model can't have trained on it: your company handbook, a customer's private knowledge base, a user's uploaded documents, last week's call transcripts.
+Ask any model which HTTP status code means "not found" and it answers correctly on its own, so retrieval over public, well-trodden information is wasted work.
+
+Second, the corpus is either **too large for the context window**, like a three-hundred-page handbook you'd otherwise resend on every message, or **small but changing too fast to freeze**, like a pricing table that updates weekly.
+
+Below that threshold, do the boring thing: **paste the text into the system prompt and build nothing else.**
+A two-page returns policy that rarely changes is a few hundred tokens of prompt; a vector store for it adds a table, an indexing job, and a query path to solve what the prompt already solved.
+The threshold is a cost line: stuffing the same N tokens into every request bills you N tokens *per call* forever, while retrieval pays the embedding cost once at indexing, then sends a bounded handful of passages per question no matter how large the corpus grows.
+A long-context model can swallow a mid-size corpus whole, but per-call cost and recall that degrades inside long prompts still favor retrieval at scale.
+
+The decision tool below runs these conditions one question at a time.
+
+<StateMachineWalker title="Does this need RAG?">
+  <Question id="trained" prompt="Is the answer in data the model was trained on?">
+    <Branch label="Yes — it's public, general knowledge" to="leaf-just-ask" />
+    <Branch label="No — it's internal or private" to="fits" />
+  </Question>
+
+  <Question id="fits" prompt="Does the whole corpus fit comfortably in the system prompt, and rarely change?">
+    <Branch label="Yes — a few pages, stable" to="leaf-paste" />
+    <Branch label="No — it's large, or it changes often" to="lookup" />
+  </Question>
+
+  <Question id="lookup" prompt="Is the question a single specific lookup, or a broad semantic one?">
+    <Branch label="A specific record, by id or key" to="leaf-tool" />
+    <Branch label="A fuzzy question across many documents" to="leaf-rag" />
+  </Question>
+
+  <Leaf id="leaf-just-ask" verdict="Just ask the model">
+    The model already knows this. No retrieval, no tool, no corpus: a plain free-text answer is correct and cheapest.
+  </Leaf>
+
+  <Leaf id="leaf-paste" verdict="Paste it in the system prompt">
+    Below the threshold, so a vector store is over-engineering. Drop the text into the system prompt and ship. Revisit only when the corpus outgrows the prompt or starts changing under you.
+  </Leaf>
+
+  <Leaf id="leaf-tool" verdict="A tool, not RAG">
+    Exact lookup, not semantic search. A tool like `getInvoiceById` from earlier in this chapter fetches one row deterministically by its key. Embeddings find text that *means* something similar, the wrong instrument for "give me record X."
+  </Leaf>
+
+  <Leaf id="leaf-rag" verdict="RAG with pgvector">
+    A broad, fuzzy question over a large or fast-changing internal corpus. The case retrieval was built for, and the rest of this lesson builds it.
+  </Leaf>
+</StateMachineWalker>
+
+RAG earns its place only at that last leaf, not for a small corpus (paste it) or an exact-key lookup (use a tool).
+
+<VideoCallout videoId="T-D1OfcDW1M" videoTitle="What is Retrieval-Augmented Generation (RAG)?">
+  IBM research scientist Marina Danilevsky frames RAG as grounding, not validating, in 6 minutes.
+</VideoCallout>
+
+## What an embedding is
+
+To find the relevant passages, you first need a way to measure *meaning*.
+
+An <Term definition="A fixed-length array of floating-point numbers produced by an embedding model. The same text always produces the same vector; texts with similar meaning produce nearby vectors.">embedding</Term> is a fixed-length array of floating-point numbers, a vector, produced by an <Term definition="A model that turns a piece of text into a fixed-length vector. A different class of model from the chat models that generate text.">embedding model</Term>.
+Unlike a chat model, which writes text back, an embedding model hands back numbers, the same numbers every time for the same input.
+
+One property makes those numbers useful: **text with similar meaning maps to nearby vectors.**
+"Invoice," "bill," and "receipt" land close together; "office cat" lands far away.
+The model learned this during training, so "nearby" tracks meaning rather than spelling: "unpaid invoices" sits near "outstanding bills" even though they share no words.
+
+The standard measure of "nearby" is <Term definition="A score for how close two vectors point in the same direction. Higher means more semantically similar. The database's equivalent is cosine distance, which is 1 minus the similarity — lower means closer.">cosine similarity</Term>, where **higher means more similar in meaning**.
+Postgres stores the inverse, *cosine distance* (`1 − similarity`), so closer vectors have a *smaller* distance, and your query orders by distance ascending to get the most similar passages first.
+
+Semantic search is three steps: embed every passage in your corpus once, embed the user's question when it arrives, then find the corpus vectors nearest to the question's vector.
+Those nearest passages are your relevant context.
+
+<Figure caption="Similar meanings sit close together, unrelated text far apart. The query lands among its nearest neighbors, and those are what we retrieve. Real embeddings have 1536 dimensions and can't be drawn, so this is only an intuition pump.">
+  <EmbeddingSpaceCartoon />
+</Figure>
+
+<VideoCallout videoId="wgfSDrqYMJ4" videoTitle="What are Word Embeddings?">
+  IBM's Martin Keen builds the "similar meaning, nearby vectors" intuition from scratch in 9 minutes. The `text-embedding-3-small` model this lesson uses is the transformer-era successor to the older methods he closes on.
+</VideoCallout>
+
+The vector's fixed length is its <Term definition="The fixed length of an embedding vector. text-embedding-3-small produces 1536 numbers per vector. The dimension count sizes your storage and must match the database column exactly.">dimensions</Term>, and that count sizes your storage.
+OpenAI's `text-embedding-3-small`, the model this lesson uses, produces **1536**-dimensional vectors, a number that has to match the database column exactly.
+
+## Embedding with `embed` and `embedMany`
+
+The AI SDK exposes embeddings through two functions imported from `'ai'`, the same operation at one scale and at many.
+
+`embed({ model, value })` takes one string and returns one vector plus a usage count.
+Use it at **query time** to embed the single question the user just asked.
+
+`embedMany({ model, values })` takes an array of strings and returns an array of vectors *in the same order*, plus aggregate usage.
+Use it at **index time**, handing it the whole corpus in one call; when the array exceeds the provider's per-call limit, it splits the work into batches for you. That batching is separate from chunking the *documents*, a decision you make yourself and one we return to shortly.
+
+Both functions take a model handle from the same registry as your chat models, where the embedding model gets its own named export.
+
+```ts title="lib/llm/models.ts"
+export const embeddingModel = 'openai/text-embedding-3-small';
+```
+
+This is the same `'provider/model'` <Term definition="Vercel's provider-routing layer. You name a model as a 'provider/model' string and can swap providers without changing code. The production default for this course's AI stack.">AI Gateway</Term> string your chat handles use: no provider package imported, no factory called.
+We pick `text-embedding-3-small` over the `text-embedding-3-large` from the model-swaps chapter because its 1536 dimensions stay under pgvector's HNSW index limit of 2000; `3-large`'s 3072 would overflow it.
+
+That line hides a trap.
+Chat handles swap freely: point the export at a different provider tomorrow and yesterday's conversations still make sense, but **embedding handles don't.**
+A different embedding model produces vectors in a *different space*, incomparable to the old ones, so swapping forces you to re-embed the entire corpus.
+Treat it as a far stickier choice than the chat model.
+
+<CodeVariants>
+  <CodeVariant label="Single — embed">
+    <div data-mark-color="blue">
+
+    ```ts "embed" "embedding"
+    import { embed } from 'ai';
+    import { embeddingModel } from '@/lib/llm/models';
+
+    const { embedding } = await embed({
+      model: embeddingModel,
+      value: 'When do I get a refund?',
+    });
+    ```
+
+    </div>
+    **One string in, one vector out.** The query-time call: embed the user's question to compare it against the stored corpus. `embedding` is a single `number[]`.
+  </CodeVariant>
+
+  <CodeVariant label="Batch — embedMany">
+    <div data-mark-color="green">
+
+    ```ts "embedMany" "embeddings"
+    import { embedMany } from 'ai';
+    import { embeddingModel } from '@/lib/llm/models';
+
+    const { embeddings } = await embedMany({
+      model: embeddingModel,
+      values: chunks,
+    });
+    ```
+
+    </div>
+    **Many strings in, many vectors out, in input order.** The index-time call: `chunks` is an array of passages, and `embeddings[i]` is the vector for `chunks[i]`. The SDK auto-batches under the provider's per-call limit.
+  </CodeVariant>
+</CodeVariants>
+
+The batch call belongs to an indexing *job*, not a request handler.
+Run it on document upload or as a one-time backfill, in a plain async function or a script.
+Embedding ten thousand passages takes time and money, so you pay that once, offline, and the live chat never touches it.
+
+## Storing vectors: pgvector and the Drizzle `vector` column
+
+You have vectors; where do they live? For a web app, **the Postgres you already run.**
+
+<Term definition="A Postgres extension that adds a vector column type and similarity operators, so you can store embeddings and query them by similarity directly in your existing database.">pgvector</Term> is the extension that makes this work, and using it is a pure operations win: one fewer service to run, credential to rotate, and thing to break.
+Reach for a dedicated vector database such as Pinecone, Upstash Vector, or Qdrant only when the corpus outgrows pgvector, roughly tens of millions of vectors, or when you need a managed service. For a typical feature, that day rarely comes.
+
+The schema is a single table, each column earning its place.
+
+<AnnotatedCode lang="ts" maxLines={12} code={`
+export const documentChunks = pgTable(
+  'document_chunks',
+  {
+    id: uuid().primaryKey().$defaultFn(() => uuidv7()),
+    orgId: uuid().notNull(),
+    documentId: uuid()
+      .notNull()
+      .references(() => documents.id, { onDelete: 'cascade' }),
+    content: text().notNull(),
+    embedding: vector({ dimensions: 1536 }).notNull(),
+    embeddingModel: text().notNull(),
+  },
+  (t) => [
+    index('idx_document_chunks_embedding').using(
+      'hnsw',
+      t.embedding.op('vector_cosine_ops'),
+    ),
+  ],
+);
+`}>
+  <AnnotatedStep meta="{1-4}" color="blue">
+    A normal Drizzle `pgTable`. The UUIDv7 primary key is the app's usual convention, and snake_case SQL names like `org_id` come from the client's `casing: 'snake_case'`.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"orgId"`} color="green">
+    The tenancy column: every chunk belongs to one org. The retrieval query filters on it, and getting that filter right is the most important thing in this lesson, so it gets its own section below.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"content"`} color="blue">
+    The raw passage text. The vector finds the row, but this is the text the query returns and the model reads.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{10} "1536"`} color="blue">
+    The pgvector column. `vector({ dimensions: 1536 })` matches `text-embedding-3-small`'s output exactly; if the two numbers disagree, the insert fails.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"embeddingModel"`} color="orange">
+    Records which model produced this vector. Redundant with one model in use, but it makes a future re-index possible by letting you find exactly the rows that need new vectors.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{13-18} "hnsw"`} color="violet">
+    The HNSW index, which makes similarity search fast once the table is large. The defaults fit this course's scale, so we name it and move on.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+Two columns carry the migration's whole risk.
+The `embedding` column's `1536` must match the model's output dimension, and the <Term definition="Hierarchical Navigable Small World — the approximate-nearest-neighbour index type pgvector uses to make similarity search fast at scale. You enable it; you don't tune it here.">HNSW</Term> index must use the `vector_cosine_ops` operator class for cosine distance: a wrong dimension breaks the insert, a wrong operator class fails the migration. Everything else is ordinary Drizzle.
+
+## The two-phase pipeline: index, then query
+
+RAG runs in two phases at completely different times.
+
+The **index phase** is offline and batched: take a document, split it into passages, embed all of them with `embedMany`, and insert one row per passage into `documentChunks`, each carrying its `content`, `embedding`, `orgId`, and `embeddingModel`.
+It runs on upload or as a backfill, always *before* any user asks anything.
+
+The **query phase** is online and per-request: `embed` the question, run a similarity query for the nearest passages filtered to the user's org, stitch their `content` into a context string, drop that into the system prompt, and call `streamText`.
+This runs *every time* a user sends a message.
+
+The two phases meet at one place, the `documentChunks` table: the index phase writes it, the query phase reads it.
+
+<DiagramSequence>
+  <DiagramStep>
+    <RagPipelineStrip step={1} />
+    <Fragment slot="caption">
+      **Index phase, offline.** A document comes in and a *chunker* splits it into coherent passages, a few sentences to a paragraph each.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <RagPipelineStrip step={2} />
+    <Fragment slot="caption">
+      `embedMany` turns every passage into a vector in one batched call.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <RagPipelineStrip step={3} />
+    <Fragment slot="caption">
+      One row per passage is inserted into `documentChunks`, carrying its `content`, `embedding`, `orgId`, and `embeddingModel`. **Written once, offline.**
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <RagPipelineStrip step={4} />
+    <Fragment slot="caption">
+      **Query phase, now per request.** The user's question arrives and `embed` turns it into a single query vector.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <RagPipelineStrip step={5} />
+    <Fragment slot="caption">
+      A similarity query reads `documentChunks` and returns the <Term definition="The K most similar passages a retrieval query returns, ordered by similarity. K is small on purpose, so only the most relevant text reaches the prompt.">top-K</Term> nearest passages, scoped to this org. **This table is the seam between the phases:** written by the index phase, read here.
+    </Fragment>
+  </DiagramStep>
+
+  <DiagramStep>
+    <RagPipelineStrip step={6} />
+    <Fragment slot="caption">
+      The retrieved passages enrich the **system prompt**, `streamText` runs, and the answer is grounded in your corpus.
+    </Fragment>
+  </DiagramStep>
+</DiagramSequence>
+
+### Chunking: a decision, not a default
+
+The SDK ships no chunker, deliberately: how you split text is a problem-domain decision, not a setting.
+Prose splits on paragraphs, code on fixed token windows, transcripts on utterances or speaker turns.
+Reach for a library like `@langchain/text-splitters`, or hand-roll a splitter for your shape of text.
+
+Two guardrails pull in opposite directions.
+Chunk **too large**, a whole page each, and a retrieved passage is mostly irrelevant text around the one sentence that mattered, so the answer drifts.
+Chunk **too small**, a single sentence each, and the passage loses the context it needs to stand on its own.
+The sweet spot is a coherent passage, a few sentences to a paragraph, with a little overlap between neighbors so an idea split across a boundary survives in both.
+Aim for "a human could answer the question from this passage alone," then adjust.
+
+### The index-phase code
+
+A plain async function you'd call on document upload, stripped to its three steps.
+
+<div data-mark-color="blue">
+
+```ts title="lib/llm/indexing.ts" "chunkDocument(doc.content)" "embedMany" "db.insert(documentChunks)"
+export const indexDocument = async (doc: Document) => {
+  const chunks = chunkDocument(doc.content);
+
+  const { embeddings } = await embedMany({
+    model: embeddingModel,
+    values: chunks,
+  });
+
+  await db.insert(documentChunks).values(
+    chunks.map((content, i) => ({
+      orgId: doc.orgId,
+      documentId: doc.id,
+      content,
+      embedding: embeddings[i],
+      embeddingModel: 'openai/text-embedding-3-small',
+    })),
+  );
+};
+```
+
+</div>
+
+Real ingestion adds deduplication, batching across many documents, and error handling around each step.
+These reuse the background-work patterns you already have, so we don't rebuild them here. Deduplication is a trap worth its own mention later.
+
+### The query-phase code
+
+The read side: embed the question, then find the nearest passages, scoped to the org.
+
+<AnnotatedCode lang="ts" maxLines={14} code={`
+export const findRelevantChunks = async (question: string, orgId: string) => {
+  const { embedding } = await embed({
+    model: embeddingModel,
+    value: question,
+  });
+
+  const similarity = sql<number>\`1 - (\${cosineDistance(documentChunks.embedding, embedding)})\`;
+
+  return db
+    .select({ content: documentChunks.content, similarity })
+    .from(documentChunks)
+    .where(eq(documentChunks.orgId, orgId))
+    .orderBy(desc(similarity))
+    .limit(5);
+};
+`}>
+  <AnnotatedStep meta="{2-5}" color="blue">
+    Embed the question into a query vector with `embed`. This is the one string we're searching *with*.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{7} "cosineDistance"`} color="orange">
+    `cosineDistance` measures distance between the stored column and the query vector, and `1 - distance` turns it into similarity. Recall the inversion: distance is lower-is-closer, similarity is higher-is-closer. We compute similarity so the ordering reads naturally.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{12}" color="red">
+    The tenancy filter. `eq(documentChunks.orgId, orgId)` restricts the search to this org's chunks and *nothing else*. This one line is the difference between a working feature and a cross-tenant leak, so it gets its own section below.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{13-14}" color="blue">
+    Order by similarity descending and take the top 5. K is small on purpose: a large K drags irrelevant passages into the prompt and reintroduces the cost problem retrieval exists to solve.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+## Pre-retrieval in the chat route handler
+
+Now wire retrieval into the chat handler you already know, in a few lines that run *before* `streamText`: embed the user's latest question, run the org-scoped similarity query, and fold the retrieved passages into the **system prompt**.
+
+<AnnotatedCode lang="ts" maxLines={18} code={`
+export const POST = authedRoute('member', chatSchema, async ({ messages }, { session }) => {
+  const lastMessage = messages.at(-1);
+  const question = lastMessage?.parts
+    .filter((part) => part.type === 'text')
+    .map((part) => part.text)
+    .join(' ');
+
+  const chunks = await findRelevantChunks(question ?? '', session.orgId);
+  const relevantContext = chunks.map((chunk) => chunk.content).join('\\n\\n');
+
+  const result = streamText({
+    model: smartModel,
+    system: \`You answer questions about the company handbook.
+Answer only from the context below; if it is not there, say you don't know.
+
+Relevant context:
+\${relevantContext}\`,
+    messages: convertToModelMessages(messages),
+    stopWhen: stepCountIs(5),
+    maxOutputTokens: 1024,
+  });
+
+  return result.toUIMessageStreamResponse();
+});
+`}>
+  <AnnotatedStep meta={`{1} "authedRoute" "session"`} color="blue">
+    Same wrapper and signature as the chapter's handler: the validated body arrives as `{ messages }`, and `session` carries the `session.orgId` that scopes retrieval.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta="{2-9}" color="orange">
+    Pull the latest question and fetch its nearest chunks, org-scoped. Running this before the model call is what makes it pre-retrieval.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`{13-17} "Relevant context:"`} color="green">
+    Retrieved passages go into the **system prompt**, the trusted controller, never into `messages`. The retrieval was authorized server-side under `session.orgId`, so this text is trusted; the raw user turn is not.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"stopWhen" "maxOutputTokens"`} color="blue">
+    Unchanged from the chapter's handler: the step and output caps are your cost guardrails with or without retrieval.
+  </AnnotatedStep>
+
+  <AnnotatedStep meta={`"toUIMessageStreamResponse"`} color="blue">
+    The same response the client already speaks; retrieval is invisible to it, so nothing on the client changes.
+  </AnnotatedStep>
+</AnnotatedCode>
+
+This is the **pre-retrieval pattern**: retrieve on every turn, before the model runs.
+It's the simplest shape and the right default when nearly every message needs the corpus.
+
+The retrieved context rides in the system prompt, not `messages`, because the retrieval was authorized server-side under `session.orgId`: it belongs on the trusted side, enriching your instructions rather than handing control to whatever sits in the corpus.
+
+Retrieval **grounds** the answer but does not **validate** it.
+RAG cuts the odds the model contradicts your corpus, but a wrong handbook still yields a confidently wrong answer, so treat retrieved text as the model's *source*, not an *oracle*.
+
+## Pre-retrieval vs retrieval as a tool
+
+Pre-retrieval always fires, but on many surfaces most questions never touch the corpus: a general assistant fields "what's the weather" far more often than "what does the handbook say about X," and embedding and querying on every turn is wasted work.
+A second architecture fixes that: make retrieval a **tool**.
+Define a `searchKnowledgeBase` tool whose `execute` runs the embed-and-query you just wrote, and let the model decide *when* to call it through the same agentic loop as every other tool.
+
+The two split cleanly:
+
+- **Pre-retrieval** is the default when **every turn likely needs the corpus**, as in a docs Q&A bot or a "chat with this handbook" surface. One query per turn, deterministic, least machinery.
+- **Retrieval as a tool** fits **mixed surfaces**, where some questions need the corpus and many don't. It skips the embedding and the query on turns that don't need them, folding retrieval into the loop alongside the model's other tools.
+
+As a tool, the `orgId` filter lives *inside* `execute`, alongside every other tool's org-scope, and the result feeds back through the same `stopWhen` loop.
+
+<CodeVariants>
+  <CodeVariant label="Pre-retrieval (every turn)">
+    <div data-mark-color="orange">
+
+    ```ts {1-2}
+    const chunks = await findRelevantChunks(question, session.orgId);
+    const relevantContext = chunks.map((chunk) => chunk.content).join('\n\n');
+
+    const result = streamText({
+      model: smartModel,
+      system: `Answer from the context below.\n\nRelevant context:\n${relevantContext}`,
+      messages: convertToModelMessages(messages),
+      stopWhen: stepCountIs(5),
+    });
+    ```
+
+    </div>
+    **Use when every turn needs the corpus.** Retrieval runs unconditionally before the model, the condensed handler from above.
+  </CodeVariant>
+
+  <CodeVariant label="Retrieval as a tool (model decides)">
+    <div data-mark-color="green">
+
+    ```ts {4} "tools: { searchKnowledgeBase }"
+    const searchKnowledgeBase = tool({
+      description: 'Search the company handbook for relevant passages.',
+      inputSchema: z.object({ query: z.string() }),
+      execute: async ({ query }) => findRelevantChunks(query, session.orgId),
+    });
+
+    const result = streamText({
+      model: smartModel,
+      messages: convertToModelMessages(messages),
+      tools: { searchKnowledgeBase },
+      stopWhen: stepCountIs(5),
+    });
+    ```
+
+    </div>
+    **Use on mixed surfaces, where many turns don't need the corpus.** The model calls the tool only when a question needs it; the `orgId` filter lives inside `execute`, with `session.orgId` in scope from the handler.
+  </CodeVariant>
+</CodeVariants>
+
+Don't run *both* on the same surface: pre-injecting context *and* offering a `searchKnowledgeBase` tool invites double-retrieval, or leaves the model unsure whether it already has what it needs.
+One retrieval strategy per surface.
+
+Test the decision against these scenarios.
+
+<MultipleChoice>
+  Your support chat needs to answer questions from a **two-page returns policy** that's barely been touched in a year. Which approach earns its weight?
+
+  <McqChoice correct>Drop the whole policy text into the system prompt and ship — no vector store.</McqChoice>
+  <McqChoice>Index it in `documentChunks` and retrieve on every turn before the model runs.</McqChoice>
+  <McqChoice>Expose a `getPolicy` tool that fetches the row by id.</McqChoice>
+  <McqChoice>Define a `searchKnowledgeBase` tool and let the model decide when to consult it.</McqChoice>
+
+  <McqWhy>**Paste it into the system prompt.** Two pages that rarely change sit well below the threshold — a few hundred tokens of prompt does the job. Building a vector store, an indexing job, and a query path here is over-engineering for a problem the prompt already solved.</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  A user pastes the string `INV-203` and wants that one invoice's **line items** back. Which approach fits?
+
+  <McqChoice>Embed the request and pull the nearest chunks on every turn.</McqChoice>
+  <McqChoice correct>Call a tool that fetches the invoice deterministically by its number.</McqChoice>
+  <McqChoice>Paste the entire invoice archive into the system prompt.</McqChoice>
+  <McqChoice>Register the lookup as a tool the model may or may not invoke against the vector store.</McqChoice>
+
+  <McqWhy>**A tool — exact lookup.** This is a deterministic fetch by key, not a fuzzy match on meaning. Embeddings find text that *means* something similar; for "give me record X by its id" you want a tool that hits the row directly. Retrieval would be the wrong instrument.</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  You're building a "**chat with our 300-page engineering handbook**" bot where essentially every message is a question about the handbook. Which approach fits?
+
+  <McqChoice>Concatenate all 300 pages into the system prompt on each request.</McqChoice>
+  <McqChoice>Wire a `lookupSection` tool that fetches a page by its heading.</McqChoice>
+  <McqChoice correct>Retrieve the nearest passages unconditionally, before the model runs, on every turn.</McqChoice>
+  <McqChoice>Hand the model a retrieval tool and let it decide whether each question needs the handbook.</McqChoice>
+
+  <McqWhy>**RAG, pre-retrieval.** A large internal corpus, and nearly every turn needs it — so retrieve before the model runs, every time. That's the simplest deterministic fit. A tool-gated retrieval would just add a decision the model doesn't need to make when the answer is "yes, always."</McqWhy>
+</MultipleChoice>
+
+<MultipleChoice>
+  A **general support assistant** fields all kinds of requests — weather, summaries, small talk — and only *now and then* needs to quote the handbook. Which approach fits?
+
+  <McqChoice>Embed and query the corpus before every single message regardless of the question.</McqChoice>
+  <McqChoice>Inline the handbook in the system prompt so it's always available.</McqChoice>
+  <McqChoice>Fetch a handbook row by id with a deterministic tool.</McqChoice>
+  <McqChoice correct>Expose retrieval as a tool and let the model call it only when a question needs the handbook.</McqChoice>
+
+  <McqWhy>**RAG as a tool.** This is a mixed surface — most turns never touch the corpus. Making retrieval a tool means the model only pays the embedding and query cost on the turns that actually need the handbook, instead of on every message.</McqWhy>
+</MultipleChoice>
+
+## Authorizing retrieval: the multi-tenant rule
+
+Every `documentChunks` row carries an `orgId`, and every retrieval query **must** filter by `session.orgId`. No exceptions.
+
+You already org-scope every query, but here an unscoped one is *worse* than an ordinary leak.
+A normal leak hands another org's rows to your code; this one hands them to the model, which quotes one tenant's private handbook, pricing, or tickets back as fluent prose inside *another* tenant's chat, read as their own answer.
+It is the worst shape a cross-tenant bug can take.
+
+The filter travels with the query: the route handler for pre-retrieval, or inside `execute` for retrieval-as-a-tool, where every tool puts its org-scope.
+
+:::danger
+Every retrieval query filters by `session.orgId`. An unscoped vector query doesn't just leak another org's data; the model quotes it back as the answer. Treat a missing `orgId` filter as a security bug, never a shortcut.
+:::
+
+## Keeping the corpus fresh
+
+A corpus is not a one-time upload. Three operational realities follow the feature for life, each handled with tools you already have.
+
+**Embedding models change.**
+Move from `text-embedding-3-small` to a newer model and you must **re-embed the entire corpus**: the new vectors live in a different space, incomparable to the old ones and possibly a different dimension.
+The `embeddingModel` column on each row makes this survivable: you query the rows still tagged with the old model and re-embed them in batches, rolling the corpus forward without a big-bang outage.
+
+**Documents change.**
+When a source document is edited, re-chunk and re-embed *its* chunks; when it's deleted, the foreign-key cascade on `documentId` removes them for free.
+
+**Duplicates poison retrieval.**
+A duplicated chunk fills several top-K slots with the same text, spending your small K budget and biasing the answer toward it.
+Deduplicate at insert time.
+
+A re-index is just a background job, and you already have the toolkit to run one durably.
+
+## External resources
+
+The canonical references for the exact APIs this lesson used, plus a tool to make the abstract part concrete.
+
+<CardGrid>
+  <ExternalResource
+    title="AI SDK — Embeddings"
+    href="https://ai-sdk.dev/docs/ai-sdk-core/embeddings"
+    icon="simple-icons:vercel"
+    description="The reference for embed, embedMany, and the embedding model handle."
+  />
+  <ExternalResource
+    title="Drizzle — Vector similarity search"
+    href="https://orm.drizzle.team/docs/guides/vector-similarity-search"
+    icon="simple-icons:drizzle"
+    iconColor="#C5F74F"
+    description="The pgvector column helper, the HNSW index, and the cosineDistance query shape."
+  />
+  <ExternalResource
+    title="TensorFlow Embedding Projector"
+    href="https://projector.tensorflow.org/"
+    icon="simple-icons:tensorflow"
+    iconColor="#FF6F00"
+    description="Rotate and zoom a real embedding space in 3D, and watch nearest neighbours cluster by meaning, live."
+  />
+  <ExternalResource
+    title="pgvector"
+    href="https://github.com/pgvector/pgvector"
+    icon="simple-icons:postgresql"
+    iconColor="#4169E1"
+    description="The extension itself: the vector column, the cosine operator class, and the HNSW index tuning knobs."
+  />
+</CardGrid>

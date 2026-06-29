@@ -2951,3 +2951,11 @@ status (useChat) | - | useChat request lifecycle string union: 'submitted' | 'st
 initialMessages | - | Conventional variable name for history loaded from the database; in v5 assigned to the messages option, not its own option. | first defined: Chapter 106 L3
 DeepPartial | DeepPartial<RESULT> | A result type with every field at every depth optional; models a half-built streamed object. | first defined: Chapter 106 L3
 toTextStreamResponse | - | AI SDK call serializing a stream as plain text, not parts; what useCompletion reads. | first defined: Chapter 106 L3
+tool (LLM) | - | A function the model can ask the server to run, described by name, schema, and execute; the only doorway from model to app data. | first defined: Chapter 107 L1
+tool call | tool-calls | The model emitting a request to run a named tool with arguments; the 'tool-calls' finishReason that drives the agentic loop. | first defined: Chapter 107 L1
+agentic loop | multi-step loop | The server cycle of model call → tool execute → feed result back, repeating until a stop condition fires. | first defined: Chapter 107 L1
+stopWhen | - | streamText option bounding the agentic loop server-side; replaces v4's client maxSteps. | first defined: Chapter 107 L1
+stepCountIs | step cap, step count | stopWhen helper capping the loop at N steps; defaults to stepCountIs(20) if omitted. | first defined: Chapter 107 L1
+step (agentic) | - | One model-call-plus-tool-result iteration of the agentic loop; what stepCountIs counts. | first defined: Chapter 107 L1
+tool registry | tools object | The set of tools handed to streamText; the model's only window into app data. | first defined: Chapter 107 L1
+tool part | tool-<name> part | A typed part on a UIMessage for one tool's call and output, rendered client-side with its own loading shape. | first defined: Chapter 107 L2
