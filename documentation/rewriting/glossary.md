@@ -2890,3 +2890,16 @@ mechanical drift | - | Drift a machine can catch by comparing two things for a s
 semantic drift | - | Drift only a human can catch by reading the doc's intent against the code's behaviour. | first defined: Chapter 102 L3
 schema header comment | schema header | One-paragraph header on a pgTable declaration stating the table's purpose, scope, and invariants. | first defined: Chapter 101 L2
 PR template | pull-request template | Markdown file GitHub uses to pre-fill the PR description box; here a two-checkbox doc reminder. | first defined: Chapter 102 L3
+code review | review | A human reading a diff with attention before it becomes production behaviour; the checkpoint where each codebase decision holds or erodes. | first defined: Chapter 103 L1
+review stack | five-layer review stack, the stack | Five severity-ordered review layers run top-down on every diff; spend attention from the top. | first defined: Chapter 103 L1
+diff signature | - | The visible pattern in a diff that signals a change skipped an established principle or pattern. | first defined: Chapter 103 L1
+bikeshed | bikeshedding | A trivial, low-stakes detail that draws disproportionate review debate. | first defined: Chapter 103 L1
+severity label | label (review comment) | The first token of a review comment naming its severity, so the author triages before reading the body. | first defined: Chapter 103 L2
+four-part comment | comment anatomy | A review comment's slots: severity label, observation, reason+link, action or question. | first defined: Chapter 103 L2
+Conventional Comments | - | Public convention putting a parseable label (+ optional decoration) on the front of every review comment. | first defined: Chapter 103 L2
+blocking (review comment) | blocking: | Severity label for a change that must happen before merge; correctness, security, or an established pattern violation. | first defined: Chapter 103 L2
+suggestion (severity label) | suggestion: | Severity label for a strong but subjective recommendation; the code works, so it doesn't hold the merge. | first defined: Chapter 103 L2
+question (review comment) | question: | Severity label for a comment that needs an explanation, not a fix; resolves into an answer that may upgrade. | first defined: Chapter 103 L2
+praise (review comment) | praise: | Severity label for genuine, specific praise of a non-trivial good call. | first defined: Chapter 103 L2
+epistemic cowardice | - | Dressing a position you're certain about as an open question to avoid committing to it. | first defined: Chapter 103 L2
+drive-by approval | drive-by review | A review verdict submitted without engaging the content; an unread approve or an over-blocking request-changes. | first defined: Chapter 103 L2

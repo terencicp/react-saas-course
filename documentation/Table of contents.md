@@ -893,8 +893,8 @@
 - 3 Docs ship in the PR, or they're already wrong (Learn the five-artifact reflex at PR-open time, the reviewer's doc checklist, the PR-template scaffolding, and the boundary where automation catches mechanical drift but review catches semantic drift.)
 - 4 Quiz
 
-### Chapter 103 — The review surface
-- 1 Where the eyes go first (The five-layer review stack a senior runs top-down on every diff, and the principle-and-pattern map that turns the diff into a small set of checks instead of a line-by-line crawl.)
+### Chapter 103 — Reviewing pull requests
+- 1 The five-layer review stack (The five-layer review stack a senior runs top-down on every diff, and the principle-and-pattern map that turns the diff into a small set of checks instead of a line-by-line crawl.)
 - 2 The comment that lands (The four-part comment anatomy, the five severity labels (`blocking:`, `suggestion:`, `question:`, `nit:`, `praise:`), the blocking-vs.-suggesting cut, and the language of disagreement that keeps reviews actionable.)
 - 3 Quiz
 
