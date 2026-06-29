@@ -2904,3 +2904,25 @@ praise (review comment) | praise: | Severity label for genuine, specific praise 
 epistemic cowardice | - | Dressing a position you're certain about as an open question to avoid committing to it. | first defined: Chapter 103 L2
 drive-by approval | drive-by review | A review verdict submitted without engaging the content; an unread approve or an over-blocking request-changes. | first defined: Chapter 103 L2
 Nygard ADR | Nygard template, Nygard sections | Michael Nygard's 2011 four-section ADR template: Status, Context, Decision, Consequences; the canonical ADR shape. | first defined: Chapter 104 L4
+large language model | LLM | System trained to predict likely text continuations; generates language, not a database, stores no data. | first defined: Chapter 105 L1
+probabilistic | - | Same input isn't guaranteed to give the same output twice; disqualifies a model from exact, repeatable tasks. | first defined: Chapter 105 L1
+Vercel AI SDK | AI SDK | Vercel's vendor-neutral open-source JS toolkit for AI features; one set of functions/hooks across providers. | first defined: Chapter 105 L1
+streams (AI SDK) | - | Server sends the model's response piece by piece as it's generated, so text appears word by word. | first defined: Chapter 105 L1
+provider (AI) | model provider | The company whose API serves the model (OpenAI, Anthropic, Google); distinct from the vendor-neutral SDK. | first defined: Chapter 105 L1
+token (LLM) | LLM token | A model's unit of text, ~three-quarters of an English word; billed per million, input and output priced separately. | first defined: Chapter 105 L2
+input tokens | - | Everything sent to the model (system prompt, history, user message); the cheaper side of the bill. | first defined: Chapter 105 L2
+output tokens | - | Everything the model generates; usually several times the price of input, so the costliest side. | first defined: Chapter 105 L2
+context window | - | Max span of tokens a model attends to at once; overflow drops the oldest tokens from view. | first defined: Chapter 105 L2
+prompt-injection | prompt injection | Attack smuggling instructions inside user input hoping the model obeys them; defended by isolation, not filtering. | first defined: Chapter 105 L2
+maxOutputTokens | - | AI SDK generation arg capping how many tokens a call may produce; never undefined, sized per surface. | first defined: Chapter 105 L2
+AI Gateway | Vercel AI Gateway | One managed endpoint routing model calls to any provider; adds failover, usage tracking, one bill; the SDK's default target. | first defined: Chapter 105 L3
+global provider | - | SDK-level default turning a plain model string into a routed call without importing or configuring a provider. | first defined: Chapter 105 L3
+model handle | handle | Named export bound to a model id, imported instead of inlining the string; named by role, not vendor. | first defined: Chapter 105 L3
+gateway string | creator/model string | A plain 'creator/model' string routed through the AI Gateway; the default way to name a model. | first defined: Chapter 105 L3
+provider object | direct provider | A model named via an installed provider package that talks to the vendor directly, bypassing the gateway; the escape hatch. | first defined: Chapter 105 L3
+failover (AI Gateway) | provider fallback | Gateway retries the next provider in a fallback list on 429/5xx/timeout, so code never sees the error. | first defined: Chapter 105 L3
+BYOK | bring your own key | You supply your own provider API keys to the gateway rather than billing through it. | first defined: Chapter 105 L3
+embedding | embedding vector | List of numbers a model assigns to text so similar meanings sit close; meaningful only within the model that made it. | first defined: Chapter 105 L3
+vector space | embedding space | The geometry an embedding model maps text into; incompatible across models, so embeddings don't transfer. | first defined: Chapter 105 L3
+RAG | retrieval-augmented generation | Fetching relevant documents and feeding them to the model as context so its answer is grounded in your data. | first defined: Chapter 105 L3
+LangChain | - | Heavier chains/agents/retrievers framework; fits research-style multi-agent orchestration, not a Next.js streaming surface. | first defined: Chapter 105 L3

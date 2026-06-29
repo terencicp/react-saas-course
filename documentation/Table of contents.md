@@ -908,8 +908,8 @@
 
 ## Unit 22 — AI with the Vercel AI SDK
 
-### Chapter 105 — When AI features earn their weight
-- 1 The four triggers that justify an LLM surface (The four product shapes that make an LLM-backed feature the right tool, the anti-triggers that don't, and why the AI SDK is the canonical 2026 Next.js integration.)
+### Chapter 105 — When and how to add LLM features
+- 1 When a feature needs an LLM (The four product shapes that make an LLM-backed feature the right tool, the anti-triggers that don't, and why the AI SDK is the canonical 2026 Next.js integration.)
 - 2 Bounding spend before the surface goes public (The cost-and-quota discipline for user-facing LLM calls — output-token caps, pre- and post-call accounting, per-user daily quotas, sliding-window rate limits, and the seven abuse shapes a senior structurally mitigates.)
 - 3 One-line model swaps and the AI Gateway (The provider-abstraction discipline that keeps vendor swap cheap — role-named handles in `lib/llm/models.ts`, the AI Gateway as the senior production default, failover, and the embedding-portability trap.)
 - 4 Quiz
