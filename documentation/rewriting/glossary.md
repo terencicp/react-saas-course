@@ -2959,3 +2959,17 @@ stepCountIs | step cap, step count | stopWhen helper capping the loop at N steps
 step (agentic) | - | One model-call-plus-tool-result iteration of the agentic loop; what stepCountIs counts. | first defined: Chapter 107 L1
 tool registry | tools object | The set of tools handed to streamText; the model's only window into app data. | first defined: Chapter 107 L1
 tool part | tool-<name> part | A typed part on a UIMessage for one tool's call and output, rendered client-side with its own loading shape. | first defined: Chapter 107 L2
+type contract | - | A single typed message (InvoiceUIMessage via InferUITools) shared by client and server, so part.output narrows in the render with no casts and the two ends cannot drift. | first defined: Chapter 108 L5
+UIToolInvocation | UIToolInvocation<Tool> | AI SDK type for one tool call on a UIMessage: its state plus, by lifecycle stage, its input and output; parametrised by the tool, so its output union mirrors the tool's schema. | first defined: Chapter 108 L5
+model as untrusted input | untrusted model | Treating the LLM like any external input: no store or orgId reference, reads only through a tool's execute under the route's auth, orgId from the server closure. | first defined: Chapter 108 L1
+smoke-test box | smoke test | A minimal throwaway UI that confirms the wiring works end to end before the real client is built. | first defined: Chapter 108 L1
+onStepFinish | - | AI SDK streamText callback firing once per agentic step with that step's usage/toolCalls/finishReason; where per-step accounting lives. | first defined: Chapter 108 L3
+per-user daily token quota | token quota | A per-user-per-day token budget enforced server-side, keyed by (userId, day) so the key change is the daily reset; over-cap requests refused with a typed 429. | first defined: Chapter 108 L4
+soft ceiling | charged in arrears, soft cap | A budget charged after each step runs, so a single request can push slightly past the cap before the next reservation refuses; overshoot bounded by one request. | first defined: Chapter 108 L4
+reserve-before-spend | reservation | Checking the budget before streamText spends a token, in a wrapper around the handler, so a refusal short-circuits before the model ever runs. | first defined: Chapter 108 L4
+hard rate limit | hard limit | A ceiling that pre-reserves budget up front instead of charging as-you-go; the strict alternative to a soft, in-arrears cap. | first defined: Chapter 108 L4
+withLlmQuota | - | Higher-order wrapper composed around authedRoute that reserves quota and short-circuits a typed 429 before the handler reaches streamText; cost enforcement you can't forget. | first defined: Chapter 108 L4
+inputSchema | - | Zod schema of a tool's arguments; the SDK validates the model's call against it, and any field here is something the model controls. | first defined: Chapter 107 L1
+outputSchema | - | Zod schema of a tool's result; locks the projection the model sees so rows can't leak back. | first defined: Chapter 107 L1
+return don't throw | typed error result | A tool catches operational failures and returns a typed { error } the model can read, instead of throwing and 500ing; programmer bugs still crash. | first defined: Chapter 108 L3
+LLM audit-events log | llm_audit_events, LLM audit-events tail | A separate append-only events table (not auditLogs) recording what the model did per step/conversation; written via pushLlmAuditEvent, one row per event. | first defined: Chapter 108 L2

@@ -1,0 +1,237 @@
+---
+title: Project overview
+chapter-id: 108
+course-progress: 0.9941
+sidebar:
+  order: 1
+  label: Overview
+rewrites: 2
+---
+
+import { Card, CardGrid, FileTree, Steps } from '@astrojs/starlight/components';
+import Figure from '../../../components/figures/Figure.astro';
+import Screenshot from '../../../components/figures/screenshot/Screenshot.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Term from '../../../components/ui/Term.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The last three chapters built the pieces of an LLM feature in isolation: deciding when one earns its place and bounding its cost, the `streamText` and `useChat` plumbing with the `UIMessage` parts protocol, and tool calling with a server-owned agentic loop and typed tool parts.
+This project wires them into one surface: an "ask-your-invoices" chat in the right rail of the invoices app you built earlier.
+A user asks a plain question about their org's invoices ("how many overdue?", "total paid this month?"), a tool-calling model answers from real `scopedInvoices` data, and a panel shows how much of today's token budget is left.
+
+One rule governs every lesson: the model is untrusted input.
+It never sees the store or an `orgId`, and never touches a row it isn't allowed to.
+Every read happens inside a tool's `execute`, under the route's auth boundary, scoped by an `orgId` the server closes over and the model can't reach.
+
+This lesson writes no code.
+You leave with the running skeleton and a map of the nine stubs you fill over the next four lessons.
+It boots with no database, Docker, or auth wall: the seeded invoices list renders, the chat rail is present, and the panel shows a usage bar, but the two route handlers behind them return 404 until you write them.
+
+<Figure caption="The finished surface at the end of the chapter, not this lesson's boot state: a question typed, the tool-part skeleton flashing, the stats card with real numbers, an assistant bubble citing the count, and the usage panel ticking up. Your fresh boot looks emptier — the rail present but unwired until the next lesson.">
+  <Screenshot viewport="desktop">
+    <img
+      src="/screenshots/108/l5-desktop-1280.png"
+      alt="The finished /invoices surface at desktop width as the Acme admin: the invoices list fills the left two-thirds, and the right rail shows the 'Daily token budget' usage panel above the 'Ask your invoices' chat card. The chat holds a 'You' question — 'How many overdue invoices do we have?' — and an 'Assistant' turn rendering the getInvoiceStats tool part as a card-shaped loading skeleton, with the chat input and Send button below."
+    />
+  </Screenshot>
+</Figure>
+
+## What we'll practice
+
+Every primitive below comes from the previous three chapters; here you wire them together.
+
+- Wrapping a streaming LLM endpoint in the **same auth boundary** that guards every other mutation.
+- Treating the model as untrusted input: **tools as the only doorway** into app state, `orgId` from the server closure rather than the model's arguments, aggregates returned instead of raw rows.
+- Owning the agentic loop **server-side** with an explicit step cap, not an SDK default.
+- Accounting for cost **per user, per day**, and refusing gracefully with a typed response rather than a thrown 500.
+- Rendering a **typed `useChat` surface** where each tool's output is typed at the call site and draws its own loading shape.
+
+The result is a reusable skeleton for any LLM-backed feature: the auth wrapper, the quota wrapper, a tool registry behind a `lib/llm` seam, and a typed client stay the same; only the tools and the prompt change.
+
+## Architecture
+
+The request path is short: a streaming route handler wrapped twice, a tool registry that is the model's only window into the data, and a separate inspector for watching it by hand. Five layers:
+
+- **Client** — in the `/invoices` right rail, `invoice-chat.tsx` runs `useChat<InvoiceUIMessage>` over a `DefaultChatTransport`, rendering text parts and `tool-getInvoiceStats` parts; `token-usage-panel.tsx` polls `/api/usage`.
+- **Route** — `POST /api/chat`, composed as `withLlmQuota(authedRoute('member', …))`. The quota wrapper reserves budget before the stream starts; inside, `streamText` runs with the tool-grounded system prompt, `stopWhen(stepCountIs(5))`, the tool registry, an `onStepFinish` (quota increment plus per-step audit), and an `onFinish` (the aggregate audit write).
+- **Feature seam** — `src/lib/llm/{prompts,tools,quota,audit,with-llm-quota}.ts`, the wall the model never sees past: no store reference, no `orgId`, no raw row crosses it. `models.ts` holds only the AI Gateway model id.
+- **Data** — the invoices array from the earlier list project, read only through `scopedInvoices(orgId).active()`, plus two new accounting arrays, `usageQuota` and `llmAuditEvents`.
+- **Inspector** — `/inspector`, a Server Component mirroring quota and audit state and offering the verification toggles; its mutations are Server Actions in `inspector/actions.ts`.
+
+<Figure caption="The request path, left to right. The route nests three boxes: withLlmQuota wraps authedRoute('member') wraps streamText, so a request clears the quota reservation, then auth, before the stream starts. Inside, the model reaches the store through one doorway, the getInvoiceStats tool, which calls scopedInvoices under an orgId the server closes over. Accounting writes land in usageQuota and llmAuditEvents, which the inspector reads from the side, off the request path.">
+```d2
+direction: right
+
+**.style.font-size: 44
+
+classes: {
+  client: {
+    style: { fill: "#dbeafe"; stroke: "#2563eb"; font-color: "#1e3a8a"; border-radius: 12 }
+  }
+  quota: {
+    style: { fill: "#fef3c7"; stroke: "#d97706"; font-color: "#78350f"; border-radius: 12 }
+  }
+  auth: {
+    style: { fill: "#dcfce7"; stroke: "#16a34a"; font-color: "#14532d"; border-radius: 12 }
+  }
+  stream: {
+    style: { fill: "#ede9fe"; stroke: "#7c3aed"; font-color: "#4c1d95"; border-radius: 12 }
+  }
+  tool: {
+    style: { fill: "#ffffff"; stroke: "#7c3aed"; font-color: "#4c1d95"; border-radius: 12 }
+  }
+  store: {
+    style: { fill: "#fef3c7"; stroke: "#d97706"; font-color: "#78350f" }
+  }
+  inspector: {
+    style: { fill: transparent; stroke: "#94a3b8"; stroke-dash: 3; font-color: "#475569"; border-radius: 12 }
+  }
+  edge: {
+    style: { font-size: 38 }
+  }
+}
+
+client: "Client · /invoices rail" {
+  class: client
+  chat: "invoice-chat.tsx\nuseChat" { class: client }
+  panel: "token-usage-panel.tsx\npoll" { class: client }
+}
+
+quota: "withLlmQuota\nreserve before stream" {
+  class: quota
+  auth: "authedRoute('member')" {
+    class: auth
+    stream: "streamText\nstopWhen stepCountIs(5)\nonStepFinish · onFinish" {
+      class: stream
+      tool: "getInvoiceStats\n.execute" { class: tool }
+    }
+  }
+}
+
+data: "Data store" {
+  class: store
+  invoices: "invoices" { class: store; shape: cylinder }
+  accounting: "usageQuota\nllmAuditEvents" { class: store; shape: cylinder }
+}
+
+inspector: "Inspector · /inspector\nServer Component" { class: inspector }
+
+client.chat -> quota: "POST /api/chat" { class: edge; style.stroke: "#7c3aed"; style.stroke-width: 2 }
+client.panel -> quota: "GET /api/usage" { class: edge; style.stroke: "#2563eb"; style.stroke-dash: 4 }
+
+quota -> quota.auth.stream: "429 if over cap" { class: edge; style.stroke: "#d97706" }
+quota.auth -> quota.auth.stream: "401 / 403 / 422" { class: edge; style.stroke: "#16a34a" }
+
+quota.auth.stream.tool -> data.invoices: "the only doorway:\nscopedInvoices(ctx.orgId)\norgId from ctx, not the model" { class: edge; style.stroke: "#d97706"; style.stroke-width: 6 }
+quota.auth.stream -> data.accounting: "onStepFinish / onFinish\naccounting writes" { class: edge; style.stroke: "#d97706" }
+
+inspector -> data: "read state from the side" { class: edge; style.stroke: "#64748b"; style.stroke-dash: 4 }
+```
+</Figure>
+
+## Starting file tree
+
+The starter carries the whole invoices surface from the earlier list project — list, store, auth wrappers, scoped query, model registry, inspector shell — and marks the nine files you write with a `TODO(L<n>)` stub naming the lesson that fills it. The bolded files below are your build; everything else is carried code you read but don't change. The one exception is `with-llm-quota.ts`, which ships complete: you wrap with it in the quota lesson instead of writing it.
+
+<FileTree>
+- next.config.ts
+- .env.example AI_GATEWAY_API_KEY — only the live-model checks need it
+- package.json `ai@^5`, `@ai-sdk/react@^2` (no `@ai-sdk/openai` — the gateway is a plain string)
+- src/
+  - env.ts type-safe env — `AI_GATEWAY_API_KEY`, server-only
+  - server/
+    - types.ts adds `UsageQuotaRow` and `LlmAuditEvent` to the carried domain types
+    - store.ts the in-memory "Postgres" — invoices plus the new `usageQuota` / `llmAuditEvents` arrays
+    - session.ts cookie-driven dev `getSession()` — default identity `org-acme:admin`
+    - inspector-flags.ts the three debug flags the later Moments of truth flip
+  - lib/
+    - result.ts
+    - authed-route.ts the `Request`/`Response` auth wrapper the chat route rides
+    - authed-action.ts
+    - invoices/
+      - scoped-query.ts `scopedInvoices(orgId).active()` — the only sanctioned read into the store
+      - queries.ts
+      - actions.ts
+    - llm/
+      - models.ts `chatModel` — one bare AI Gateway id; read this
+      - **prompts.ts** TODO(L2) — the tool-grounded system prompt
+      - **audit.ts** TODO(L2) — the append-only LLM audit writers
+      - **tools.ts** TODO(L3) — `getInvoiceStats`, the org-scoped tool
+      - **quota.ts** TODO(L4) — the daily token cap and accounting
+      - with-llm-quota.ts ships complete — the reserve-before-spend wrapper
+  - app/
+    - layout.tsx page.tsx globals.css \_components/
+    - (app)/
+      - invoices/
+        - page.tsx the list view plus the right-rail `<aside>` (usage panel + chat)
+        - table.tsx toolbar.tsx view-tabs.tsx pagination.tsx [id]/edit/
+        - **invoice-chat.tsx** TODO(L2 smoke test, L5 full) — the typed `useChat` client
+        - **invoice-stats-card.tsx** TODO(L5) — the four-state tool-part card
+        - **token-usage-panel.tsx** TODO(L5) — the polling usage panel
+    - api/
+      - chat/
+        - **route.ts** TODO(L2, extended L3/L4) — `POST` = `withLlmQuota(authedRoute('member', …))`
+      - usage/
+        - **route.ts** TODO(L4) — `GET` usage for the polling panel
+    - inspector/
+      - page.tsx the verification surface — counts, identity switcher, audit tails, flags
+      - actions.ts the inspector's Server Actions
+</FileTree>
+
+First read a few carried files so the seams the build hangs off are familiar. These are reads, not edits:
+
+- **`src/lib/llm/models.ts`** — one handle, `chatModel = 'openai/gpt-5-mini'`, a bare `provider/model` string the SDK routes through the Vercel AI Gateway using `AI_GATEWAY_API_KEY`. Swapping providers is a one-line change here, not a `provider(...)` call at the call site.
+- **`src/server/store.ts`** — the in-memory stand-in for Postgres. Beside `invoices` sit two new arrays: `usageQuota`, keyed by `(userId, day)`, and `llmAuditEvents`, each row carrying an `event` of `'llm.step'` or `'llm.finish'` plus a jsonb-shaped payload.
+- **`src/server/session.ts`** — the cookie-driven dev `getSession()`, the stand-in for a DB-backed app's `requireOrgUser`. With no auth wall it never redirects; an absent or unknown `acting-identity` cookie defaults to `org-acme:admin`.
+- **`src/server/inspector-flags.ts`** — three flags, all default off: `BYPASS_AUTHED_ROUTE`, `MODEL_FROM_INPUT_ORGID`, and `FORCE_TOOL_ERROR`. None is reachable in normal operation; each exposes one failure mode by hand from the inspector.
+- **The `/inspector` page** — your control room for the chapter: row counts, identity switcher, audit-events tail, live usage counter, the "Force quota to 99,500" button, the "Force tool error" toggle, the forge-`orgId` explainer, and the debug-flag toggles. Walk it once so you know where each verification lever lives.
+
+One seeded fact the later lessons lean on: member-A starts today at **90,000 tokens used** against a 100,000 daily cap, with a separate **99,000**-token row for *yesterday*. The yesterday row proves the daily key resets independently of today's; the 90k start lets a couple of small questions cross the cap, so you can reach the over-budget refusal path by hand.
+
+## Roadmap
+
+Each of the next four lessons fills one slice of the nine stubs and ends on a capability you verify by hand.
+
+<CardGrid>
+  <Card title="Lesson 2 — Streaming route under auth">
+    Adds `POST /api/chat`: `streamText` inside `authedRoute('member')`, capped at five agentic steps, with the tool-grounded system prompt and an `onFinish` audit write. Ends streaming text-only answers into a throwaway <Term definition="A minimal, throwaway check that confirms the wiring works end to end before you build the real UI.">smoke-test box</Term>.
+  </Card>
+  <Card title="Lesson 3 — The org-scoped tool">
+    Adds `getInvoiceStats`, which closes over `ctx.orgId` and returns an aggregate to the model. Answers are grounded in real `scopedInvoices` numbers, and a forged `orgId` can't reach another org.
+  </Card>
+  <Card title="Lesson 4 — The daily token quota">
+    Adds `quota.ts`, the `withLlmQuota` reservation around the route, per-user-per-day accounting in `onStepFinish`, and the `/api/usage` read endpoint. Ends refusing an over-cap request with a typed 429.
+  </Card>
+  <Card title="Lesson 5 — Typed client and usage panel">
+    Replaces the smoke-test box with the real typed `useChat` client: text bubbles, tool-part cards across all four lifecycle states with a per-tool skeleton, and the live usage panel. Ends with the happy and unhappy paths working live.
+  </Card>
+</CardGrid>
+
+## Setup
+
+Everything runs locally: no external accounts, no shell environment variables. The "database" is an in-memory store seeded at boot, and identity comes from a cookie.
+
+<Steps>
+
+1. Get the starter codebase from the [project repository](https://github.com/terencicp/react-saas-course-projects), under `Chapter 108/start/`.
+
+2. Install dependencies.
+
+   ```sh
+   pnpm install
+   ```
+
+3. Boot the dev server.
+
+   ```sh
+   pnpm dev
+   ```
+
+4. Open `http://localhost:3000/invoices`. The seeded list renders with the right-rail chat panel, and `/inspector` loads with the member-A usage row and an empty LLM audit-events tail. The store seeds deterministically (member-A at 90k today, 99k yesterday) on first import; the inspector's "Reset and re-seed" control restores it between demos.
+
+</Steps>
+
+**Environment variables.** None for this lesson. One key matters only for the *manual* live-chat checks in the next four lessons: `AI_GATEWAY_API_KEY`, the server-only key the model handle reads. Get it from the Vercel AI Gateway dashboard, copy `.env.example` to `.env`, and paste it in. No test, build, or rendered check calls a live model, so `pnpm verify` stays green without it.
+
+**Expected result.** `/invoices` and `/inspector` both render. `POST /api/chat` and `GET /api/usage` return 404 until their handlers exist — the unwired state you build out next.

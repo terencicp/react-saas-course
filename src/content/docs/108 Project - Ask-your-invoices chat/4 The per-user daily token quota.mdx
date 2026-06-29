@@ -1,0 +1,429 @@
+---
+title: The per-user daily token quota
+chapter-id: 108
+course-progress: 0.9984
+sidebar:
+  order: 4
+  label: Daily token quota
+rewrites: 2
+---
+
+import { CardGrid } from '@astrojs/starlight/components';
+import ExternalResource from '../../../components/ui/ExternalResource.astro';
+import CourseProgressBar from '../../../components/ui/CourseProgressBar.astro';
+import Checklist from '../../../components/ui/checklist/Checklist.astro';
+import ChecklistItem from '../../../components/ui/checklist/ChecklistItem.astro';
+import CodeVariants from '../../../components/code/code-variants/CodeVariants.astro';
+import CodeVariant from '../../../components/code/code-variants/CodeVariant.astro';
+
+<CourseProgressBar value={frontmatter['course-progress']} />
+
+The chat answers grounded questions now: it reads real invoice aggregates, refuses cross-org probes, and writes an audit trail.
+One thing still separates it from something you would put behind a public URL: it has no idea how much it costs.
+Every message spends tokens, and tokens are money.
+A single user — or a script posing as one — can sit in the chat box all afternoon and run up a model bill with nothing in the way.
+
+This lesson caps each user at 100,000 tokens per day and refuses gracefully once the budget is spent.
+The request that would cross the cap comes back as a typed 429 instead of an answer: the model never runs, and no new `'llm.finish'` row lands in the audit tail.
+A new `GET /api/usage` endpoint reports today's used, cap, and remaining tokens for the caller.
+The whole surface is server-side, so the proof is the 429 and that JSON, not a screenshot.
+
+## Your mission
+
+This makes the cost-cap discipline from [Bounding spend before the surface goes public](/105-when-and-how-to-add-llm-features/2-bounding-spend-before-the-surface-goes-public/) concrete: a per-user-per-day token budget, enforced server-side, with a typed refusal the client can render.
+That lesson covered *why* a public LLM surface needs a spend ceiling; reach back there for the reasoning.
+
+The reflex to install is *where* the check runs.
+Deciding "is this user over budget?" has to happen **before** `streamText` spends a token, so it lives not in the route handler but in a middleware, `withLlmQuota`, composed *around* `authedRoute`.
+The route exports as `withLlmQuota(authedRoute('member', …))`, putting the wrapper between the request and the handler.
+Wrap first, then add capability: a future LLM route then cannot forget cost enforcement, the same way it cannot forget auth — both are wrappers you compose on, not lines you remember to write.
+The wrapper ships complete in the starter; your job is to author the quota module it calls and wire it onto the route.
+
+The quota lives in the `usageQuota` store array — the in-memory stand-in for a `usage_quota_daily` table — keyed by `(userId, day)`.
+That key *is* the daily-reset mechanism: no cron job, no scheduled wipe.
+Tomorrow has a different `day`, so the first request finds no row for `(userId, tomorrow)` and pushes a fresh one at zero.
+The seed proves it with two near-cap rows for the same user: yesterday's row at 99,000 tokens does not block today, because it is a different key.
+In SQL this is `INSERT ... ON CONFLICT DO NOTHING` then a `SELECT` against `usage_quota_daily`; two array operations stand in for those two statements.
+
+This is a *soft* ceiling, charged in arrears: tokens are counted inside `onStepFinish` as each step runs, so the step that crosses the cap is charged *after* it ran.
+The next request gets refused, but the one that crossed was already paid for — for a 100,000-token budget that is fine, since the overshoot is bounded by one request.
+A hard rate limit, say a strict per-second quota on an expensive model, would pre-reserve a budget up front instead; the as-you-go ceiling is the right default here.
+
+The counter sums input and output tokens into one number, though production billing often prices them apart, since output costs several times more than input.
+Both fields are *optional* on the v5 usage object, so default each to zero with `??` before adding them: a missing field must charge nothing, never crash the route.
+The `/api/usage` endpoint is the read side; it reuses `authedRoute('member')`, so the usage it reports is always scoped to the authenticated caller, never a user id from the request.
+
+The quota module, the wrapper wiring, and the read endpoint are the whole surface here; the rendered usage panel and its typed client land in the next lesson.
+
+<Checklist id="mission">
+  <ChecklistItem chip="untested">The request that crosses the 100,000-token cap returns HTTP 429 with `{ ok: false, error: { code: 'quota_exceeded', userMessage } }`, refused before the stream starts.</ChecklistItem>
+  <ChecklistItem chip="untested">`GET /api/usage` returns today's `{ used, cap, remaining }` for the acting user.</ChecklistItem>
+  <ChecklistItem chip="untested">After a normal question, the usage counter increases by the actual token count for that conversation.</ChecklistItem>
+  <ChecklistItem chip="untested">A question with a long preamble increases the counter by more than a short question, because the counter sums input and output tokens.</ChecklistItem>
+  <ChecklistItem chip="untested">Yesterday's near-cap row does not block today's request, because the quota is keyed by `(userId, day)`.</ChecklistItem>
+  <ChecklistItem chip="tested">The slice typechecks and builds (`pnpm verify`).</ChecklistItem>
+</Checklist>
+
+## Coding time
+
+Build the quota module, then the read endpoint, then wire the wrapper onto the chat route and add the increment to its `onStepFinish`, against the brief above and the verification below. Try it before opening the walkthrough.
+
+<details>
+<summary>Reference solution and walkthrough</summary>
+
+Build in dependency order: the quota module first, since everything calls into it, then `/api/usage`, then the two edits that wire the wrapper and counter onto the chat route.
+
+### The quota module
+
+Everything the feature does to a quota row lives in `src/lib/llm/quota.ts`, with four exports: the cap constant, a read, a reserve, and a charge. The comments carry the rationale.
+
+```ts
+import 'server-only';
+
+import { findQuotaRow, todayUtc, usageQuota } from '@/server/store';
+
+export const DAILY_TOKEN_CAP = 100_000;
+
+export type UsageReport = {
+  used: number;
+  cap: number;
+  remaining: number;
+};
+
+export type QuotaReservation =
+  | { ok: true }
+  | { ok: false; error: { code: 'quota_exceeded'; userMessage: string } };
+
+// Find today's row, or push a fresh `tokensUsed: 0` one — the in-memory analogue
+// of `INSERT ... ON CONFLICT DO NOTHING`. Reservation and accounting both ensure
+// the row exists before touching it.
+const ensureTodayRow = (userId: string) => {
+  const existing = findQuotaRow(userId, todayUtc());
+  if (existing) {
+    return existing;
+  }
+
+  const row = {
+    userId,
+    day: todayUtc(),
+    tokensUsed: 0,
+    updatedAt: new Date().toISOString(),
+  };
+  usageQuota.push(row);
+  return row;
+};
+
+// Today's used/cap/remaining — the shape `/api/usage` returns and the panel
+// polls. Missing row reads as zero used.
+export const readUsage = async (userId: string): Promise<UsageReport> => {
+  const used = findQuotaRow(userId, todayUtc())?.tokensUsed ?? 0;
+  return {
+    used,
+    cap: DAILY_TOKEN_CAP,
+    remaining: Math.max(0, DAILY_TOKEN_CAP - used),
+  };
+};
+
+// Reserve before the stream spends — runs in `withLlmQuota` before delegating.
+// At or over the cap, refuse with a typed 429-shaped error the wrapper returns;
+// otherwise the call proceeds and `addUsage` charges in arrears. Ensure-then-
+// compare keeps the two steps readable.
+export const reserveQuotaOrRefuse = async (
+  userId: string,
+): Promise<QuotaReservation> => {
+  const row = ensureTodayRow(userId);
+
+  if (row.tokensUsed >= DAILY_TOKEN_CAP) {
+    return {
+      ok: false,
+      error: {
+        code: 'quota_exceeded',
+        userMessage: "You've reached today's usage limit. Try again tomorrow.",
+      },
+    } as const;
+  }
+
+  return { ok: true } as const;
+};
+
+// Charge tokens as they are consumed — runs per step in the route's
+// `onStepFinish`. A soft daily ceiling: charged in arrears, so a single request
+// can push slightly past the cap before the next reservation refuses. Input and
+// output tokens are summed into one number (production separates the two prices).
+export const addUsage = async (
+  userId: string,
+  tokens: number,
+): Promise<void> => {
+  const row = ensureTodayRow(userId);
+  row.tokensUsed += tokens;
+  row.updatedAt = new Date().toISOString();
+};
+```
+
+`ensureTodayRow` is the find-or-push helper both `reserveQuotaOrRefuse` and `addUsage` call first, so neither touches `tokensUsed` before the row exists. It keys on `todayUtc()`, so yesterday's seeded 99,000 row is a different key it never sees — requirement 5, the daily reset falling out of the key changing.
+
+`reserveQuotaOrRefuse` is requirement 1: it ensures today's row, compares `tokensUsed` to `DAILY_TOKEN_CAP` with `>=`, and at or over the cap returns the canonical Result error shape — the same discipline as [Zod's error contract](/042-zod-4-schema-validation/5-parse-safeparse-and-the-error-contract/) and the [authedAction wrapper](/057-roles-authorization-audit-logs/2-the-authedaction-wrapper/). It does not set a status; it hands a typed verdict to its only caller, `withLlmQuota`, which turns the refusal into the 429.
+
+`readUsage` is requirement 2: a missing row reads as zero used through `?? 0`, and `remaining` is floored with `Math.max(0, …)` so an overshooting user sees `0`, not a negative number.
+
+`addUsage` is requirements 3 and 4: it ensures today's row and does `row.tokensUsed += tokens`, the in-memory `UPDATE … SET tokens_used = tokens_used + $tokens`. Input and output are summed at the call site in `onStepFinish`, below.
+
+:::note
+The `as const` on the two object returns of `reserveQuotaOrRefuse` is load-bearing. Without it TypeScript widens `code: 'quota_exceeded'` to `code: string`, and the return stops matching the `QuotaReservation` union — the narrow literal is what lets the wrapper and client switch on `error.code`.
+:::
+
+### The provided seam: `with-llm-quota.ts`
+
+You wire this file on but do not write it; it ships complete in the starter. Read its three moves — the structural payoff the lesson is about.
+
+```ts
+import 'server-only';
+
+import { reserveQuotaOrRefuse } from '@/lib/llm/quota';
+import { getSession } from '@/server/session';
+
+// The daily-quota seam, composed AROUND `authedRoute` — `withLlmQuota(authedRoute(...))`.
+// Quota lives here, not inside the route, so a new LLM route cannot forget cost
+// enforcement: wrap first, then add capability. It reserves before the stream
+// starts (reserve-before-spend) and short-circuits a typed 429 when the user is
+// at or over the cap; otherwise it delegates to the wrapped handler untouched.
+export const withLlmQuota =
+  (handler: (req: Request) => Promise<Response>) =>
+  async (req: Request): Promise<Response> => {
+    const session = await getSession();
+    const reserved = await reserveQuotaOrRefuse(session.userId);
+
+    if (!reserved.ok) {
+      return Response.json(
+        { ok: false, error: reserved.error },
+        { status: 429 },
+      );
+    }
+
+    return handler(req);
+  };
+```
+
+It is a higher-order function: take a handler `(req) => Promise<Response>`, return one of the same shape. The three moves are resolve the acting user from `getSession()` (server-side, never the request body), call `reserveQuotaOrRefuse(session.userId)`, then branch — on a refusal short-circuit with `Response.json(..., { status: 429 })` so the inner handler never runs, otherwise delegate to `handler(req)` untouched.
+
+Because it returns a function of the exact signature `authedRoute` returns, the two compose cleanly: the request flows quota → auth → handler, so the reservation always runs before the handler reaches `streamText`. Cost enforcement is a layer the request passes through, not a line someone has to remember.
+
+### The usage endpoint
+
+`src/app/api/usage/route.ts` is the read side the panel will poll.
+
+```ts
+import { z } from 'zod';
+import { authedRoute } from '@/lib/authed-route';
+import { readUsage } from '@/lib/llm/quota';
+
+// The usage endpoint the token panel polls. GET carries no body, so it parses
+// against `z.strictObject({})` (the wrapper treats an absent body as `{}`); the
+// auth wrap resolves the acting user from the session closure, never the request.
+export const GET = authedRoute(
+  'member',
+  z.strictObject({}),
+  async (_input, ctx) => Response.json(await readUsage(ctx.userId)),
+);
+```
+
+The empty schema is the only odd part. A `GET` carries no body, but `authedRoute` still wants a schema, so `z.strictObject({})` — an empty object, no extra keys — passes against the absent body it treats as `{}`. The handler reads `ctx.userId`, resolved by the auth wrapper from the session rather than anything the caller sent, and returns `readUsage(ctx.userId)` as JSON — requirement 2: usage is always per authenticated user.
+
+### Wire the wrapper and the counter onto the chat route
+
+Two surgical changes to `src/app/api/chat/route.ts`, the route you already wrote. Nothing else moves.
+
+<CodeVariants>
+  <CodeVariant label="Before (where lesson 3 left it)">
+    ```ts {16} {29-36}
+    import { convertToModelMessages, stepCountIs, streamText } from 'ai';
+    import { z } from 'zod';
+    import { authedRoute } from '@/lib/authed-route';
+    import { writeLlmFinishEvent, writeLlmStepEvent } from '@/lib/llm/audit';
+    import { chatModel } from '@/lib/llm/models';
+    import { invoiceQAPrompt } from '@/lib/llm/prompts';
+    import { buildInvoiceTools, type InvoiceUIMessage } from '@/lib/llm/tools';
+
+    export const POST = authedRoute(
+      'member',
+      z.strictObject({ messages: z.array(z.unknown()) }),
+      async (input, ctx) => {
+        const org = await ctx.db.query.organization.findFirst({
+          where: (o) => o.id === ctx.orgId,
+        });
+        const orgName = org?.name ?? 'your organization';
+
+        const tools = buildInvoiceTools({ orgId: ctx.orgId });
+
+        const result = streamText({
+          model: chatModel,
+          system: invoiceQAPrompt({ orgName }),
+          messages: convertToModelMessages(input.messages as InvoiceUIMessage[]),
+          tools,
+          stopWhen: stepCountIs(5),
+          maxOutputTokens: 1024,
+          onStepFinish: async ({ usage, toolCalls, finishReason }) => {
+            await writeLlmStepEvent({
+              userId: ctx.userId,
+              orgId: ctx.orgId,
+              finishReason,
+              usage,
+              toolCalls,
+            });
+          },
+          onFinish: ({ usage, finishReason }) =>
+            writeLlmFinishEvent({
+              userId: ctx.userId,
+              orgId: ctx.orgId,
+              finishReason,
+              usage,
+            }),
+          onError: ({ error }) => {
+            console.error('[chat] stream error', { code: 'stream_error' });
+            void error;
+          },
+        });
+
+        return result.toUIMessageStreamResponse();
+      },
+    );
+    ```
+    **The grounded-tool route, no cost cap yet.** The export is a bare `authedRoute`, and `onStepFinish` only writes the per-step audit row — no reservation in front of the stream, no token counter charged.
+  </CodeVariant>
+
+  <CodeVariant label="After (this lesson)">
+    ```ts ins={7} ins={9} {16} {36-39}
+    import { convertToModelMessages, stepCountIs, streamText } from 'ai';
+    import { z } from 'zod';
+    import { authedRoute } from '@/lib/authed-route';
+    import { writeLlmFinishEvent, writeLlmStepEvent } from '@/lib/llm/audit';
+    import { chatModel } from '@/lib/llm/models';
+    import { invoiceQAPrompt } from '@/lib/llm/prompts';
+    import { addUsage } from '@/lib/llm/quota';
+    import { buildInvoiceTools, type InvoiceUIMessage } from '@/lib/llm/tools';
+    import { withLlmQuota } from '@/lib/llm/with-llm-quota';
+
+    // The streaming chat endpoint. `withLlmQuota` wraps `authedRoute` (quota composed
+    // AROUND auth — cost enforcement can't be forgotten); the inner handler owns the
+    // loop with a server-side `stopWhen` cap and a `maxOutputTokens` ceiling, both
+    // non-negotiable. The schema accepts untyped `messages` on purpose —
+    // `convertToModelMessages` does the real validation; the route does not duplicate it.
+    export const POST = withLlmQuota(
+      authedRoute(
+        'member',
+        z.strictObject({ messages: z.array(z.unknown()) }),
+        async (input, ctx) => {
+          const org = await ctx.db.query.organization.findFirst({
+            where: (o) => o.id === ctx.orgId,
+          });
+          const orgName = org?.name ?? 'your organization';
+
+          const tools = buildInvoiceTools({ orgId: ctx.orgId });
+
+          const result = streamText({
+            model: chatModel,
+            system: invoiceQAPrompt({ orgName }),
+            messages: convertToModelMessages(input.messages as InvoiceUIMessage[]),
+            tools,
+            stopWhen: stepCountIs(5),
+            maxOutputTokens: 1024,
+            onStepFinish: async ({ usage, toolCalls, finishReason }) => {
+              await addUsage(
+                ctx.userId,
+                (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
+              );
+              await writeLlmStepEvent({
+                userId: ctx.userId,
+                orgId: ctx.orgId,
+                finishReason,
+                usage,
+                toolCalls,
+              });
+            },
+            onFinish: ({ usage, finishReason }) =>
+              writeLlmFinishEvent({
+                userId: ctx.userId,
+                orgId: ctx.orgId,
+                finishReason,
+                usage,
+              }),
+            onError: ({ error }) => {
+              console.error('[chat] stream error', { code: 'stream_error' });
+              void error;
+            },
+          });
+
+          return result.toUIMessageStreamResponse();
+        },
+      ),
+    );
+    ```
+    **Two load-bearing changes.** The export is now wrapped in `withLlmQuota`, so the reservation runs before the handler; and `onStepFinish` charges the counter with the summed input + output tokens before writing the audit row (the two new imports carry both).
+  </CodeVariant>
+</CodeVariants>
+
+The first change is the wrap: `export const POST = authedRoute(...)` becomes `export const POST = withLlmQuota(authedRoute(...))`. The handler stays as it was; the quota check now runs in front of it before any token is spent. The route never reasons about quota — the wrapper does.
+
+The second change is one statement inside the existing `onStepFinish`, ahead of the audit write:
+
+```ts
+await addUsage(
+  ctx.userId,
+  (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
+);
+```
+
+This is requirements 3 and 4. `onStepFinish` fires once per step, so charging here accumulates the conversation's real cost across every step. The summed expression folds input and output into the single number `addUsage` charges, and `?? 0` defends against the v5 usage object's optional fields, so a missing field contributes nothing rather than turning the sum into `NaN`. A long preamble runs more input tokens than a terse question, so it charges more — requirement 4 falling out of summing both sides.
+
+</details>
+
+<CardGrid>
+  <ExternalResource
+    title="streamText reference (AI SDK v5)"
+    href="https://ai-sdk.dev/v5/docs/reference/ai-sdk-core/stream-text"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="The onStepFinish callback and the usage object — note inputTokens and outputTokens are typed number | undefined, which is why your charge sums them with `?? 0`."
+  />
+  <ExternalResource
+    title="Token usage and multi-step generation"
+    href="https://ai-sdk.dev/docs/ai-sdk-core/generating-text"
+    icon="simple-icons:vercel"
+    iconColor="#000000"
+    description="How per-step usage accumulates across an agentic loop — the model behind charging in onStepFinish rather than once at the end."
+  />
+</CardGrid>
+
+## Moment of truth
+
+This project ships **no per-lesson test suite** — `lesson-verification/` is a harness slot, not a green gate. The only mechanical guard is `pnpm verify`, which chains three checks and stops at the first failure: `biome ci .`, then `tsc --noEmit`, then a `next build` with `SKIP_ENV_VALIDATION=true`:
+
+```sh
+pnpm verify
+```
+
+Biome and `tsc` are silent on success, so a clean run flows straight to the `next build` summary, with `/api/chat` and `/api/usage` in the route map:
+
+```sh frame="none"
+ ✓ Compiled successfully
+ ✓ Linting and checking validity of types
+ ✓ Collecting page data
+ ✓ Generating static pages
+
+Route (app)                                 Size
+┌ ƒ /api/chat                                0 B
+├ ƒ /api/usage                               0 B
+└ ○ /invoices                              ...
+```
+
+That confirms requirement 6: the quota module, the wrapper wiring, and the endpoint typecheck and build. Everything behavioral is a live check, and the setup has one trap: **the seeded near-cap quota row is for `org-acme:member`, but the default session is `org-acme:admin`** — a different user. The quota checks fire only once you switch the inspector identity to `org-acme:member`; force the quota or look for the 429 as the admin and you are reading the wrong user's row.
+
+Which checks need a real model: the 429 refusal and the daily-key independence short-circuit *before* the model — the wrapper refuses the over-cap request without ever calling `streamText` — so they work with no key. Only the counter-increment checks need a real call (and `AI_GATEWAY_API_KEY` in `.env`), since there are no tokens to count until the model runs.
+
+<Checklist id="verify">
+  <ChecklistItem chip="untested">Switch the inspector identity to `org-acme:member` (the seed's near-cap row is for that user, not the default admin). Apply "Force quota to 99,500", then ask one small question — the next `POST /api/chat` returns 429 with the `quota_exceeded` Result shape, and no new `'llm.finish'` row appears in the audit tail (the model never ran). Works without an API key.</ChecklistItem>
+  <ChecklistItem chip="untested">`GET /api/usage` returns `{ used, cap, remaining }` for the acting user.</ChecklistItem>
+  <ChecklistItem chip="untested">After "Reset and re-seed", acting as `org-acme:member`, asking one question ticks the inspector's usage counter up from the seeded 90,000 baseline by the conversation's actual token count, and the audit payload's `usage.inputTokens + usage.outputTokens` matches the delta. Needs an API key.</ChecklistItem>
+  <ChecklistItem chip="untested">The same question with a long preamble increases the counter by more than the short question did. Needs an API key.</ChecklistItem>
+  <ChecklistItem chip="untested">The seed's "yesterday" 99,000 row does not block today's request: acting as `org-acme:member`, today's row starts at the seeded 90,000, independent of yesterday's 99,000. Works without an API key.</ChecklistItem>
+</Checklist>

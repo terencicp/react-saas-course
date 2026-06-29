@@ -926,9 +926,9 @@
 - 3 Embeddings and pgvector RAG (When retrieval earns its weight, the `embed` / `embedMany` primitives, and the two-phase index-and-query pipeline on pgvector via Drizzle with `orgId`-filtered retrieval.)
 - 4 Quiz
 
-### Chapter 108 — Project: Ask-your-invoices chat with tool calling
-- 1 Project Overview
-- 2 Streaming route under auth with the agentic loop
+### Chapter 108 — Project: Ask-your-invoices chat
+- 1 Project overview
+- 2 Streaming chat route under auth
 - 3 The org-scoped getInvoiceStats tool
 - 4 The per-user daily token quota
-- 5 Typed useChat, tool parts, and the usage panel
+- 5 Typed useChat client and usage panel
