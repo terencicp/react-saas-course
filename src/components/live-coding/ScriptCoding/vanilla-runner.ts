@@ -3,9 +3,11 @@
 // alongside the student code; results flow back via postMessage.
 //
 // The shim is authored as a real function (`vanillaHarness`) so editors give
-// it normal JS tooling. At build time we `.toString()` it, slice out the body,
-// and concatenate with student/test source. The harness runs in the iframe
-// context, so it uses `parent.postMessage` and ignores its TS environment.
+// it normal JS tooling. At build time we `.toString()` it whole and call it as
+// an IIFE inside the iframe — never slicing its body, which minified builds
+// rename and collapse out from under any such surgery. The harness runs in the
+// iframe context, so it uses `parent.postMessage` and ignores its TS
+// environment.
 
 import { appendConsole, beginResults, endResults, upsertResult } from './dom';
 import { prepareSource } from '../_shared/transpile-ts';
@@ -143,9 +145,8 @@ function vanillaHarness() {
     return api;
   };
 
-  // Student code + tests are concatenated after this body via string concat
-  // — they run at script top level so `function add() {}` is a global the
-  // test bodies can reference.
+  // Returned before student code runs. `test` closes over this same array, so
+  // registrations made later by the student/test source still land in it.
   return tests;
 }
 
@@ -168,20 +169,27 @@ async function prepareVanillaSource(combined: string): Promise<string> {
 }
 
 function buildVanillaSrcdoc(preparedBody: string): string {
-  const src = vanillaHarness.toString();
-  const bodyStart = src.indexOf('{') + 1;
-  const bodyEnd = src.lastIndexOf('}');
-  const body = src.slice(bodyStart, bodyEnd).replace(/return tests;\s*$/, '');
+  // The harness is embedded whole and invoked, so minified builds are safe:
+  // its locals can be renamed freely because nothing outside the function
+  // refers to them, and `return tests` stays inside a function body rather
+  // than becoming an illegal top-level return.
+  const harness = `(${vanillaHarness.toString()})()`;
 
-  // Defang a closing script tag in student/test code so it can't terminate
-  // the wrapping script tag we inject below.
-  const closeRe = new RegExp('<' + '/script>', 'gi');
-  const safeBody = preparedBody.replace(closeRe, '<\\/script>');
+  // A parse error in the student's code (or a build that mangles this script)
+  // kills the whole tag before a single message is sent, which the parent can
+  // only observe as a 5s timeout. This first script tag is a separate parse
+  // unit, so it survives to report what actually went wrong.
+  const errorHook = `
+    window.onerror = function (message) {
+      parent.postMessage({ kind: 'compile_error', message: String(message) }, '*');
+      parent.postMessage({ kind: 'done' }, '*');
+    };
+  `;
 
   const runner = `
-    ${body}
+    const tests = ${harness};
     try {
-      ${safeBody}
+      ${preparedBody}
     } catch (e) {
       parent.postMessage({ kind: 'compile_error', message: (e && e.message) || String(e) }, '*');
       parent.postMessage({ kind: 'done' }, '*');
@@ -199,7 +207,13 @@ function buildVanillaSrcdoc(preparedBody: string): string {
       parent.postMessage({ kind: 'done' }, '*');
     })();
   `;
-  return '<!doctype html><html><body><script>' + runner + '<' + '/script></body></html>';
+
+  // Defang any closing script tag so student/test code can't terminate the
+  // tags we inject below.
+  const closeRe = new RegExp('<' + '/script>', 'gi');
+  const tag = (js: string) => '<script>' + js.replace(closeRe, '<\\/script>') + '<' + '/script>';
+
+  return '<!doctype html><html><body>' + tag(errorHook) + tag(runner) + '</body></html>';
 }
 
 export function setupVanillaRunner(
