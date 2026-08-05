@@ -115,8 +115,6 @@ tuple | - | Fixed-length array where each position has a fixed meaning. | first 
 closure | - | A function plus the bindings it reads from where it was written. | first defined: Chapter 002 L7
 lexical environment | - | The in-scope bindings a function carries as its closure. | first defined: Chapter 002 L7
 scope chain | - | Ordered enclosing scopes a name lookup walks. | first defined: Chapter 002 L7
-higher-order function | - | Function taking or returning a function. | first defined: Chapter 002 L7
-module scope | - | A module's top-level scope, evaluated once, shared across calls. | first defined: Chapter 002 L7
 dot access | dot notation | `obj.field`; checked against known shape; default for known fields. | first defined: Chapter 003 L1
 bracket access | bracket notation, indexed access | `obj[key]` for computed/runtime keys; can reach the prototype. | first defined: Chapter 003 L1
 prototype chain | prototype | Objects walked on a property miss, ending at Object.prototype. | first defined: Chapter 003 L1
