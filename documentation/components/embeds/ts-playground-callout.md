@@ -1,6 +1,6 @@
 # `TSPlaygroundCallout`
 
-Collapsible callout that lazy-loads a TypeScript Playground snippet. Thin URL builder over [`SandboxCallout`](./sandbox-callout.md) — pass either a pre-computed share URL (cheapest, no extra script on the page) or a raw `code` + `flags` pair that's LZ-compressed in the browser on first open.
+Collapsible callout that lazy-loads a TypeScript Playground snippet. Thin URL builder over [`SandboxCallout`](./sandbox-callout.md) — pass either a pre-computed share URL or a raw `code` + `flags` pair, which is LZ-compressed at build time into the same `#code/<lz>` payload.
 
 ## Import
 
@@ -15,7 +15,7 @@ import TSPlaygroundCallout from '../../../components/embeds/TSPlaygroundCallout.
 | Prop | Type | Required | Default | Purpose |
 | --- | --- | --- | --- | --- |
 | `url` | `string` | one of `url` or `code` | — | Pre-built Playground URL — already contains the `#code/<lz>` payload and any query params. The component hands it to `SandboxCallout` verbatim. |
-| `code` | `string` | one of `url` or `code` | — | Raw TypeScript source. On first open the component loads `lz-string` from a CDN, compresses the source, and writes the resulting URL into the iframe `src`. |
+| `code` | `string` | one of `url` or `code` | — | Raw TypeScript source. Compressed at build time (`src/lib/lz-string.ts`) into the iframe URL's `#code/` hash. |
 | `flags` | `Record<string, string \| number \| boolean>` | no | `{}` | Compiler flags rendered as query params (e.g. `{ strict: true, target: 99 }`). Only meaningful with `code` — when you pass `url`, bake flags into the URL yourself. Enum-valued flags (`target`, `module`, `jsx`) take the numeric enum value. |
 | `tsVersion` | `string` | no | — | TypeScript version override — e.g. `'5.7'`, `'next'` (nightly), `'dev'` (your local build). Adds `?ts=<value>`. Only meaningful with `code`. |
 | `filetype` | `'ts' \| 'js' \| 'dts'` | no | — | Initial active tab. Only meaningful with `code`. |
@@ -29,7 +29,7 @@ The default slot is the **message** — one sentence of framing rendered next to
 
 ## Constraints & gotchas
 
-- **Prefer pre-computed URLs.** The encode loop is three lines (`LZString.compressToEncodedURIComponent(code)`), and a pasted URL means no `lz-string` CDN round-trip on the lesson page. Reserve the `code` + `flags` mode for snippets you can't pre-compute at authoring time.
+- **Either mode is fine.** `code` + `flags` is compressed during the build, so both modes ship a plain static URL with no client-side script. Prefer `code` when you want the snippet readable in the MDX; use `url` when you already have a share link from the Playground.
 - **No runtime.** The Playground is type-check only — no `npm install`, no DOM, no fetch. The moment a lesson needs to run code, reach for `StackBlitzCallout` or `CodeSandboxCallout` instead.
 - **Hash payload caps around browser URL limits** (~64 KB compressed, but most browsers choke before that). For very large snippets, host them as a Gist or a sandbox project and link out.
 
@@ -48,7 +48,7 @@ Pre-computed URL — the common case:
 </TSPlaygroundCallout>
 ````
 
-Raw code + flags — for the rare snippet that's interpolated at build time:
+Raw code + flags — keeps the snippet readable in the MDX:
 
 ````mdx
 <TSPlaygroundCallout
@@ -61,6 +61,6 @@ const s = identity("hi");`}
   label="Open identity example"
   height={520}
 >
-  Compressed in the browser on first click — no pre-baked URL.
+  Compressed at build time — no pre-baked URL to paste.
 </TSPlaygroundCallout>
 ````
